@@ -9,6 +9,12 @@ Adds:
 - Proper ML move probability wiring
 - Optional budget-aware trade sizing
 - Separate backtest mode with lower trade threshold
+
+Enhancements:
+- Continuous large-move probability methodology
+- Rule/ML probability diagnostics
+- More robust probability component extraction
+- Better calibrated hybrid move probability
 """
 
 import pandas as pd
@@ -53,6 +59,130 @@ MIN_TRADE_STRENGTH = 45
 STRONG_SIGNAL_THRESHOLD = 75
 MEDIUM_SIGNAL_THRESHOLD = 60
 WEAK_SIGNAL_THRESHOLD = 40
+
+
+def _clip(x, lo, hi):
+    return max(lo, min(hi, x))
+
+
+def _safe_float(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def _safe_div(a, b, default=0.0):
+    try:
+        a = float(a)
+        b = float(b)
+        if b == 0:
+            return default
+        return a / b
+    except Exception:
+        return default
+
+
+def _map_vacuum_strength(vacuum_state, liquidity_voids=None, nearest_vacuum_gap_pct=None):
+    base = {
+        "BREAKOUT_ZONE": 0.85,
+        "NEAR_VACUUM": 0.60,
+        "VACUUM_WATCH": 0.40,
+    }.get(vacuum_state, 0.15)
+
+    if nearest_vacuum_gap_pct is not None:
+        gap = _clip(_safe_float(nearest_vacuum_gap_pct), 0.0, 1.5)
+        proximity_boost = 1.0 - (gap / 1.5)
+        base = 0.6 * base + 0.4 * proximity_boost
+
+    if liquidity_voids is not None:
+        try:
+            void_count = len(liquidity_voids)
+            base += min(void_count, 5) * 0.03
+        except Exception:
+            pass
+
+    return round(_clip(base, 0.0, 1.0), 3)
+
+
+def _map_hedging_flow_ratio(hedging_bias, hedge_flow_value=None):
+    if hedge_flow_value is not None:
+        return round(_clip(_safe_float(hedge_flow_value), -1.0, 1.0), 3)
+
+    mapping = {
+        "UPSIDE_ACCELERATION": 0.75,
+        "DOWNSIDE_ACCELERATION": -0.75,
+        "UPSIDE_PINNING": 0.20,
+        "DOWNSIDE_PINNING": -0.20,
+        "PINNING": 0.0,
+    }
+    return round(mapping.get(hedging_bias, 0.0), 3)
+
+
+def _map_smart_money_flow_score(smart_money_flow, flow_imbalance=None):
+    base = {
+        "BULLISH_FLOW": 0.70,
+        "BEARISH_FLOW": -0.70,
+        "MIXED_FLOW": 0.0,
+        "NEUTRAL_FLOW": 0.0,
+    }.get(smart_money_flow, 0.0)
+
+    if flow_imbalance is not None:
+        base = 0.5 * base + 0.5 * _clip(_safe_float(flow_imbalance), -1.0, 1.0)
+
+    return round(_clip(base, -1.0, 1.0), 3)
+
+
+def _compute_gamma_flip_distance_pct(spot_price, gamma_flip):
+    if gamma_flip is None:
+        return None
+
+    spot = _safe_float(spot_price, None)
+    flip = _safe_float(gamma_flip, None)
+
+    if spot in (None, 0) or flip is None:
+        return None
+
+    return round(abs(spot - flip) / spot * 100.0, 4)
+
+
+def _compute_intraday_range_pct(day_high=None, day_low=None, spot_price=None, expected_move_pct=1.0):
+    high = _safe_float(day_high, None)
+    low = _safe_float(day_low, None)
+    spot = _safe_float(spot_price, None)
+
+    if high is None or low is None or spot in (None, 0):
+        return None
+
+    realized_range_pct = ((high - low) / spot) * 100.0
+    normalized = realized_range_pct / max(expected_move_pct, 0.25)
+    return round(_clip(normalized, 0.0, 1.5), 4)
+
+
+def _compute_atm_iv_percentile(atm_iv, low_iv=8.0, high_iv=28.0):
+    iv = _safe_float(atm_iv, None)
+    if iv is None:
+        return None
+
+    pct = (iv - low_iv) / max(high_iv - low_iv, 1e-6)
+    return round(_clip(pct, 0.0, 1.0), 4)
+
+
+def _blend_move_probability(rule_prob, ml_prob):
+    rule_prob = _safe_float(rule_prob, 0.22)
+
+    if ml_prob is None:
+        return round(_clip(rule_prob, 0.05, 0.95), 2)
+
+    ml_prob = _safe_float(ml_prob, rule_prob)
+    hybrid = 0.35 * rule_prob + 0.65 * ml_prob
+
+    # Light calibration toward center to avoid fake precision in live trading.
+    hybrid = 0.10 + 0.80 * hybrid
+
+    return round(_clip(hybrid, 0.05, 0.95), 2)
 
 
 def normalize_option_chain(option_chain):
@@ -167,6 +297,78 @@ def _clean_zone_list(zones):
             continue
 
     return cleaned
+
+
+def _extract_nearest_vacuum_gap_pct(spot, vacuum_zones):
+    if not vacuum_zones:
+        return None
+
+    spot_val = _safe_float(spot, None)
+    if spot_val in (None, 0):
+        return None
+
+    min_gap = None
+
+    for zone in vacuum_zones:
+        try:
+            low, high = zone
+            low = float(low)
+            high = float(high)
+
+            if low <= spot_val <= high:
+                gap = 0.0
+            elif spot_val < low:
+                gap = low - spot_val
+            else:
+                gap = spot_val - high
+
+            if min_gap is None or gap < min_gap:
+                min_gap = gap
+        except Exception:
+            continue
+
+    if min_gap is None:
+        return None
+
+    return round((min_gap / spot_val) * 100.0, 4)
+
+
+def _extract_hedge_flow_value(hedging_flow):
+    if hedging_flow is None:
+        return None
+
+    if isinstance(hedging_flow, (float, int)):
+        return round(_clip(float(hedging_flow), -1.0, 1.0), 3)
+
+    if isinstance(hedging_flow, dict):
+        candidate_keys = [
+            "flow_ratio",
+            "net_flow_ratio",
+            "hedging_flow_ratio",
+            "normalized_flow",
+            "normalized_value",
+            "value",
+            "score",
+            "bias_score",
+        ]
+        for key in candidate_keys:
+            if key in hedging_flow:
+                try:
+                    return round(_clip(float(hedging_flow[key]), -1.0, 1.0), 3)
+                except Exception:
+                    continue
+
+    return None
+
+
+def _categorical_flow_score(value):
+    mapping = {
+        "BULLISH_FLOW": 0.75,
+        "BEARISH_FLOW": -0.75,
+        "MIXED_FLOW": 0.0,
+        "NEUTRAL_FLOW": 0.0,
+    }
+    return mapping.get(value, 0.0)
 
 
 def choose_strike(option_chain, spot, direction):
@@ -329,19 +531,6 @@ def _extract_probability(result):
             pass
 
     return None
-
-
-def _hybrid_probability(rule_prob, ml_prob):
-    if rule_prob is None and ml_prob is None:
-        return None
-
-    if rule_prob is None:
-        return round(float(ml_prob), 2)
-
-    if ml_prob is None:
-        return round(float(rule_prob), 2)
-
-    return round(0.4 * float(rule_prob) + 0.6 * float(ml_prob), 2)
 
 
 def generate_trade(
@@ -600,17 +789,67 @@ def generate_trade(
         default=None
     )
 
-    large_move_probability = _call_first(
+    nearest_vacuum_gap_pct = _extract_nearest_vacuum_gap_pct(
+        spot=spot,
+        vacuum_zones=vacuum_zones
+    )
+
+    hedge_flow_value = _extract_hedge_flow_value(hedging_flow)
+
+    flow_imbalance = (
+        0.5 * _categorical_flow_score(flow_signal_value)
+        + 0.5 * _categorical_flow_score(smart_money_signal_value)
+    )
+
+    gamma_flip_distance_pct = _compute_gamma_flip_distance_pct(
+        spot_price=spot,
+        gamma_flip=flip,
+    )
+
+    vacuum_strength = _map_vacuum_strength(
+        vacuum_state=vacuum_state,
+        liquidity_voids=voids,
+        nearest_vacuum_gap_pct=nearest_vacuum_gap_pct,
+    )
+
+    hedging_flow_ratio = _map_hedging_flow_ratio(
+        hedging_bias=hedging_bias,
+        hedge_flow_value=hedge_flow_value,
+    )
+
+    smart_money_flow_score = _map_smart_money_flow_score(
+        smart_money_flow=final_flow_signal,
+        flow_imbalance=flow_imbalance,
+    )
+
+    atm_iv_percentile = _compute_atm_iv_percentile(
+        atm_iv=atm_iv,
+    )
+
+    intraday_range_pct = _compute_intraday_range_pct(
+        day_high=df["strikePrice"].max() if "strikePrice" in df.columns else None,
+        day_low=df["strikePrice"].min() if "strikePrice" in df.columns else None,
+        spot_price=spot,
+        expected_move_pct=1.0,
+    )
+
+    rule_move_probability = _call_first(
         large_move_probability_mod,
         ["large_move_probability", "predict_large_move_probability"],
         gamma_regime,
         vacuum_state,
         hedging_bias,
         final_flow_signal,
+        gamma_flip_distance_pct=gamma_flip_distance_pct,
+        vacuum_strength=vacuum_strength,
+        hedging_flow_ratio=hedging_flow_ratio,
+        smart_money_flow_score=smart_money_flow_score,
+        atm_iv_percentile=atm_iv_percentile,
+        intraday_range_pct=intraday_range_pct,
         default=None
     )
 
-    large_move_probability = _extract_probability(large_move_probability)
+    rule_move_probability = _extract_probability(rule_move_probability)
 
     ml_move_probability = None
     predictor_class = getattr(ml_move_predictor_mod, "MovePredictor", None)
@@ -620,12 +859,14 @@ def generate_trade(
             if model_features is not None:
                 ml_move_probability = predictor.predict_probability(model_features)
             ml_move_probability = _extract_probability(ml_move_probability)
+            if ml_move_probability is not None:
+                ml_move_probability = round(_clip(float(ml_move_probability), 0.05, 0.95), 2)
         except Exception:
             ml_move_probability = None
 
-    hybrid_move_probability = _hybrid_probability(
-        large_move_probability,
-        ml_move_probability
+    hybrid_move_probability = _blend_move_probability(
+        rule_prob=rule_move_probability,
+        ml_prob=ml_move_probability
     )
 
     direction, direction_source = decide_direction(
@@ -694,9 +935,21 @@ def generate_trade(
         "liquidity_vacuum_zones": vacuum_zones,
         "liquidity_vacuum_state": vacuum_state,
         "dealer_liquidity_map": dealer_liquidity_map,
-        "large_move_probability": large_move_probability,
+        "rule_move_probability": rule_move_probability,
         "ml_move_probability": ml_move_probability,
         "hybrid_move_probability": hybrid_move_probability,
+        "large_move_probability": hybrid_move_probability,
+        "move_probability_components": {
+            "gamma_flip_distance_pct": gamma_flip_distance_pct,
+            "nearest_vacuum_gap_pct": nearest_vacuum_gap_pct,
+            "vacuum_strength": vacuum_strength,
+            "hedging_flow_ratio": hedging_flow_ratio,
+            "smart_money_flow_score": smart_money_flow_score,
+            "atm_iv_percentile": atm_iv_percentile,
+            "intraday_range_pct": intraday_range_pct,
+            "flow_imbalance": round(flow_imbalance, 3),
+            "hedge_flow_value": hedge_flow_value,
+        },
         "direction_source": direction_source,
         "trade_strength": trade_strength,
         "signal_quality": classify_signal_quality(trade_strength),
