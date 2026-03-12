@@ -1,0 +1,104 @@
+"""
+Gamma Exposure Model
+
+Estimates aggregate dealer gamma exposure from the option chain.
+
+Interpretation:
+- Positive gamma -> dealers dampen moves
+- Negative gamma -> dealers amplify moves
+
+This file intentionally exposes both:
+- calculate_gamma_exposure(...)
+- calculate_gex(...)
+
+so older modules remain compatible.
+"""
+
+import numpy as np
+import pandas as pd
+
+
+def approximate_gamma(strike, spot):
+    """
+    Rough gamma approximation based on distance from ATM.
+
+    Real gamma requires a full options model. For structural
+    positioning analysis, a simple inverse-distance proxy is enough.
+    """
+
+    distance = abs(strike - spot)
+    return 1 / (1 + distance)
+
+
+def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
+    """
+    Estimate total gamma exposure from an option chain.
+
+    Expected columns
+    ----------------
+    strikePrice
+    OPTION_TYP
+    openInterest
+
+    Parameters
+    ----------
+    option_chain : pd.DataFrame
+    spot : float, optional
+
+    Returns
+    -------
+    float
+        Net gamma exposure proxy
+    """
+
+    if option_chain is None or option_chain.empty:
+        return 0.0
+
+    df = option_chain.copy()
+
+    if spot is None:
+        spot = df["strikePrice"].median()
+
+    exposures = []
+
+    for _, row in df.iterrows():
+        strike = row["strikePrice"]
+        oi = row["openInterest"]
+
+        gamma = approximate_gamma(strike, spot)
+        exposure = gamma * oi
+
+        # Put exposure treated as negative in proxy model
+        if row["OPTION_TYP"] == "PE":
+            exposure *= -1
+
+        exposures.append(exposure)
+
+    return float(np.sum(exposures))
+
+
+def gamma_signal(option_chain: pd.DataFrame, spot=None):
+    """
+    Convert gamma exposure into a simple regime label.
+    """
+
+    gamma = calculate_gamma_exposure(option_chain, spot)
+
+    if gamma > 0:
+        return "LONG_GAMMA"
+
+    return "SHORT_GAMMA"
+
+
+# --------------------------------------------------
+# Backward-compatible alias used by older modules
+# --------------------------------------------------
+
+def calculate_gex(option_chain: pd.DataFrame, spot=None):
+    """
+    Alias for calculate_gamma_exposure().
+
+    Kept to support modules like intraday_gamma_shift.py
+    that still import calculate_gex.
+    """
+    return calculate_gamma_exposure(option_chain, spot)
