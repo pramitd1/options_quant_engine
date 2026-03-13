@@ -172,6 +172,52 @@ ICICI_DEBUG = os.getenv("ICICI_DEBUG", "false").strip().lower() == "true"
 
 
 # ================================
+# Scheduled Macro Event Risk
+# ================================
+
+MACRO_EVENT_FILTER_ENABLED = os.getenv("MACRO_EVENT_FILTER_ENABLED", "true").strip().lower() == "true"
+MACRO_EVENT_SCHEDULE_FILE = os.getenv("MACRO_EVENT_SCHEDULE_FILE", "").strip()
+MACRO_EVENT_PRE_EVENT_WARNING_MINUTES = int(os.getenv("MACRO_EVENT_PRE_EVENT_WARNING_MINUTES", "180"))
+MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES = int(os.getenv("MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES", "30"))
+MACRO_EVENT_EVENT_DURATION_MINUTES = int(os.getenv("MACRO_EVENT_EVENT_DURATION_MINUTES", "10"))
+MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES = int(os.getenv("MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES", "30"))
+MACRO_EVENT_WATCH_RISK_THRESHOLD = int(os.getenv("MACRO_EVENT_WATCH_RISK_THRESHOLD", "45"))
+MACRO_EVENT_STRONG_WATCH_RISK_THRESHOLD = int(os.getenv("MACRO_EVENT_STRONG_WATCH_RISK_THRESHOLD", "70"))
+
+# Optional built-in mock/default schedule. Prefer using MACRO_EVENT_SCHEDULE_FILE
+# for local schedules, but keep the interface centralized here.
+DEFAULT_MACRO_EVENT_SCHEDULE: list[dict] = []
+
+
+# ================================
+# Headline Ingestion Foundation
+# ================================
+
+HEADLINE_INGESTION_ENABLED = os.getenv("HEADLINE_INGESTION_ENABLED", "true").strip().lower() == "true"
+HEADLINE_PROVIDER = os.getenv("HEADLINE_PROVIDER", "MOCK").strip().upper()
+HEADLINE_MOCK_FILE = os.getenv("HEADLINE_MOCK_FILE", "config/mock_headlines.example.json").strip()
+HEADLINE_RSS_URLS = _csv_env_list("HEADLINE_RSS_URLS")
+HEADLINE_RSS_TIMEOUT_SECONDS = int(os.getenv("HEADLINE_RSS_TIMEOUT_SECONDS", "8"))
+HEADLINE_RSS_USER_AGENT = os.getenv(
+    "HEADLINE_RSS_USER_AGENT",
+    "options_quant_engine/1.0 (+headline-ingestion-rss)"
+).strip()
+HEADLINE_STALE_MINUTES = int(os.getenv("HEADLINE_STALE_MINUTES", "45"))
+HEADLINE_MAX_RECORDS = int(os.getenv("HEADLINE_MAX_RECORDS", "50"))
+
+
+# ================================
+# Macro / News Aggregation
+# ================================
+
+HEADLINE_BURST_LOOKBACK_MINUTES = int(os.getenv("HEADLINE_BURST_LOOKBACK_MINUTES", "60"))
+HEADLINE_VELOCITY_BASE_COUNT = int(os.getenv("HEADLINE_VELOCITY_BASE_COUNT", "5"))
+MACRO_NEWS_SENTIMENT_ON_THRESHOLD = float(os.getenv("MACRO_NEWS_SENTIMENT_ON_THRESHOLD", "18"))
+MACRO_NEWS_SENTIMENT_OFF_THRESHOLD = float(os.getenv("MACRO_NEWS_SENTIMENT_OFF_THRESHOLD", "-18"))
+MACRO_NEWS_RISK_BIAS_THRESHOLD = float(os.getenv("MACRO_NEWS_RISK_BIAS_THRESHOLD", "0.22"))
+
+
+# ================================
 # Logging Configuration
 # ================================
 

@@ -35,6 +35,9 @@ from data.expiry_resolver import (
     ordered_expiries,
     resolve_selected_expiry,
 )
+from macro.scheduled_event_risk import evaluate_scheduled_event_risk
+from macro.macro_news_aggregator import build_macro_news_state
+from news.service import build_default_headline_service
 
 from engine.trading_engine import generate_trade
 
@@ -92,6 +95,18 @@ TRADER_VIEW_KEYS = [
     "hybrid_move_probability",
     "large_move_probability",
     "ml_move_probability",
+    "macro_event_risk_score",
+    "event_window_status",
+    "event_lockdown_flag",
+    "minutes_to_next_event",
+    "next_event_name",
+    "macro_regime",
+    "macro_sentiment_score",
+    "volatility_shock_score",
+    "news_confidence_score",
+    "macro_adjustment_score",
+    "macro_position_size_multiplier",
+    "macro_suggested_lots",
     "data_quality_score",
     "data_quality_status",
 ]
@@ -290,6 +305,7 @@ def validate_option_chain(option_chain):
     iv_rows = 0
     selected_expiry = None
     expiry_count = 0
+    expiry_missing_rows = 0
 
     try:
         ce_rows = int((option_chain["OPTION_TYP"] == "CE").sum())
@@ -315,6 +331,15 @@ def validate_option_chain(option_chain):
             warnings.append(f"multiple_expiries_detected:{expiry_count}")
     except Exception:
         warnings.append("expiry_summary_failed")
+
+    try:
+        expiry_series = option_chain.get("EXPIRY_DT")
+        if expiry_series is not None:
+            expiry_missing_rows = int(pd.Series(expiry_series).isna().sum())
+            if expiry_missing_rows > 0:
+                warnings.append(f"missing_expiry_rows:{expiry_missing_rows}")
+    except Exception:
+        warnings.append("expiry_missing_row_count_failed")
 
     if row_count < 20:
         issues.append(f"too_few_rows:{row_count}")
@@ -345,13 +370,33 @@ def validate_option_chain(option_chain):
         "iv_rows": iv_rows,
         "selected_expiry": selected_expiry,
         "expiry_count": expiry_count,
+        "expiry_missing_rows": expiry_missing_rows,
     }
 
 
 def print_validation_block(title, validation):
     print(f"\n{title}")
     print("---------------------------")
+    preferred_order = [
+        "validation_mode",
+        "is_valid",
+        "live_trading_valid",
+        "replay_analysis_valid",
+        "is_stale",
+        "age_minutes",
+        "issues",
+        "warnings",
+    ]
+
+    printed = set()
+    for key in preferred_order:
+        if key in validation:
+            print(f"{key:26}: {validation.get(key)}")
+            printed.add(key)
+
     for key, value in validation.items():
+        if key in printed:
+            continue
         print(f"{key:26}: {value}")
 
 
@@ -400,6 +445,18 @@ def print_signal_summary(trade):
         "spot_vs_flip": trade.get("spot_vs_flip"),
         "dealer_position": trade.get("dealer_position"),
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
+        "macro_event_risk_score": trade.get("macro_event_risk_score"),
+        "event_window_status": trade.get("event_window_status"),
+        "event_lockdown_flag": trade.get("event_lockdown_flag"),
+        "minutes_to_next_event": trade.get("minutes_to_next_event"),
+        "next_event_name": trade.get("next_event_name"),
+        "macro_regime": trade.get("macro_regime"),
+        "macro_sentiment_score": trade.get("macro_sentiment_score"),
+        "volatility_shock_score": trade.get("volatility_shock_score"),
+        "news_confidence_score": trade.get("news_confidence_score"),
+        "macro_adjustment_score": trade.get("macro_adjustment_score"),
+        "macro_position_size_multiplier": trade.get("macro_position_size_multiplier"),
+        "macro_suggested_lots": trade.get("macro_suggested_lots"),
         "atm_iv": trade.get("atm_iv"),
         "vol_surface_regime": trade.get("vol_surface_regime"),
         "capital_required": trade.get("capital_required"),
@@ -444,6 +501,7 @@ def print_diagnostics(trade):
         "spot_validation",
         "option_chain_validation",
         "data_quality_reasons",
+        "macro_adjustment_reasons",
         "confirmation_status",
         "confirmation_veto",
         "confirmation_reasons",
@@ -469,6 +527,7 @@ def print_diagnostics(trade):
 def main():
     args = parse_runtime_args()
     symbol = choose_underlying_symbol()
+    headline_service = build_default_headline_service()
 
     source = args.replay_source.upper().strip() if args.replay else choose_data_source()
     if not args.replay:
@@ -530,6 +589,8 @@ def main():
 
                 if not spot_validation.get("is_valid", False):
                     print("\nSpot snapshot invalid. Skipping this cycle.")
+                    if args.replay:
+                        break
                     time.sleep(refresh_interval)
                     continue
 
@@ -550,6 +611,65 @@ def main():
                     "timestamp": spot_timestamp,
                     "lookback_avg_range_pct": lookback_avg_range_pct,
                 })
+
+                macro_event_state = evaluate_scheduled_event_risk(
+                    symbol=symbol,
+                    as_of=spot_timestamp,
+                )
+
+                print_key_value_block("MACRO EVENT RISK", {
+                    "macro_event_risk_score": macro_event_state.get("macro_event_risk_score"),
+                    "event_window_status": macro_event_state.get("event_window_status"),
+                    "event_lockdown_flag": macro_event_state.get("event_lockdown_flag"),
+                    "minutes_to_next_event": macro_event_state.get("minutes_to_next_event"),
+                    "next_event_name": macro_event_state.get("next_event_name"),
+                })
+
+                headline_state = headline_service.fetch(
+                    symbol=symbol,
+                    as_of=spot_timestamp,
+                    replay_mode=args.replay,
+                )
+                macro_news_state = build_macro_news_state(
+                    event_state=macro_event_state,
+                    headline_state=headline_state,
+                    as_of=spot_timestamp,
+                ).to_dict()
+
+                print_key_value_block("MACRO / NEWS REGIME", {
+                    "macro_regime": macro_news_state.get("macro_regime"),
+                    "macro_regime_reasons": macro_news_state.get("macro_regime_reasons"),
+                    "macro_event_risk_score": macro_news_state.get("macro_event_risk_score"),
+                    "macro_sentiment_score": macro_news_state.get("macro_sentiment_score"),
+                    "volatility_shock_score": macro_news_state.get("volatility_shock_score"),
+                    "event_lockdown_flag": macro_news_state.get("event_lockdown_flag"),
+                    "news_confidence_score": macro_news_state.get("news_confidence_score"),
+                    "headline_velocity": macro_news_state.get("headline_velocity"),
+                    "headline_count": macro_news_state.get("headline_count"),
+                    "classified_headline_count": macro_news_state.get("classified_headline_count"),
+                    "next_event_name": macro_news_state.get("next_event_name"),
+                    "neutral_fallback": macro_news_state.get("neutral_fallback"),
+                })
+
+                macro_news_details = {
+                    "headline_provider": headline_state.provider_name,
+                    "headline_data_available": headline_state.data_available,
+                    "headline_is_stale": headline_state.is_stale,
+                    "headline_warnings": headline_state.warnings,
+                    "headline_issues": headline_state.issues,
+                    "provider_metadata": headline_state.provider_metadata,
+                    "classification_preview": macro_news_state.get("classification_preview"),
+                }
+                if (
+                    headline_state.warnings
+                    or headline_state.issues
+                    or headline_state.provider_metadata
+                    or macro_news_state.get("classification_preview")
+                ):
+                    print_key_value_block(
+                        "MACRO / NEWS DETAILS",
+                        {key: _format_output_value(value) for key, value in macro_news_details.items()},
+                    )
 
                 if args.replay:
                     option_chain = load_option_chain_snapshot(chain_replay_path)
@@ -581,122 +701,6 @@ def main():
                         print(f"Could not save option chain snapshot: {save_err}")
                     saved_one_option_chain_snapshot = True
 
-                greeks_chain = enrich_chain_with_greeks(option_chain, spot=spot)
-                greek_exposures = summarize_greek_exposures(greeks_chain)
-
-                gamma = safe_call(calculate_gamma_exposure, greeks_chain, spot, default=None)
-                flip = safe_call(gamma_flip_level, greeks_chain, spot=spot, default=None)
-                dealer_metrics = safe_call(dealer_inventory_metrics, option_chain, default={}) or {}
-                dealer_pos = dealer_metrics.get("position")
-                if dealer_pos is None:
-                    dealer_pos = safe_call(dealer_inventory_position, option_chain, default=None)
-                vol_regime_value = safe_call(detect_volatility_regime, greeks_chain, default=None)
-
-                gamma_path = safe_call(
-                    simulate_gamma_path,
-                    greeks_chain,
-                    spot,
-                    default=([], [])
-                )
-
-                if isinstance(gamma_path, tuple) and len(gamma_path) == 2:
-                    prices, gamma_curve = gamma_path
-                else:
-                    prices, gamma_curve = [], []
-
-                gamma_event = safe_call(detect_gamma_squeeze, prices, gamma_curve, default=None)
-                flow = safe_call(flow_signal, greeks_chain, spot=spot, default=None)
-                smart_flow = safe_call(smart_money_signal, greeks_chain, spot=spot, default=None)
-                liquidity_levels = safe_call(strongest_liquidity_levels, greeks_chain, default=[])
-                voids = safe_call(detect_liquidity_voids, greeks_chain, default=[])
-                void_sig = safe_call(liquidity_void_signal, spot, voids, default=None)
-                vacuum_zones = safe_call(detect_liquidity_vacuum, greeks_chain, default=[])
-                vacuum_state = safe_call(vacuum_direction, spot, vacuum_zones, default=None)
-                market_gamma = safe_call(calculate_market_gamma, greeks_chain, default=None)
-                gamma_regime = safe_call(market_gamma_regime, market_gamma, default=None)
-                gamma_clusters = safe_call(largest_gamma_strikes, market_gamma, default=None)
-                walls = safe_call(classify_walls, greeks_chain, default={}) or {}
-
-                support_wall = walls.get("support_wall") if isinstance(walls, dict) else None
-                resistance_wall = walls.get("resistance_wall") if isinstance(walls, dict) else None
-
-                hedging_flow = safe_call(dealer_hedging_flow, greeks_chain, default=None)
-                hedging_sim = safe_call(simulate_dealer_hedging, greeks_chain, default={})
-                hedging_bias_value = safe_call(hedging_bias, hedging_sim, default=None)
-                atm_iv_value = safe_call(atm_vol, greeks_chain, spot, default=None)
-
-                vol_surface_regime = None
-                if atm_iv_value is not None:
-                    vol_surface_regime = safe_call(vol_regime, atm_iv_value, default=None)
-
-                intraday_gamma_state = None
-                if previous_chain is not None:
-                    intraday_gamma_state = safe_call(
-                        gamma_shift_signal,
-                        previous_chain,
-                        greeks_chain,
-                        spot,
-                        default=None
-                    )
-
-                if flip is None:
-                    spot_vs_flip = "UNKNOWN"
-                elif abs(spot - flip) <= 25:
-                    spot_vs_flip = "AT_FLIP"
-                elif spot > flip:
-                    spot_vs_flip = "ABOVE_FLIP"
-                else:
-                    spot_vs_flip = "BELOW_FLIP"
-
-                dashboard_summary = {
-                    "spot": round(spot, 2),
-                    "spot_timestamp": spot_timestamp,
-                    "day_open": day_open,
-                    "day_high": day_high,
-                    "day_low": day_low,
-                    "prev_close": prev_close,
-                    "lookback_avg_range_pct": lookback_avg_range_pct,
-                    "spot_validation": spot_validation,
-                    "option_chain_validation": option_chain_validation,
-                    "gamma_exposure": round(gamma, 2) if gamma is not None else None,
-                    "market_gamma": market_gamma,
-                    "gamma_flip": flip,
-                    "spot_vs_flip": spot_vs_flip,
-                    "gamma_regime": gamma_regime,
-                    "gamma_clusters": gamma_clusters,
-                    "delta_exposure": greek_exposures.get("delta_exposure"),
-                    "gamma_exposure_greeks": greek_exposures.get("gamma_exposure_greeks"),
-                    "theta_exposure": greek_exposures.get("theta_exposure"),
-                    "vega_exposure": greek_exposures.get("vega_exposure"),
-                    "rho_exposure": greek_exposures.get("rho_exposure"),
-                    "vanna_exposure": greek_exposures.get("vanna_exposure"),
-                    "charm_exposure": greek_exposures.get("charm_exposure"),
-                    "vanna_regime": greek_exposures.get("vanna_regime"),
-                    "charm_regime": greek_exposures.get("charm_regime"),
-                    "dealer_position": dealer_pos,
-                    "dealer_inventory_basis": dealer_metrics.get("basis"),
-                    "call_oi_change": dealer_metrics.get("call_oi_change"),
-                    "put_oi_change": dealer_metrics.get("put_oi_change"),
-                    "net_oi_change_bias": dealer_metrics.get("net_oi_change_bias"),
-                    "dealer_hedging_flow": hedging_flow,
-                    "dealer_hedging_bias": hedging_bias_value,
-                    "intraday_gamma_state": intraday_gamma_state,
-                    "volatility_regime": vol_regime_value,
-                    "vol_surface_regime": vol_surface_regime,
-                    "atm_iv": atm_iv_value,
-                    "flow_signal": flow,
-                    "smart_money_flow": smart_flow,
-                    "final_flow_signal": None,
-                    "gamma_event": gamma_event,
-                    "support_wall": support_wall,
-                    "resistance_wall": resistance_wall,
-                    "liquidity_levels": liquidity_levels,
-                    "liquidity_voids": voids,
-                    "liquidity_void_signal": void_sig,
-                    "liquidity_vacuum_zones": vacuum_zones,
-                    "liquidity_vacuum_state": vacuum_state
-                }
-
                 trade = generate_trade(
                     symbol=symbol,
                     spot=spot,
@@ -712,50 +716,33 @@ def main():
                     apply_budget_constraint=apply_budget_constraint,
                     requested_lots=requested_lots,
                     lot_size=lot_size,
-                    max_capital=max_capital
+                    max_capital=max_capital,
+                    macro_event_state=macro_event_state,
+                    macro_news_state=macro_news_state,
+                    valuation_time=spot_timestamp,
                 )
 
                 if trade:
                     trade["selected_expiry"] = option_chain_validation.get("selected_expiry")
                     print_trader_view(trade)
 
-                    dashboard_for_print = dict(dashboard_summary)
-
-                    for key in [
-                        "market_gamma",
-                        "gamma_regime",
-                        "gamma_clusters",
-                        "dealer_hedging_flow",
-                        "dealer_hedging_bias",
-                        "intraday_gamma_state",
-                        "vol_surface_regime",
-                        "atm_iv",
-                        "final_flow_signal",
-                        "support_wall",
-                        "resistance_wall",
-                        "liquidity_vacuum_zones",
-                        "liquidity_vacuum_state",
-                        "dealer_liquidity_map",
-                        "large_move_probability",
-                        "ml_move_probability",
-                        "hybrid_move_probability",
-                        "rule_move_probability",
-                        "move_probability_components",
-                        "scoring_breakdown",
-                        "spot_validation",
-                        "option_chain_validation",
-                        "data_quality_score",
-                        "data_quality_status",
-                        "data_quality_reasons",
-                        "analytics_quality",
-                        "confirmation_status",
-                        "confirmation_veto",
-                        "confirmation_reasons",
-                        "confirmation_breakdown",
-                        "ranked_strike_candidates",
-                    ]:
-                        if key in trade:
-                            dashboard_for_print[key] = trade.get(key)
+                    dashboard_for_print = dict(trade)
+                    dashboard_for_print.update({
+                        "spot": round(spot, 2),
+                        "spot_timestamp": spot_timestamp,
+                        "day_open": day_open,
+                        "day_high": day_high,
+                        "day_low": day_low,
+                        "prev_close": prev_close,
+                        "lookback_avg_range_pct": lookback_avg_range_pct,
+                        "spot_validation": spot_validation,
+                        "option_chain_validation": option_chain_validation,
+                        "macro_regime": macro_news_state.get("macro_regime"),
+                        "macro_sentiment_score": macro_news_state.get("macro_sentiment_score"),
+                        "volatility_shock_score": macro_news_state.get("volatility_shock_score"),
+                        "news_confidence_score": macro_news_state.get("news_confidence_score"),
+                        "headline_velocity": macro_news_state.get("headline_velocity"),
+                    })
 
                     print_dealer_dashboard(dashboard_for_print)
 
@@ -763,9 +750,9 @@ def main():
                     print_diagnostics(trade)
                 else:
                     print("\nNo trade signal")
-                    print_dealer_dashboard(dashboard_summary)
+                    print_key_value_block("ENGINE STATUS", {"message": "No trade payload returned"})
 
-                previous_chain = greeks_chain.copy()
+                previous_chain = option_chain.copy()
 
             except Exception as e:
                 print("\nEngine error:", e)

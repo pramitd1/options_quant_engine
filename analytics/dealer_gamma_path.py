@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 
-def simulate_gamma_path(option_chain, spot, step=25, range_points=500):
+def simulate_gamma_path(option_chain, spot, step=25, range_points=None):
     if option_chain is None or len(option_chain) == 0 or spot is None:
         return np.array([]), []
 
@@ -50,6 +50,11 @@ def simulate_gamma_path(option_chain, spot, step=25, range_points=500):
 
     if inferred_step:
         step = max(1, int(round(inferred_step)))
+
+    if range_points is None:
+        spot_band = max(float(spot) * 0.035, step * 12)
+        strike_band = step * min(max(len(strikes) // 2, 12), 40)
+        range_points = int(max(spot_band, strike_band))
 
     prices = np.arange(
         spot - range_points,

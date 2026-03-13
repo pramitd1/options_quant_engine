@@ -17,9 +17,9 @@ def load_spot_snapshot(path: str) -> dict:
     with open(snapshot_path, "r", encoding="utf-8") as handle:
         snapshot = json.load(handle)
 
-    # Recompute freshness/validation at load time so replay reflects the
-    # current wall-clock context instead of preserving a stale saved verdict.
-    snapshot["validation"] = validate_spot_snapshot(snapshot)
+    # Recompute freshness/validation at load time, but distinguish between
+    # live-trading freshness and replay-analysis usability.
+    snapshot["validation"] = validate_spot_snapshot(snapshot, replay_mode=True)
     return snapshot
 
 

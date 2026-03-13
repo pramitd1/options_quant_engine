@@ -1,0 +1,93 @@
+[
+  {
+    "name": "India IIP",
+    "timestamp": "2026-03-30T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2025_26",
+    "notes": "Official calendar lists 28-Mar-2026; moved to next working day because 28-Mar-2026 is a Saturday and the calendar note says releases shift to the next working day if the date is a holiday."
+  },
+  {
+    "name": "India CPI",
+    "timestamp": "2026-04-13T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2026_27",
+    "notes": "Official calendar lists 12-Apr-2026; moved to next working day because 12-Apr-2026 is a Sunday and the calendar note says releases shift to the next working day if the date is a holiday."
+  },
+  {
+    "name": "India IIP",
+    "timestamp": "2026-04-28T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2026_27"
+  },
+  {
+    "name": "India CPI",
+    "timestamp": "2026-05-12T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2026_27"
+  },
+  {
+    "name": "India IIP",
+    "timestamp": "2026-05-28T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2026_27"
+  },
+  {
+    "name": "India GDP Q4 / FY2025-26",
+    "timestamp": "2026-05-29T16:00:00+05:30",
+    "severity": "CRITICAL",
+    "scope": ["ALL"],
+    "warning_minutes": 240,
+    "lockdown_minutes": 45,
+    "event_duration_minutes": 15,
+    "cooldown_minutes": 45,
+    "source": "MOSPI_ARC_2026_27"
+  },
+  {
+    "name": "India CPI",
+    "timestamp": "2026-06-12T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2026_27"
+  },
+  {
+    "name": "India IIP",
+    "timestamp": "2026-06-29T16:00:00+05:30",
+    "severity": "MAJOR",
+    "scope": ["ALL"],
+    "warning_minutes": 180,
+    "lockdown_minutes": 30,
+    "event_duration_minutes": 10,
+    "cooldown_minutes": 30,
+    "source": "MOSPI_ARC_2026_27",
+    "notes": "Official calendar lists 28-Jun-2026; moved to next working day because 28-Jun-2026 is a Sunday and the calendar note says releases shift to the next working day if the date is a holiday."
+  }
+]

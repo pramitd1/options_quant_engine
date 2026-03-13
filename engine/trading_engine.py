@@ -26,7 +26,9 @@ from config.settings import (
     LOT_SIZE,
     NUMBER_OF_LOTS,
     MAX_CAPITAL_PER_TRADE,
-    BACKTEST_MIN_TRADE_STRENGTH
+    BACKTEST_MIN_TRADE_STRENGTH,
+    MACRO_EVENT_STRONG_WATCH_RISK_THRESHOLD,
+    MACRO_EVENT_WATCH_RISK_THRESHOLD,
 )
 
 from strategy.exit_model import calculate_exit
@@ -55,6 +57,7 @@ from analytics import liquidity_vacuum as liquidity_vacuum_mod
 from analytics import volatility_surface as volatility_surface_mod
 from analytics.dealer_liquidity_map import build_dealer_liquidity_map
 from analytics.greeks_engine import enrich_chain_with_greeks, summarize_greek_exposures
+from macro.engine_adjustments import compute_macro_news_adjustments
 
 import models.feature_builder as feature_builder_mod
 import models.large_move_probability as large_move_probability_mod
@@ -219,7 +222,7 @@ def _blend_move_probability(rule_prob, ml_prob):
     return round(_clip(hybrid, 0.05, 0.95), 2)
 
 
-def normalize_option_chain(option_chain, spot=None):
+def normalize_option_chain(option_chain, spot=None, valuation_time=None):
     df = option_chain.copy()
 
     rename_map = {
@@ -251,7 +254,7 @@ def normalize_option_chain(option_chain, spot=None):
         df["lastPrice"] = df["LAST_PRICE"]
 
     if "EXPIRY_DT" not in df.columns:
-        df["EXPIRY_DT"] = "NEAR"
+        df["EXPIRY_DT"] = None
 
     if spot is None:
         spot = df["strikePrice"].median() if "strikePrice" in df.columns else None
@@ -265,7 +268,7 @@ def normalize_option_chain(option_chain, spot=None):
         has_usable_greeks = gamma_valid and delta_valid and tte_valid
 
     if not has_usable_greeks:
-        df = enrich_chain_with_greeks(df, spot=spot)
+        df = enrich_chain_with_greeks(df, spot=spot, valuation_time=valuation_time)
 
     return df
 
@@ -592,18 +595,20 @@ def decide_direction(
         if spot_vs_flip == "BELOW_FLIP":
             bearish_votes.append("GAMMA_SQUEEZE")
 
-    if spot_vs_flip == "BELOW_FLIP" and vol_regime == "VOL_EXPANSION":
-        if dealer_pos == "Short Gamma":
-            bearish_votes.append("GAMMA_FLIP")
-
     if spot_vs_flip == "ABOVE_FLIP":
         if dealer_pos == "Long Gamma":
             bullish_votes.append("GAMMA_FLIP")
         if dealer_pos == "Short Gamma":
-            bearish_votes.append("GAMMA_FLIP")
+            bullish_votes.append("GAMMA_FLIP")
+
+    if spot_vs_flip == "BELOW_FLIP" and dealer_pos == "Short Gamma":
+        bearish_votes.append("GAMMA_FLIP")
 
     if dealer_pos == "Short Gamma" and vol_regime == "VOL_EXPANSION":
-        bearish_votes.append("DEALER_VOL")
+        if spot_vs_flip == "ABOVE_FLIP":
+            bullish_votes.append("DEALER_VOL")
+        elif spot_vs_flip == "BELOW_FLIP":
+            bearish_votes.append("DEALER_VOL")
 
     # Vanna and charm are treated as secondary structural votes that only
     # activate when they reinforce the active spot/flip regime.
@@ -685,13 +690,19 @@ def generate_trade(
     requested_lots=NUMBER_OF_LOTS,
     lot_size=LOT_SIZE,
     max_capital=MAX_CAPITAL_PER_TRADE,
-    backtest_mode=False
+    backtest_mode=False,
+    macro_event_state=None,
+    macro_news_state=None,
+    valuation_time=None,
 ):
     if option_chain is None or option_chain.empty:
         return None
 
-    df = normalize_option_chain(option_chain, spot=spot)
-    prev_df = normalize_option_chain(previous_chain, spot=spot) if previous_chain is not None else None
+    df = normalize_option_chain(option_chain, spot=spot, valuation_time=valuation_time)
+    prev_df = (
+        normalize_option_chain(previous_chain, spot=spot, valuation_time=valuation_time)
+        if previous_chain is not None else None
+    )
 
     gamma = _call_first(
         gamma_exposure_mod,
@@ -1053,6 +1064,14 @@ def generate_trade(
         probability_state=probability_state,
     )
 
+    macro_event_state = macro_event_state if isinstance(macro_event_state, dict) else {}
+    macro_event_risk_score = int(_safe_float(macro_event_state.get("macro_event_risk_score"), 0))
+    event_window_status = macro_event_state.get("event_window_status", "NO_EVENT_DATA")
+    event_lockdown_flag = bool(macro_event_state.get("event_lockdown_flag", False))
+    minutes_to_next_event = macro_event_state.get("minutes_to_next_event")
+    next_event_name = macro_event_state.get("next_event_name")
+    active_event_name = macro_event_state.get("active_event_name")
+
     direction, direction_source = decide_direction(
         final_flow_signal=final_flow_signal,
         dealer_pos=dealer_pos,
@@ -1066,46 +1085,105 @@ def generate_trade(
         backtest_mode=backtest_mode
     )
 
-    score_direction = direction if direction is not None else "CALL"
+    if direction is None:
+        trade_strength = 0
+        scoring_breakdown = {
+            "flow_signal_score": 0,
+            "smart_money_flow_score": 0,
+            "gamma_event_score": 0,
+            "dealer_position_score": 0,
+            "volatility_regime_score": 0,
+            "liquidity_void_score": 0,
+            "liquidity_vacuum_score": 0,
+            "spot_vs_flip_score": 0,
+            "hedging_bias_score": 0,
+            "gamma_regime_score": 0,
+            "intraday_gamma_shift_score": 0,
+            "wall_proximity_score": 0,
+            "liquidity_map_score": 0,
+            "move_model_score": 0,
+        }
+        confirmation = {
+            "score_adjustment": 0,
+            "status": "NO_DIRECTION",
+            "veto": False,
+            "reasons": ["no_direction"],
+            "breakdown": {
+                "open_alignment_score": 0,
+                "prev_close_alignment_score": 0,
+                "range_expansion_score": 0,
+                "flow_confirmation_score": 0,
+                "hedging_confirmation_score": 0,
+                "gamma_event_confirmation_score": 0,
+                "move_probability_confirmation_score": 0,
+                "flip_alignment_score": 0,
+            },
+        }
+    else:
+        trade_strength, scoring_breakdown = compute_trade_strength(
+            direction=direction,
+            flow_signal_value=flow_signal_value,
+            smart_money_signal_value=smart_money_signal_value,
+            gamma_event=gamma_event,
+            dealer_pos=dealer_pos,
+            vol_regime=vol_regime,
+            void_signal=void_signal,
+            vacuum_state=vacuum_state,
+            spot_vs_flip=spot_vs_flip,
+            hedging_bias=hedging_bias,
+            gamma_regime=gamma_regime,
+            intraday_gamma_state=intraday_gamma_state,
+            support_wall=support_wall,
+            resistance_wall=resistance_wall,
+            spot=spot,
+            next_support=dealer_liquidity_map.get("next_support"),
+            next_resistance=dealer_liquidity_map.get("next_resistance"),
+            squeeze_zone=dealer_liquidity_map.get("gamma_squeeze_zone"),
+            large_move_probability=hybrid_move_probability,
+            ml_move_probability=ml_move_probability
+        )
 
-    trade_strength, scoring_breakdown = compute_trade_strength(
-        direction=score_direction,
-        flow_signal_value=flow_signal_value,
-        smart_money_signal_value=smart_money_signal_value,
-        gamma_event=gamma_event,
-        dealer_pos=dealer_pos,
-        vol_regime=vol_regime,
-        void_signal=void_signal,
-        vacuum_state=vacuum_state,
-        spot_vs_flip=spot_vs_flip,
-        hedging_bias=hedging_bias,
-        gamma_regime=gamma_regime,
-        intraday_gamma_state=intraday_gamma_state,
-        support_wall=support_wall,
-        resistance_wall=resistance_wall,
-        spot=spot,
-        next_support=dealer_liquidity_map.get("next_support"),
-        next_resistance=dealer_liquidity_map.get("next_resistance"),
-        squeeze_zone=dealer_liquidity_map.get("gamma_squeeze_zone"),
-        large_move_probability=hybrid_move_probability,
-        ml_move_probability=ml_move_probability
+        confirmation = compute_confirmation_filters(
+            direction=direction,
+            spot=spot,
+            day_open=day_open,
+            prev_close=prev_close,
+            intraday_range_pct=intraday_range_pct,
+            final_flow_signal=final_flow_signal,
+            hedging_bias=hedging_bias,
+            gamma_event=gamma_event,
+            hybrid_move_probability=hybrid_move_probability,
+            spot_vs_flip=spot_vs_flip,
+        )
+
+    macro_news_adjustments = _compute_macro_news_adjustments(
+        direction=direction,
+        macro_news_state=macro_news_state,
     )
 
-    confirmation = compute_confirmation_filters(
-        direction=score_direction,
-        spot=spot,
-        day_open=day_open,
-        prev_close=prev_close,
-        intraday_range_pct=intraday_range_pct,
-        final_flow_signal=final_flow_signal,
-        hedging_bias=hedging_bias,
-        gamma_event=gamma_event,
-        hybrid_move_probability=hybrid_move_probability,
-        spot_vs_flip=spot_vs_flip,
-    )
+    macro_event_score_adjustment = 0
+    if event_window_status == "PRE_EVENT_WATCH":
+        macro_event_score_adjustment = -6 if macro_event_risk_score >= MACRO_EVENT_WATCH_RISK_THRESHOLD else -3
+    elif event_window_status == "POST_EVENT_COOLDOWN":
+        macro_event_score_adjustment = -4 if macro_event_risk_score >= MACRO_EVENT_WATCH_RISK_THRESHOLD else -2
+    elif event_window_status in {"PRE_EVENT_LOCKDOWN", "LIVE_EVENT"}:
+        macro_event_score_adjustment = -10
+
+    confirmation["score_adjustment"] += macro_news_adjustments["macro_confirmation_adjustment"]
 
     scoring_breakdown["confirmation_filter_score"] = confirmation["score_adjustment"]
-    adjusted_trade_strength = int(_clip(trade_strength + confirmation["score_adjustment"], 0, 100))
+    scoring_breakdown["macro_event_score"] = macro_event_score_adjustment
+    scoring_breakdown["macro_news_score"] = macro_news_adjustments["macro_adjustment_score"]
+    adjusted_trade_strength = int(
+        _clip(
+            trade_strength
+            + confirmation["score_adjustment"]
+            + macro_event_score_adjustment
+            + macro_news_adjustments["macro_adjustment_score"],
+            0,
+            100,
+        )
+    )
     scoring_breakdown["base_trade_strength"] = trade_strength
     scoring_breakdown["total_score"] = adjusted_trade_strength
 
@@ -1186,6 +1264,20 @@ def generate_trade(
         "trade_strength": adjusted_trade_strength,
         "signal_quality": classify_signal_quality(adjusted_trade_strength),
         "scoring_breakdown": scoring_breakdown,
+        "macro_event_risk_score": macro_event_risk_score,
+        "event_window_status": event_window_status,
+        "event_lockdown_flag": event_lockdown_flag,
+        "minutes_to_next_event": minutes_to_next_event,
+        "next_event_name": next_event_name,
+        "active_event_name": active_event_name,
+        "macro_regime": macro_news_adjustments["macro_regime"],
+        "macro_sentiment_score": macro_news_adjustments["macro_sentiment_score"],
+        "volatility_shock_score": macro_news_adjustments["volatility_shock_score"],
+        "news_confidence_score": macro_news_adjustments["news_confidence_score"],
+        "macro_adjustment_score": macro_news_adjustments["macro_adjustment_score"],
+        "macro_confirmation_adjustment": macro_news_adjustments["macro_confirmation_adjustment"],
+        "macro_position_size_multiplier": macro_news_adjustments["macro_position_size_multiplier"],
+        "macro_adjustment_reasons": macro_news_adjustments["macro_adjustment_reasons"],
         "budget_constraint_applied": apply_budget_constraint,
         "lot_size": lot_size,
         "requested_lots": requested_lots,
@@ -1203,6 +1295,12 @@ def generate_trade(
         base_payload["trade_status"] = "NO_SIGNAL"
         return base_payload
 
+    if event_lockdown_flag or macro_news_adjustments["event_lockdown_flag"]:
+        event_name = active_event_name or next_event_name or "scheduled macro event"
+        base_payload["message"] = f"Trade blocked due to scheduled macro event lockdown: {event_name}"
+        base_payload["trade_status"] = "EVENT_LOCKDOWN"
+        return base_payload
+
     if (
         final_flow_signal == "NEUTRAL_FLOW"
         and hybrid_move_probability is not None
@@ -1216,6 +1314,22 @@ def generate_trade(
         base_payload["message"] = "Trade downgraded to watchlist due to confirmation conflict"
         base_payload["trade_status"] = "WATCHLIST"
         return base_payload
+
+    if event_window_status in {"PRE_EVENT_WATCH", "POST_EVENT_COOLDOWN"}:
+        if macro_event_risk_score >= MACRO_EVENT_STRONG_WATCH_RISK_THRESHOLD:
+            event_name = active_event_name or next_event_name or "scheduled macro event"
+            base_payload["message"] = f"Trade downgraded to watchlist due to elevated macro event risk: {event_name}"
+            base_payload["trade_status"] = "WATCHLIST"
+            return base_payload
+
+        if (
+            macro_event_risk_score >= MACRO_EVENT_WATCH_RISK_THRESHOLD
+            and adjusted_trade_strength < (min_trade_strength + 10)
+        ):
+            event_name = active_event_name or next_event_name or "scheduled macro event"
+            base_payload["message"] = f"Trade downgraded to watchlist due to nearby macro event risk: {event_name}"
+            base_payload["trade_status"] = "WATCHLIST"
+            return base_payload
 
     ranked_strikes = []
     strike = None
@@ -1286,6 +1400,25 @@ def generate_trade(
         base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
         base_payload["capital_required"] = round(entry_price * lot_size * requested_lots, 2)
 
+    suggested_lots = max(0, int(base_payload["number_of_lots"] * macro_news_adjustments["macro_position_size_multiplier"]))
+    if base_payload["number_of_lots"] > 0 and suggested_lots == 0 and macro_news_adjustments["macro_position_size_multiplier"] > 0:
+        suggested_lots = 1
+    base_payload["macro_suggested_lots"] = suggested_lots
+    base_payload["macro_size_applied"] = suggested_lots > 0 and suggested_lots < base_payload["number_of_lots"]
+    if suggested_lots > 0:
+        base_payload["number_of_lots"] = min(base_payload["number_of_lots"], suggested_lots)
+
+    # Keep downstream execution, backtest, and PnL paths aligned on the
+    # actual final lot decision after macro/news sizing is applied.
+    if "optimized_lots" in base_payload:
+        base_payload["optimized_lots"] = base_payload["number_of_lots"]
+    else:
+        base_payload["optimized_lots"] = base_payload["number_of_lots"]
+
+    if "entry_price" in base_payload:
+        base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
+        base_payload["capital_required"] = round(entry_price * lot_size * base_payload["number_of_lots"], 2)
+
     if adjusted_trade_strength < min_trade_strength:
         base_payload["message"] = "Trade filtered out due to low strength"
         base_payload["trade_status"] = "WATCHLIST"
@@ -1303,6 +1436,11 @@ def generate_trade(
 
     if confirmation["status"] == "CONFLICT" and adjusted_trade_strength < (min_trade_strength + 10):
         base_payload["message"] = "Trade downgraded to watchlist due to weak live confirmation"
+        base_payload["trade_status"] = "WATCHLIST"
+        return base_payload
+
+    if macro_news_adjustments["macro_position_size_multiplier"] < 0.75 and adjusted_trade_strength < (min_trade_strength + 12):
+        base_payload["message"] = "Trade downgraded to watchlist due to macro/news risk adjustment"
         base_payload["trade_status"] = "WATCHLIST"
         return base_payload
 

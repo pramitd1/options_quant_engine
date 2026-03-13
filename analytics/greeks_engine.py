@@ -29,7 +29,19 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def _parse_expiry_years(expiry_value, default_days: float = 7.0):
+def _coerce_valuation_timestamp(value):
+    if value is None:
+        return pd.Timestamp.utcnow()
+
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=True, utc=True)
+    if pd.isna(parsed):
+        return pd.Timestamp.utcnow()
+    return parsed
+
+
+def _parse_expiry_years(expiry_value, valuation_time=None):
     if isinstance(expiry_value, str):
         raw = expiry_value.strip().upper()
         match = re.fullmatch(r"T\+(\d+)", raw)
@@ -42,9 +54,9 @@ def _parse_expiry_years(expiry_value, default_days: float = 7.0):
     if pd.isna(parsed):
         parsed = pd.to_datetime(expiry_value, errors="coerce", dayfirst=True, utc=True)
         if pd.isna(parsed):
-            return default_days / 365.0
+            return None
 
-    now_ts = pd.Timestamp.utcnow()
+    now_ts = _coerce_valuation_timestamp(valuation_time)
 
     time_years = (parsed - now_ts).total_seconds() / (365.0 * 24 * 3600.0)
     return max(float(time_years), 1.0 / (365.0 * 24.0))
@@ -82,6 +94,8 @@ def compute_option_greeks(
     discount_r = math.exp(-r * t)
 
     option_type = str(option_type).upper().strip()
+    if option_type not in {"CE", "PE"}:
+        return None
 
     charm_common = (
         discount_q
@@ -129,6 +143,7 @@ def enrich_chain_with_greeks(
     option_chain: pd.DataFrame,
     *,
     spot,
+    valuation_time=None,
     risk_free_rate=RISK_FREE_RATE,
     dividend_yield=DIVIDEND_YIELD,
 ):
@@ -156,7 +171,10 @@ def enrich_chain_with_greeks(
         greeks = compute_option_greeks(
             spot=spot,
             strike=row_dict.get("strikePrice"),
-            time_to_expiry_years=_parse_expiry_years(row_dict.get("EXPIRY_DT")),
+            time_to_expiry_years=_parse_expiry_years(
+                row_dict.get("EXPIRY_DT"),
+                valuation_time=valuation_time,
+            ),
             volatility_pct=iv,
             option_type=row_dict.get("OPTION_TYP"),
             risk_free_rate=risk_free_rate,

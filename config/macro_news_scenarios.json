@@ -1,0 +1,155 @@
+[
+  {
+    "name": "neutral_day",
+    "symbol": "NIFTY",
+    "as_of": "2026-03-16T11:00:00+05:30",
+    "events": [],
+    "headlines": [],
+    "expected": {
+      "macro_regime": "MACRO_NEUTRAL",
+      "event_window_status": "NO_EVENT_DATA",
+      "event_lockdown_flag": false,
+      "neutral_fallback": true
+    }
+  },
+  {
+    "name": "rbi_event_window",
+    "symbol": "NIFTY",
+    "as_of": "2026-04-09T09:35:00+05:30",
+    "events": [
+      {
+        "name": "RBI Policy Decision",
+        "timestamp": "2026-04-09T10:00:00+05:30",
+        "severity": "CRITICAL",
+        "scope": ["ALL"],
+        "warning_minutes": 240,
+        "lockdown_minutes": 45,
+        "event_duration_minutes": 15,
+        "cooldown_minutes": 45,
+        "source": "SCENARIO"
+      }
+    ],
+    "headlines": [],
+    "expected": {
+      "macro_regime": "EVENT_LOCKDOWN",
+      "event_window_status": "PRE_EVENT_LOCKDOWN",
+      "event_lockdown_flag": true
+    }
+  },
+  {
+    "name": "cpi_shock_day",
+    "symbol": "NIFTY",
+    "as_of": "2026-04-13T16:05:00+05:30",
+    "events": [
+      {
+        "name": "India CPI",
+        "timestamp": "2026-04-13T16:00:00+05:30",
+        "severity": "MAJOR",
+        "scope": ["ALL"],
+        "warning_minutes": 180,
+        "lockdown_minutes": 30,
+        "event_duration_minutes": 15,
+        "cooldown_minutes": 45,
+        "source": "SCENARIO"
+      }
+    ],
+    "headlines": [
+      {
+        "timestamp": "2026-04-13T16:02:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "India CPI surges above expectations, bond yields jump and rupee weakens",
+        "url_or_identifier": "scenario-cpi-001",
+        "category": "MACRO",
+        "symbol": "ALL"
+      }
+    ],
+    "expected": {
+      "macro_regime": "EVENT_LOCKDOWN",
+      "event_lockdown_flag": true
+    }
+  },
+  {
+    "name": "risk_off_geopolitical_burst",
+    "symbol": "NIFTY",
+    "as_of": "2026-03-18T10:30:00+05:30",
+    "events": [],
+    "headlines": [
+      {
+        "timestamp": "2026-03-18T10:00:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "Oil spikes as conflict escalates in the Middle East, global equities under pressure",
+        "url_or_identifier": "scenario-geo-001",
+        "category": "GLOBAL",
+        "symbol": "ALL"
+      },
+      {
+        "timestamp": "2026-03-18T10:08:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "Bank funding stress fears rise as risk-off sentiment deepens across global markets",
+        "url_or_identifier": "scenario-geo-002",
+        "category": "GLOBAL",
+        "symbol": "ALL"
+      },
+      {
+        "timestamp": "2026-03-18T10:15:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "Safe-haven demand jumps, equities slide and volatility surges on geopolitical shock",
+        "url_or_identifier": "scenario-geo-003",
+        "category": "GLOBAL",
+        "symbol": "ALL"
+      }
+    ],
+    "expected": {
+      "macro_regime": "RISK_OFF",
+      "event_lockdown_flag": false
+    }
+  },
+  {
+    "name": "risk_on_soft_landing",
+    "symbol": "NIFTY",
+    "as_of": "2026-03-19T10:45:00+05:30",
+    "events": [],
+    "headlines": [
+      {
+        "timestamp": "2026-03-19T10:05:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "Stable outlook and supportive liquidity improve the equity outlook",
+        "url_or_identifier": "scenario-riskon-001",
+        "category": "GLOBAL",
+        "symbol": "ALL"
+      },
+      {
+        "timestamp": "2026-03-19T10:15:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "India growth picks up as resilient demand and strong growth improve the equity outlook",
+        "url_or_identifier": "scenario-riskon-002",
+        "category": "MACRO",
+        "symbol": "ALL"
+      }
+    ],
+    "expected": {
+      "macro_regime": "RISK_ON",
+      "event_lockdown_flag": false
+    }
+  },
+  {
+    "name": "stale_news_feed",
+    "symbol": "NIFTY",
+    "as_of": "2026-03-18T14:00:00+05:30",
+    "events": [],
+    "headlines": [
+      {
+        "timestamp": "2026-03-18T09:00:00+05:30",
+        "source": "SCENARIO_FEED",
+        "headline": "RBI says inflation path remains manageable",
+        "url_or_identifier": "scenario-stale-001",
+        "category": "MACRO",
+        "symbol": "ALL"
+      }
+    ],
+    "expected": {
+      "macro_regime": "MACRO_NEUTRAL",
+      "neutral_fallback": true
+    }
+  }
+]

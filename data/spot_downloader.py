@@ -154,7 +154,7 @@ def get_spot_snapshot(symbol: str) -> dict:
     return snapshot
 
 
-def validate_spot_snapshot(snapshot: dict) -> dict:
+def validate_spot_snapshot(snapshot: dict, replay_mode: bool = False) -> dict:
     """
     Validate spot snapshot completeness and freshness.
     """
@@ -189,6 +189,7 @@ def validate_spot_snapshot(snapshot: dict) -> dict:
 
     age_minutes = None
     is_stale = False
+    live_trading_valid = True
 
     if ts_raw:
         try:
@@ -204,16 +205,26 @@ def validate_spot_snapshot(snapshot: dict) -> dict:
             is_stale = age_minutes > stale_limit
 
             if is_stale:
-                issues.append(f"stale_spot_snapshot_{age_minutes}m")
+                live_trading_valid = False
+                if replay_mode:
+                    warnings.append(f"replay_stale_spot_snapshot_{age_minutes}m")
+                else:
+                    issues.append(f"stale_spot_snapshot_{age_minutes}m")
         except Exception:
             warnings.append("timestamp_parse_failed")
     else:
         warnings.append("missing_timestamp")
+        if replay_mode:
+            live_trading_valid = False
 
-    is_valid = len(issues) == 0
+    replay_analysis_valid = len([issue for issue in issues if not str(issue).startswith("stale_spot_snapshot_")]) == 0
+    is_valid = replay_analysis_valid if replay_mode else len(issues) == 0
 
     return {
         "is_valid": is_valid,
+        "live_trading_valid": live_trading_valid and len(issues) == 0,
+        "replay_analysis_valid": replay_analysis_valid,
+        "validation_mode": "REPLAY" if replay_mode else "LIVE",
         "is_stale": is_stale,
         "age_minutes": age_minutes,
         "issues": issues,
