@@ -8,3 +8,4 @@ scipy
 kiteconnect
 breeze-connect
 python-dotenv
+streamlit

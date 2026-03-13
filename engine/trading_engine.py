@@ -1156,7 +1156,7 @@ def generate_trade(
             spot_vs_flip=spot_vs_flip,
         )
 
-    macro_news_adjustments = _compute_macro_news_adjustments(
+    macro_news_adjustments = compute_macro_news_adjustments(
         direction=direction,
         macro_news_state=macro_news_state,
     )

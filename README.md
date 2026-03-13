@@ -2,6 +2,12 @@
 
 An interactive options analytics and signal-generation engine for Indian index and stock options. The project combines live option-chain ingestion, dealer/gamma/liquidity analytics, Greek-enriched market-structure analysis, conservative macro/news overlays, replay tooling, and a research backtesting stack that can generate synthetic historical option chains when cached data is not available.
 
+Status:
+- beta phase
+- ICICI live flow is the most exercised path right now
+- Zerodha integration exists but is not yet fully tested end-to-end in the current engine state
+- NSE public-data mode is useful, but still inherently brittle and can be intermittent
+
 ## What This Project Does
 
 The engine is built around two workflows:
@@ -563,11 +569,12 @@ The live output also includes:
 
 ## Assumptions and Limitations
 
+- This project is still in beta, so live-provider behavior and UI ergonomics are improving iteratively.
 - The live engine is analytics-driven and prints trade ideas; it does not place broker orders.
 - `main.py` accepts `STOCK` as a shortcut, then prompts for the actual underlying symbol; live stock-option support depends on whether that symbol is available from the selected provider.
-- Zerodha support requires valid Kite credentials and instrument access.
+- Zerodha support requires valid Kite credentials and instrument access, but the current live path has not yet been fully exercised end-to-end after the recent macro/news and UI upgrades.
 - ICICI support requires valid Breeze credentials and a live session token.
-- NSE endpoints can change or rate-limit requests.
+- NSE endpoints can change, rate-limit requests, or return inconsistent public responses; treat NSE mode as best-effort rather than fully reliable.
 - ICICI expiry resolution uses ICICI metadata and configured fallbacks; manual expiry overrides are optional, not required.
 - For stock options, spot lookup uses Yahoo Finance NSE cash tickers such as `.NS`, while broker requests continue to use the clean underlying code such as `RELIANCE`.
 - Missing live-provider Greeks can be computed via the internal Black-Scholes Greek engine, subject to expiry and IV quality.
@@ -587,9 +594,11 @@ The live output also includes:
 2. Create `.env` from `.env.example` or be ready to enter broker credentials interactively
 3. Run `python main.py`
 4. For stock options, choose `STOCK` and then enter the real underlying symbol
-5. Start with `NSE` if you want a public data path, or `ICICI` / `ZERODHA` if you want broker-backed live data
-6. Observe trader view, dashboard output, and refresh behavior
-7. Save replay snapshots during market hours for later after-hours regression checks
+5. Prefer `ICICI` first if you want the most exercised live path today
+6. Treat `NSE` as a convenient public-data mode, but expect occasional instability
+7. Use `ZERODHA` only after validating your own credentials/session flow, since that path is present but not yet fully field-tested in the current beta
+8. Observe trader view, dashboard output, and refresh behavior
+9. Save replay snapshots during market hours for later after-hours regression checks
 
 ### For research
 
