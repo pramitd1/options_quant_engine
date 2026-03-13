@@ -8,10 +8,10 @@ The engine is built around two workflows:
 
 1. Live terminal workflow via `main.py`
    - Pulls spot price data with `yfinance`
-   - Pulls option-chain data from either NSE or Zerodha
+   - Pulls option-chain data from NSE, Zerodha, or ICICI Breeze
    - Computes dealer positioning, gamma structure, volatility, liquidity, and flow analytics
    - Produces a directional trade idea with strike, entry, target, stop, quality, and budget-aware sizing
-   - Prints a terminal dashboard for trader-facing and dealer-structure views
+   - Prints a terminal dashboard with validation, trader view, dealer structure, diagnostics, and ranked strikes
 
 2. Research workflow via `backtest/backtest_runner.py`
    - Runs single historical backtests or parameter sweeps
@@ -26,6 +26,7 @@ The engine is built around two workflows:
 - `main.py`: interactive live engine loop
 - `backtest/backtest_runner.py`: backtest runner with single-run and parameter-sweep modes
 - `config/generate_token.py`: helper script for generating a Zerodha access token manually
+- `.env.example`: sample environment-variable template for broker credentials and debug flags
 
 ### Core Flow
 
@@ -41,6 +42,7 @@ The engine is built around two workflows:
 - Live option-chain support for:
   - NSE public data
   - Zerodha/Kite data
+  - ICICI Breeze data
 - Dealer and gamma analytics:
   - gamma exposure
   - gamma flip
@@ -154,6 +156,7 @@ Data acquisition, routing, and historical data generation.
 - `data_source_router.py`: unified source selection
 - `nse_option_chain_downloader.py`: NSE option-chain fetcher
 - `zerodha_option_chain.py`: Zerodha instrument + quote based chain builder
+- `icici_breeze_option_chain.py`: ICICI Breeze chain builder with Security Master-based expiry resolution and IV fallback estimation
 - `spot_downloader.py`: current spot price via `yfinance`
 - `historical_option_chain.py`: cache loader or synthetic historical chain builder
 - `historical_iv_surface.py`: optional historical IV-surface lookup for synthetic backtests
@@ -186,7 +189,7 @@ Terminal dashboards and analytics printouts.
 
 Global settings and credentials.
 
-- `settings.py`: thresholds, lot size, capital limits, refresh interval, backtest config, directories, and Zerodha env var reads
+- `settings.py`: thresholds, lot size, capital limits, refresh interval, backtest config, directories, broker env var reads, and provider debug flags
 - `generate_token.py`: helper to exchange a Zerodha request token for an access token
 
 #### `data_store/`
@@ -245,15 +248,66 @@ Dependencies listed in the repository:
 - `requests`
 - `scipy`
 - `kiteconnect`
+- `breeze-connect`
+- `python-dotenv`
 
 ## Configuration
 
-Main configuration lives in `config/settings.py`.
+Main configuration lives in `config/settings.py`. Environment variables are loaded automatically from a local `.env` file if present.
 
-Important settings:
+### Recommended setup
+
+```bash
+cp .env.example .env
+```
+
+Then fill in the credentials for the provider you want to use.
+
+### Environment variables
+
+Zerodha:
+
+```bash
+ZERODHA_API_KEY=your_api_key
+ZERODHA_API_SECRET=your_api_secret
+ZERODHA_ACCESS_TOKEN=your_access_token
+```
+
+ICICI Breeze:
+
+```bash
+ICICI_BREEZE_API_KEY=your_api_key
+ICICI_BREEZE_SECRET_KEY=your_secret_key
+ICICI_BREEZE_SESSION_TOKEN=your_session_token
+```
+
+Optional ICICI expiry overrides:
+
+```bash
+ICICI_DEFAULT_EXPIRY_DATE=
+ICICI_NIFTY_EXPIRIES=
+ICICI_BANKNIFTY_EXPIRIES=
+ICICI_FINNIFTY_EXPIRIES=
+```
+
+Optional provider debug flags:
+
+```bash
+NSE_DEBUG=false
+ICICI_DEBUG=false
+```
+
+### Runtime credential prompts
+
+If you choose `ZERODHA` or `ICICI` in `main.py`, the app will prompt for the required broker credentials. Press Enter to reuse values already loaded from `.env` or your shell environment.
+
+### Important settings
 
 - `DEFAULT_SYMBOL`
+- `DEFAULT_DATA_SOURCE`
 - `REFRESH_INTERVAL`
+- `NSE_REFRESH_INTERVAL`
+- `ICICI_REFRESH_INTERVAL`
 - `TARGET_PROFIT_PERCENT`
 - `STOP_LOSS_PERCENT`
 - `MAX_CAPITAL_PER_TRADE`
@@ -271,16 +325,6 @@ Important settings:
   - `MC_SIMULATIONS`
   - `MAX_WORKERS`
 
-### Zerodha credentials
-
-`config/settings.py` reads these environment variables:
-
-```bash
-export ZERODHA_API_KEY="your_api_key"
-export ZERODHA_API_SECRET="your_api_secret"
-export ZERODHA_ACCESS_TOKEN="your_access_token"
-```
-
 If you use Zerodha, generate the access token using the Kite login flow and the helper in `config/generate_token.py`.
 
 ## How To Run
@@ -294,16 +338,21 @@ python main.py
 You will be prompted for:
 
 - symbol: `NIFTY / BANKNIFTY / FINNIFTY / STOCK`
-- data source: `ZERODHA` or `NSE`
+- data source: `NSE`, `ZERODHA`, or `ICICI`
+- broker credentials when `ZERODHA` or `ICICI` is selected
 - whether budget constraints should be applied
 - optional lot size / lot count / capital limit if budget mode is enabled
 
 Then the engine enters a refresh loop and prints:
 
+- spot validation
 - spot price
+- option-chain validation
 - trader view
 - dealer positioning dashboard
-- final trade payload or a no-trade result
+- quant trade signal
+- diagnostics
+- ranked strikes for the selected expiry
 
 Stop it with `Ctrl+C`.
 
@@ -362,6 +411,7 @@ Typical fields include:
 - spot
 - direction
 - direction source
+- selected expiry
 - strike
 - option type
 - entry price
@@ -392,13 +442,24 @@ Typical fields include:
 - dealer liquidity map
 - scoring breakdown
 
+### Diagnostics and ranked strikes
+
+The live output also includes:
+
+- option-chain validation stats such as row count, CE/PE counts, priced rows, and IV rows
+- a compact diagnostics block with supporting analytics
+- a ranked strikes table for the currently selected expiry
+
 ## Assumptions and Limitations
 
 - The live engine is analytics-driven and prints trade ideas; it does not place broker orders.
 - `main.py` accepts `STOCK` as input in the prompt, but actual symbol support depends on the data source and whether the symbol resolves correctly in `yfinance` and the option-chain loader.
 - Zerodha support requires valid Kite credentials and instrument access.
+- ICICI support requires valid Breeze credentials and a live session token.
 - NSE endpoints can change or rate-limit requests.
+- ICICI expiry resolution uses ICICI metadata and configured fallbacks; manual expiry overrides are optional, not required.
 - Some missing Greeks are approximated in `engine/trading_engine.py` when a source does not provide them.
+- Some IV values may be estimated from market inputs when the live provider does not supply usable implied volatility.
 - Historical backtests may be based on synthetic option chains rather than real archived option-chain snapshots.
 - The walk-forward module is a scaffold, not a complete training pipeline.
 - Visualization is terminal-based; there is no web UI in the current codebase.
@@ -409,9 +470,9 @@ Typical fields include:
 ### For live analytics
 
 1. Configure dependencies
-2. Set Zerodha credentials if using Zerodha
+2. Create `.env` from `.env.example` or be ready to enter broker credentials interactively
 3. Run `python main.py`
-4. Start with `NSE` if you want a public data path
+4. Start with `NSE` if you want a public data path, or `ICICI` / `ZERODHA` if you want broker-backed live data
 5. Observe trader view, dashboard output, and refresh behavior
 
 ### For research
