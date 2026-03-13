@@ -711,7 +711,14 @@ def generate_trade(
         default=None
     )
 
-    dealer_pos = _call_first(
+    dealer_metrics = _call_first(
+        dealer_inventory_mod,
+        ["dealer_inventory_metrics"],
+        df,
+        default={}
+    ) or {}
+
+    dealer_pos = dealer_metrics.get("position") or _call_first(
         dealer_inventory_mod,
         ["dealer_inventory_position", "dealer_inventory"],
         df,
@@ -1109,6 +1116,10 @@ def generate_trade(
         "gamma_regime": gamma_regime,
         "gamma_clusters": gamma_clusters,
         "dealer_position": dealer_pos,
+        "dealer_inventory_basis": dealer_metrics.get("basis"),
+        "call_oi_change": dealer_metrics.get("call_oi_change"),
+        "put_oi_change": dealer_metrics.get("put_oi_change"),
+        "net_oi_change_bias": dealer_metrics.get("net_oi_change_bias"),
         "dealer_hedging_flow": hedging_flow,
         "dealer_hedging_bias": hedging_bias,
         "intraday_gamma_state": intraday_gamma_state,

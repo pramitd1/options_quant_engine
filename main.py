@@ -23,12 +23,17 @@ from config.settings import (
 
 from data.spot_downloader import get_spot_snapshot, save_spot_snapshot
 from data.data_source_router import DataSourceRouter
+from data.expiry_resolver import (
+    filter_option_chain_by_expiry,
+    ordered_expiries,
+    resolve_selected_expiry,
+)
 
 from engine.trading_engine import generate_trade
 
 from analytics.gamma_exposure import calculate_gamma_exposure
 from analytics.gamma_flip import gamma_flip_level
-from analytics.dealer_inventory import dealer_inventory_position
+from analytics.dealer_inventory import dealer_inventory_metrics, dealer_inventory_position
 from analytics.volatility_regime import detect_volatility_regime
 from analytics.dealer_gamma_path import simulate_gamma_path, detect_gamma_squeeze
 from analytics.options_flow_imbalance import flow_signal
@@ -266,6 +271,7 @@ def validate_option_chain(option_chain):
     priced_rows = 0
     iv_rows = 0
     selected_expiry = None
+    expiry_count = 0
 
     try:
         ce_rows = int((option_chain["OPTION_TYP"] == "CE").sum())
@@ -284,15 +290,11 @@ def validate_option_chain(option_chain):
         warnings.append("iv_row_count_failed")
 
     try:
-        if "EXPIRY_DT" in option_chain.columns:
-            expiries = [
-                str(value) for value in option_chain["EXPIRY_DT"].dropna().astype(str).unique().tolist()
-                if str(value).strip()
-            ]
-            if len(expiries) == 1:
-                selected_expiry = expiries[0]
-            elif len(expiries) > 1:
-                selected_expiry = f"MULTI({len(expiries)})"
+        expiries = ordered_expiries(option_chain)
+        expiry_count = len(expiries)
+        selected_expiry = expiries[0] if expiries else None
+        if expiry_count > 1:
+            warnings.append(f"multiple_expiries_detected:{expiry_count}")
     except Exception:
         warnings.append("expiry_summary_failed")
 
@@ -324,6 +326,7 @@ def validate_option_chain(option_chain):
         "priced_rows": priced_rows,
         "iv_rows": iv_rows,
         "selected_expiry": selected_expiry,
+        "expiry_count": expiry_count,
     }
 
 
@@ -508,6 +511,8 @@ def main():
                 })
 
                 option_chain = data_router.get_option_chain(symbol)
+                resolved_expiry = resolve_selected_expiry(option_chain)
+                option_chain = filter_option_chain_by_expiry(option_chain, resolved_expiry)
                 option_chain_validation = validate_option_chain(option_chain)
                 print_validation_block("OPTION CHAIN VALIDATION", option_chain_validation)
 
@@ -520,7 +525,10 @@ def main():
 
                 gamma = safe_call(calculate_gamma_exposure, option_chain, spot, default=None)
                 flip = safe_call(gamma_flip_level, option_chain, default=None)
-                dealer_pos = safe_call(dealer_inventory_position, option_chain, default=None)
+                dealer_metrics = safe_call(dealer_inventory_metrics, option_chain, default={}) or {}
+                dealer_pos = dealer_metrics.get("position")
+                if dealer_pos is None:
+                    dealer_pos = safe_call(dealer_inventory_position, option_chain, default=None)
                 vol_regime_value = safe_call(detect_volatility_regime, option_chain, default=None)
 
                 gamma_path = safe_call(
@@ -596,6 +604,10 @@ def main():
                     "gamma_regime": gamma_regime,
                     "gamma_clusters": gamma_clusters,
                     "dealer_position": dealer_pos,
+                    "dealer_inventory_basis": dealer_metrics.get("basis"),
+                    "call_oi_change": dealer_metrics.get("call_oi_change"),
+                    "put_oi_change": dealer_metrics.get("put_oi_change"),
+                    "net_oi_change_bias": dealer_metrics.get("net_oi_change_bias"),
                     "dealer_hedging_flow": hedging_flow,
                     "dealer_hedging_bias": hedging_bias_value,
                     "intraday_gamma_state": intraday_gamma_state,

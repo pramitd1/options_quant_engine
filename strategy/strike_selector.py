@@ -5,6 +5,8 @@ Ranks candidate option strikes for the engine instead of choosing only the
 nearest strike mechanically.
 """
 
+from config.settings import STRIKE_WINDOW_STEPS
+
 
 def _safe_float(x, default=0.0):
     try:
@@ -181,6 +183,51 @@ def _score_iv(iv):
     return 0
 
 
+def _infer_strike_step(rows):
+    if rows is None or rows.empty or "strikePrice" not in rows.columns:
+        return None
+
+    strikes = []
+    for value in rows["strikePrice"].tolist():
+        strike = _safe_float(value, None)
+        if strike is not None:
+            strikes.append(float(strike))
+
+    strikes = sorted(set(strikes))
+    if len(strikes) < 2:
+        return None
+
+    diffs = [round(strikes[idx] - strikes[idx - 1], 6) for idx in range(1, len(strikes))]
+    diffs = [diff for diff in diffs if diff > 0]
+
+    if not diffs:
+        return None
+
+    return min(diffs)
+
+
+def _apply_strike_window(rows, spot, window_steps):
+    if rows is None or rows.empty:
+        return rows
+
+    if window_steps is None or window_steps <= 0:
+        return rows
+
+    strike_step = _infer_strike_step(rows)
+    if strike_step in (None, 0):
+        return rows
+
+    lower_bound = float(spot) - (window_steps * strike_step)
+    upper_bound = float(spot) + (window_steps * strike_step)
+
+    filtered = rows[
+        (rows["strikePrice"].astype(float) >= lower_bound) &
+        (rows["strikePrice"].astype(float) <= upper_bound)
+    ].copy()
+
+    return filtered if not filtered.empty else rows
+
+
 def _build_candidate_record(
     row,
     direction,
@@ -239,6 +286,7 @@ def rank_strike_candidates(
     lot_size=None,
     max_capital=None,
     top_n=5,
+    strike_window_steps=STRIKE_WINDOW_STEPS,
 ):
     if option_chain is None or len(option_chain) == 0:
         return []
@@ -248,6 +296,8 @@ def rank_strike_candidates(
     rows = option_chain[option_chain["OPTION_TYP"] == option_type].copy()
     if rows.empty:
         return []
+
+    rows = _apply_strike_window(rows, spot=spot, window_steps=strike_window_steps)
 
     candidates = []
 
@@ -285,6 +335,7 @@ def select_best_strike(
     gamma_clusters=None,
     lot_size=None,
     max_capital=None,
+    strike_window_steps=STRIKE_WINDOW_STEPS,
 ):
     ranked = rank_strike_candidates(
         option_chain=option_chain,
@@ -296,6 +347,7 @@ def select_best_strike(
         lot_size=lot_size,
         max_capital=max_capital,
         top_n=5,
+        strike_window_steps=strike_window_steps,
     )
 
     if not ranked:
