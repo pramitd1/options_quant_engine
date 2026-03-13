@@ -73,8 +73,8 @@ The engine is built around two workflows:
   - optional budget-aware lot optimization
 - ML / probability layer:
   - feature builder
-  - random-forest move predictor
-  - heuristic fallback ML predictor wrapper
+  - training-time random-forest scaffold
+  - deterministic live ML fallback wrapper
   - large-move rule-based probability
   - hybrid rule + ML move probability
 - Research tooling:
@@ -124,8 +124,8 @@ Market-structure analytics used by both live trading and backtests.
 - `dealer_liquidity_map.py`: next support/resistance, squeeze zone, vacuum summary
 - `volatility_regime.py`: realized-vol regime
 - `volatility_surface.py`: ATM IV and IV regime
-- Additional simulator/map helpers:
-  - `dealer_gamma_path.py`
+- `greeks_engine.py`: Black-Scholes Greek enrichment plus aggregate Greek exposures and regimes
+- `flow_utils.py`: front-expiry / near-ATM helpers for flow analytics
 
 #### `engine/`
 
@@ -203,7 +203,7 @@ Local cache for datasets and generated history. Example data already exists unde
 It:
 
 1. Normalizes the option-chain schema from different data sources
-2. Fills missing fields like `DELTA`, `GAMMA`, and expiry labels with approximations when needed
+2. Normalizes source-specific fields and enriches the chain with Greeks when they are not provided directly
 3. Computes:
    - gamma / gamma flip / gamma regime
    - vanna / charm exposures and regimes
@@ -254,6 +254,14 @@ Canonical replay bias/regression check:
 ```bash
 python -m backtest.replay_regression --symbol NIFTY --source ICICI --replay-dir debug_samples
 ```
+
+The regression harness summarizes:
+
+- `CALL` count
+- `PUT` count
+- `NO_SIGNAL` count
+- direction-source frequency
+- latest replay cases used in the sample
 
 Dependencies listed in the repository:
 
