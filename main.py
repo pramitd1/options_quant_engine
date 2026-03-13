@@ -1,5 +1,7 @@
 import time
 
+import pandas as pd
+
 from config.settings import (
     DEFAULT_SYMBOL,
     REFRESH_INTERVAL,
@@ -8,7 +10,7 @@ from config.settings import (
     MAX_CAPITAL_PER_TRADE
 )
 
-from data.spot_downloader import get_spot_price
+from data.spot_downloader import get_spot_snapshot, save_spot_snapshot
 from data.data_source_router import DataSourceRouter
 
 from engine.trading_engine import generate_trade
@@ -86,9 +88,6 @@ def choose_data_source():
 
 
 def choose_budget_mode():
-    """
-    Ask whether budget should be applied in decision making.
-    """
     print("\nApply budget constraint in trade decision?")
     print("1. Yes")
     print("2. No")
@@ -106,9 +105,6 @@ def choose_budget_mode():
 
 
 def get_budget_inputs(apply_budget_constraint: bool):
-    """
-    Ask for lot/capital inputs only if budget mode is enabled.
-    """
     if not apply_budget_constraint:
         return LOT_SIZE, NUMBER_OF_LOTS, MAX_CAPITAL_PER_TRADE
 
@@ -142,9 +138,6 @@ def print_trader_view(trade):
 
 
 def build_non_overlapping_trade_output(trade):
-    """
-    Remove fields already shown in Trader View from the later raw output block.
-    """
     filtered = {}
 
     for key, value in trade.items():
@@ -152,6 +145,88 @@ def build_non_overlapping_trade_output(trade):
             filtered[key] = value
 
     return filtered
+
+
+def validate_option_chain(option_chain):
+    issues = []
+    warnings = []
+
+    if option_chain is None:
+        issues.append("option_chain_none")
+        return {
+            "is_valid": False,
+            "issues": issues,
+            "warnings": warnings,
+            "row_count": 0,
+            "ce_rows": 0,
+            "pe_rows": 0,
+            "priced_rows": 0,
+        }
+
+    if option_chain.empty:
+        issues.append("option_chain_empty")
+        return {
+            "is_valid": False,
+            "issues": issues,
+            "warnings": warnings,
+            "row_count": 0,
+            "ce_rows": 0,
+            "pe_rows": 0,
+            "priced_rows": 0,
+        }
+
+    required_cols = ["strikePrice", "OPTION_TYP", "lastPrice"]
+    missing_cols = [col for col in required_cols if col not in option_chain.columns]
+    if missing_cols:
+        issues.append(f"missing_columns:{','.join(missing_cols)}")
+
+    row_count = len(option_chain)
+    ce_rows = 0
+    pe_rows = 0
+    priced_rows = 0
+
+    try:
+        ce_rows = int((option_chain["OPTION_TYP"] == "CE").sum())
+        pe_rows = int((option_chain["OPTION_TYP"] == "PE").sum())
+    except Exception:
+        warnings.append("option_type_count_failed")
+
+    try:
+        priced_rows = int((pd.to_numeric(option_chain["lastPrice"], errors="coerce") > 0).sum())
+    except Exception:
+        warnings.append("priced_row_count_failed")
+
+    if row_count < 20:
+        issues.append(f"too_few_rows:{row_count}")
+
+    if ce_rows == 0:
+        issues.append("no_ce_rows")
+
+    if pe_rows == 0:
+        issues.append("no_pe_rows")
+
+    if priced_rows == 0:
+        issues.append("no_priced_rows")
+
+    if priced_rows > 0 and priced_rows < max(10, int(0.2 * row_count)):
+        warnings.append(f"low_priced_row_ratio:{priced_rows}/{row_count}")
+
+    return {
+        "is_valid": len(issues) == 0,
+        "issues": issues,
+        "warnings": warnings,
+        "row_count": row_count,
+        "ce_rows": ce_rows,
+        "pe_rows": pe_rows,
+        "priced_rows": priced_rows,
+    }
+
+
+def print_validation_block(title, validation):
+    print(f"\n{title}")
+    print("---------------------------")
+    for key, value in validation.items():
+        print(f"{key}: {value}")
 
 
 def main():
@@ -169,17 +244,53 @@ def main():
 
     data_router = DataSourceRouter(source)
     previous_chain = None
+    saved_one_spot_snapshot = False
 
     try:
         while True:
             try:
-                spot = get_spot_price(symbol)
-                print("\nSpot Price:", spot)
+                spot_snapshot = get_spot_snapshot(symbol)
+                spot_validation = spot_snapshot.get("validation", {})
+
+                if not saved_one_spot_snapshot:
+                    try:
+                        saved_path = save_spot_snapshot(spot_snapshot)
+                        print(f"\nSaved one live spot snapshot to: {saved_path}")
+                    except Exception as save_err:
+                        print(f"\nCould not save spot snapshot: {save_err}")
+                    saved_one_spot_snapshot = True
+
+                print_validation_block("SPOT VALIDATION", spot_validation)
+
+                if not spot_validation.get("is_valid", False):
+                    print("\nSpot snapshot invalid. Skipping this cycle.")
+                    time.sleep(REFRESH_INTERVAL)
+                    continue
+
+                spot = float(spot_snapshot["spot"])
+                day_open = spot_snapshot.get("day_open")
+                day_high = spot_snapshot.get("day_high")
+                day_low = spot_snapshot.get("day_low")
+                prev_close = spot_snapshot.get("prev_close")
+                spot_timestamp = spot_snapshot.get("timestamp")
+                lookback_avg_range_pct = spot_snapshot.get("lookback_avg_range_pct")
+
+                print("\nSpot Snapshot")
+                print("---------------------------")
+                print("spot:", spot)
+                print("day_open:", day_open)
+                print("day_high:", day_high)
+                print("day_low:", day_low)
+                print("prev_close:", prev_close)
+                print("timestamp:", spot_timestamp)
+                print("lookback_avg_range_pct:", lookback_avg_range_pct)
 
                 option_chain = data_router.get_option_chain(symbol)
+                option_chain_validation = validate_option_chain(option_chain)
+                print_validation_block("OPTION CHAIN VALIDATION", option_chain_validation)
 
-                if option_chain is None or option_chain.empty:
-                    print("Option chain unavailable")
+                if not option_chain_validation.get("is_valid", False):
+                    print("\nOption chain invalid. Skipping this cycle.")
                     time.sleep(REFRESH_INTERVAL)
                     continue
 
@@ -354,6 +465,14 @@ def main():
 
                 dashboard_summary = {
                     "spot": round(spot, 2),
+                    "spot_timestamp": spot_timestamp,
+                    "day_open": day_open,
+                    "day_high": day_high,
+                    "day_low": day_low,
+                    "prev_close": prev_close,
+                    "lookback_avg_range_pct": lookback_avg_range_pct,
+                    "spot_validation": spot_validation,
+                    "option_chain_validation": option_chain_validation,
                     "gamma_exposure": round(gamma, 2) if gamma is not None else None,
                     "market_gamma": market_gamma,
                     "gamma_flip": flip,
@@ -385,6 +504,11 @@ def main():
                     spot=spot,
                     option_chain=option_chain,
                     previous_chain=previous_chain,
+                    day_high=day_high,
+                    day_low=day_low,
+                    day_open=day_open,
+                    prev_close=prev_close,
+                    lookback_avg_range_pct=lookback_avg_range_pct,
                     apply_budget_constraint=apply_budget_constraint,
                     requested_lots=requested_lots,
                     lot_size=lot_size,
@@ -392,6 +516,9 @@ def main():
                 )
 
                 if trade:
+                    trade["spot_validation"] = spot_validation
+                    trade["option_chain_validation"] = option_chain_validation
+
                     print_trader_view(trade)
 
                     dashboard_for_print = dict(dashboard_summary)
@@ -414,7 +541,11 @@ def main():
                         "large_move_probability",
                         "ml_move_probability",
                         "hybrid_move_probability",
+                        "rule_move_probability",
+                        "move_probability_components",
                         "scoring_breakdown",
+                        "spot_validation",
+                        "option_chain_validation",
                     ]:
                         if key in trade:
                             dashboard_for_print[key] = trade.get(key)

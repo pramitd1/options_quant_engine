@@ -4,6 +4,7 @@ Trade Strength Model
 Direction-aware scoring.
 """
 
+
 def _wall_proximity_score(spot, support_wall, resistance_wall, direction):
     score = 0
 
@@ -114,22 +115,57 @@ def _liquidity_map_score(direction, spot, next_support, next_resistance, squeeze
     return score
 
 
+def _probability_bucket_score(probability, buckets):
+    if probability is None:
+        return 0
+
+    try:
+        p = float(probability)
+    except Exception:
+        return 0
+
+    for threshold, score in buckets:
+        if p >= threshold:
+            return score
+
+    return 0
+
+
 def _large_move_score(large_move_probability, ml_move_probability):
-    score = 0
+    """
+    More gradual scoring than the old step function.
 
-    if large_move_probability is not None:
-        if large_move_probability >= 0.75:
-            score += 8
-        elif large_move_probability >= 0.60:
-            score += 5
+    Hybrid/rule probability is the primary signal.
+    ML probability is supportive, with lower standalone weight.
+    """
+    hybrid_score = _probability_bucket_score(
+        large_move_probability,
+        [
+            (0.75, 12),
+            (0.65, 10),
+            (0.55, 8),
+            (0.45, 6),
+            (0.35, 3),
+        ],
+    )
 
-    if ml_move_probability is not None:
-        if ml_move_probability >= 0.75:
-            score += 8
-        elif ml_move_probability >= 0.60:
-            score += 5
+    ml_score = _probability_bucket_score(
+        ml_move_probability,
+        [
+            (0.75, 6),
+            (0.65, 5),
+            (0.55, 4),
+            (0.45, 2),
+            (0.35, 1),
+        ],
+    )
 
-    return min(score, 12)
+    # Avoid double counting when both are saying essentially the same thing.
+    if hybrid_score >= 8 and ml_score >= 4:
+        ml_score -= 1
+
+    total = hybrid_score + max(0, ml_score)
+    return min(total, 14)
 
 
 def compute_trade_strength(
@@ -197,6 +233,8 @@ def compute_trade_strength(
 
     if vacuum_state == "BREAKOUT_ZONE":
         breakdown["liquidity_vacuum_score"] = 10
+    elif vacuum_state in ["NEAR_VACUUM", "VACUUM_WATCH"]:
+        breakdown["liquidity_vacuum_score"] = 4
 
     breakdown["spot_vs_flip_score"] = _spot_vs_flip_score(
         spot_vs_flip,

@@ -13,8 +13,8 @@ Adds:
 Enhancements:
 - Continuous large-move probability methodology
 - Rule/ML probability diagnostics
-- More robust probability component extraction
 - Better calibrated hybrid move probability
+- Real intraday range feature using spot session data
 """
 
 import pandas as pd
@@ -148,16 +148,54 @@ def _compute_gamma_flip_distance_pct(spot_price, gamma_flip):
     return round(abs(spot - flip) / spot * 100.0, 4)
 
 
-def _compute_intraday_range_pct(day_high=None, day_low=None, spot_price=None, expected_move_pct=1.0):
-    high = _safe_float(day_high, None)
-    low = _safe_float(day_low, None)
-    spot = _safe_float(spot_price, None)
+def _compute_intraday_range_pct(
+    spot_price=None,
+    day_high=None,
+    day_low=None,
+    day_open=None,
+    prev_close=None,
+    lookback_avg_range_pct=None
+):
+    """
+    Returns a normalized 0..1.5 measure of how expanded today's underlying move is.
 
-    if high is None or low is None or spot in (None, 0):
+    Priority:
+    1. Use day_high/day_low if available
+    2. Otherwise use max distance from open / prev_close as fallback
+    3. Normalize by recent average range if available, else by fixed baseline
+    """
+    spot = _safe_float(spot_price, None)
+    if spot in (None, 0):
         return None
 
-    realized_range_pct = ((high - low) / spot) * 100.0
-    normalized = realized_range_pct / max(expected_move_pct, 0.25)
+    high = _safe_float(day_high, None)
+    low = _safe_float(day_low, None)
+    open_px = _safe_float(day_open, None)
+    prev_close_px = _safe_float(prev_close, None)
+    avg_range = _safe_float(lookback_avg_range_pct, None)
+
+    realized_range_pct = None
+
+    if high is not None and low is not None and high >= low:
+        realized_range_pct = ((high - low) / spot) * 100.0
+    else:
+        anchor_moves = []
+
+        if open_px not in (None, 0):
+            anchor_moves.append(abs(spot - open_px) / spot * 100.0)
+
+        if prev_close_px not in (None, 0):
+            anchor_moves.append(abs(spot - prev_close_px) / spot * 100.0)
+
+        if anchor_moves:
+            realized_range_pct = max(anchor_moves) * 1.5
+
+    if realized_range_pct is None:
+        return None
+
+    baseline = avg_range if avg_range not in (None, 0) else 0.9
+    normalized = realized_range_pct / max(baseline, 0.25)
+
     return round(_clip(normalized, 0.0, 1.5), 4)
 
 
@@ -179,7 +217,6 @@ def _blend_move_probability(rule_prob, ml_prob):
     ml_prob = _safe_float(ml_prob, rule_prob)
     hybrid = 0.35 * rule_prob + 0.65 * ml_prob
 
-    # Light calibration toward center to avoid fake precision in live trading.
     hybrid = 0.10 + 0.80 * hybrid
 
     return round(_clip(hybrid, 0.05, 0.95), 2)
@@ -480,7 +517,6 @@ def decide_direction(
     if dealer_pos == "Long Gamma" and vol_regime in ["NORMAL_VOL", "VOL_EXPANSION"]:
         return "CALL", "DEALER_VOL"
 
-    # More permissive fallback for synthetic backtests
     if backtest_mode:
         if smart_money_signal_value := final_flow_signal:
             if smart_money_signal_value == "NEUTRAL_FLOW":
@@ -538,6 +574,11 @@ def generate_trade(
     spot,
     option_chain,
     previous_chain=None,
+    day_high=None,
+    day_low=None,
+    day_open=None,
+    prev_close=None,
+    lookback_avg_range_pct=None,
     apply_budget_constraint=False,
     requested_lots=NUMBER_OF_LOTS,
     lot_size=LOT_SIZE,
@@ -827,10 +868,12 @@ def generate_trade(
     )
 
     intraday_range_pct = _compute_intraday_range_pct(
-        day_high=df["strikePrice"].max() if "strikePrice" in df.columns else None,
-        day_low=df["strikePrice"].min() if "strikePrice" in df.columns else None,
         spot_price=spot,
-        expected_move_pct=1.0,
+        day_high=day_high,
+        day_low=day_low,
+        day_open=day_open,
+        prev_close=prev_close,
+        lookback_avg_range_pct=lookback_avg_range_pct,
     )
 
     rule_move_probability = _call_first(
@@ -949,6 +992,11 @@ def generate_trade(
             "intraday_range_pct": intraday_range_pct,
             "flow_imbalance": round(flow_imbalance, 3),
             "hedge_flow_value": hedge_flow_value,
+            "day_high": day_high,
+            "day_low": day_low,
+            "day_open": day_open,
+            "prev_close": prev_close,
+            "lookback_avg_range_pct": lookback_avg_range_pct,
         },
         "direction_source": direction_source,
         "trade_strength": trade_strength,

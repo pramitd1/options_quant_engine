@@ -1,26 +1,233 @@
+import json
+from pathlib import Path
+
+import pandas as pd
 import yfinance as yf
 
 
-def get_spot_price(symbol):
+IST_TIMEZONE = "Asia/Kolkata"
 
-    """
-    Fetch latest spot price for an index or stock
-    """
 
+def _normalize_symbol(symbol: str) -> str:
     ticker_map = {
         "NIFTY": "^NSEI",
         "NIFTY50": "^NSEI",
         "BANKNIFTY": "^NSEBANK",
-        "FINNIFTY": "^NSEFIN"
+        "FINNIFTY": "^NSEFIN",
     }
+    return ticker_map.get(symbol.upper().strip(), symbol)
 
-    ticker = ticker_map.get(symbol, symbol)
 
+def _to_ist_timestamp(index_value):
+    ts = pd.Timestamp(index_value)
+
+    if ts.tzinfo is None:
+        try:
+            ts = ts.tz_localize(IST_TIMEZONE)
+        except Exception:
+            pass
+    else:
+        try:
+            ts = ts.tz_convert(IST_TIMEZONE)
+        except Exception:
+            pass
+
+    return ts
+
+
+def _safe_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _compute_lookback_avg_range_pct(daily_hist: pd.DataFrame, completed_days: int = 10):
+    if daily_hist is None or daily_hist.empty:
+        return None
+
+    df = daily_hist.copy()
+
+    for col in ["High", "Low", "Close"]:
+        if col not in df.columns:
+            return None
+
+    df = df.dropna(subset=["High", "Low", "Close"])
+    if df.empty:
+        return None
+
+    df["range_pct"] = ((df["High"] - df["Low"]) / df["Close"]) * 100.0
+
+    if len(df) > 1:
+        df = df.iloc[:-1]
+
+    if df.empty:
+        return None
+
+    tail = df.tail(completed_days)
+    if tail.empty:
+        return None
+
+    return round(float(tail["range_pct"].mean()), 4)
+
+
+def get_spot_snapshot(symbol: str) -> dict:
+    """
+    Returns a richer live spot snapshot for the engine:
+    - spot
+    - day_open
+    - day_high
+    - day_low
+    - prev_close
+    - timestamp
+    - lookback_avg_range_pct
+    """
+
+    ticker = _normalize_symbol(symbol)
     data = yf.Ticker(ticker)
 
-    hist = data.history(period="1d")
+    intraday = data.history(period="5d", interval="5m", auto_adjust=False)
+    daily = data.history(period="20d", interval="1d", auto_adjust=False)
 
-    if hist.empty:
-        raise ValueError("Unable to fetch spot price")
+    if intraday is None or intraday.empty:
+        raise ValueError("Unable to fetch intraday spot data")
 
-    return float(hist["Close"].iloc[-1])
+    intraday = intraday.copy()
+    intraday.index = [_to_ist_timestamp(x) for x in intraday.index]
+
+    latest_ts = intraday.index[-1]
+    latest_row = intraday.iloc[-1]
+
+    today_mask = [idx.date() == latest_ts.date() for idx in intraday.index]
+    today_df = intraday.loc[today_mask].copy()
+
+    if today_df.empty:
+        day_open = _safe_float(latest_row.get("Open"))
+        day_high = _safe_float(latest_row.get("High"))
+        day_low = _safe_float(latest_row.get("Low"))
+    else:
+        day_open = _safe_float(today_df.iloc[0].get("Open"))
+        day_high = _safe_float(today_df["High"].max())
+        day_low = _safe_float(today_df["Low"].min())
+
+    spot = _safe_float(latest_row.get("Close"))
+    if spot is None:
+        raise ValueError("Unable to determine latest spot price")
+
+    prev_close = None
+    if daily is not None and not daily.empty and "Close" in daily.columns:
+        if len(daily) >= 2:
+            prev_close = _safe_float(daily.iloc[-2]["Close"])
+        elif len(daily) == 1:
+            prev_close = _safe_float(daily.iloc[-1]["Close"])
+
+    lookback_avg_range_pct = _compute_lookback_avg_range_pct(daily)
+
+    snapshot = {
+        "symbol": symbol.upper().strip(),
+        "ticker": ticker,
+        "spot": round(spot, 4),
+        "day_open": round(day_open, 4) if day_open is not None else None,
+        "day_high": round(day_high, 4) if day_high is not None else None,
+        "day_low": round(day_low, 4) if day_low is not None else None,
+        "prev_close": round(prev_close, 4) if prev_close is not None else None,
+        "timestamp": latest_ts.isoformat(),
+        "lookback_avg_range_pct": lookback_avg_range_pct,
+    }
+
+    snapshot["validation"] = validate_spot_snapshot(snapshot)
+    return snapshot
+
+
+def validate_spot_snapshot(snapshot: dict) -> dict:
+    """
+    Validate spot snapshot completeness and freshness.
+    """
+
+    issues = []
+    warnings = []
+
+    spot = _safe_float(snapshot.get("spot"), None)
+    day_open = _safe_float(snapshot.get("day_open"), None)
+    day_high = _safe_float(snapshot.get("day_high"), None)
+    day_low = _safe_float(snapshot.get("day_low"), None)
+    prev_close = _safe_float(snapshot.get("prev_close"), None)
+    ts_raw = snapshot.get("timestamp")
+
+    if spot in (None, 0):
+        issues.append("missing_spot")
+
+    if day_high is not None and day_low is not None and day_high < day_low:
+        issues.append("invalid_high_low")
+
+    if spot is not None and day_high is not None and spot > day_high + 5:
+        warnings.append("spot_above_day_high")
+
+    if spot is not None and day_low is not None and spot < day_low - 5:
+        warnings.append("spot_below_day_low")
+
+    if day_open is None:
+        warnings.append("missing_day_open")
+
+    if prev_close is None:
+        warnings.append("missing_prev_close")
+
+    age_minutes = None
+    is_stale = False
+
+    if ts_raw:
+        try:
+            ts = pd.Timestamp(ts_raw)
+            now_ts = pd.Timestamp.now(tz=IST_TIMEZONE)
+            age_minutes = round((now_ts - ts).total_seconds() / 60.0, 2)
+
+            market_open = now_ts.replace(hour=9, minute=15, second=0, microsecond=0)
+            market_close = now_ts.replace(hour=15, minute=30, second=0, microsecond=0)
+            in_market_hours = market_open <= now_ts <= market_close
+
+            stale_limit = 20 if in_market_hours else 180
+            is_stale = age_minutes > stale_limit
+
+            if is_stale:
+                issues.append(f"stale_spot_snapshot_{age_minutes}m")
+        except Exception:
+            warnings.append("timestamp_parse_failed")
+    else:
+        warnings.append("missing_timestamp")
+
+    is_valid = len(issues) == 0
+
+    return {
+        "is_valid": is_valid,
+        "is_stale": is_stale,
+        "age_minutes": age_minutes,
+        "issues": issues,
+        "warnings": warnings,
+    }
+
+
+def get_spot_price(symbol: str):
+    """
+    Backward-compatible wrapper.
+    """
+    snapshot = get_spot_snapshot(symbol)
+    return float(snapshot["spot"])
+
+
+def save_spot_snapshot(snapshot: dict, output_dir: str = "debug_samples"):
+    """
+    Save one live spot snapshot for inspection.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    symbol = snapshot.get("symbol", "UNKNOWN")
+    ts = snapshot.get("timestamp", "").replace(":", "-")
+    filename = out_dir / f"{symbol}_spot_snapshot_{ts}.json"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, indent=2)
+
+    return str(filename)
