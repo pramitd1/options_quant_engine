@@ -1,55 +1,79 @@
 import pandas as pd
 
+from analytics.flow_utils import front_expiry_atm_slice
 
-def detect_unusual_volume(option_chain):
+
+def detect_unusual_volume(option_chain, spot=None):
     """
-    Detect unusual options activity based on volume spikes.
+    Detect unusual near-ATM front-expiry activity using both volume/OI and OI change.
     """
 
-    option_chain["VOL_OI_RATIO"] = (
-        option_chain["VOLUME"] /
-        (option_chain["OPEN_INT"] + 1)
-    )
+    df = front_expiry_atm_slice(option_chain, spot=spot, strike_window_steps=4)
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    spikes = option_chain[
-        option_chain["VOL_OI_RATIO"] > 1.5
-    ]
+    working = df.copy()
+
+    working["VOLUME"] = pd.to_numeric(
+        working.get("VOLUME", working.get("totalTradedVolume")),
+        errors="coerce",
+    ).fillna(0.0)
+    working["OPEN_INT"] = pd.to_numeric(
+        working.get("OPEN_INT", working.get("openInterest")),
+        errors="coerce",
+    ).fillna(0.0)
+    working["CHG_IN_OI"] = pd.to_numeric(
+        working.get("CHG_IN_OI", working.get("changeinOI")),
+        errors="coerce",
+    ).fillna(0.0)
+    working["LAST_PRICE"] = pd.to_numeric(
+        working.get("LAST_PRICE", working.get("lastPrice")),
+        errors="coerce",
+    ).fillna(0.0)
+
+    working["VOL_OI_RATIO"] = working["VOLUME"] / (working["OPEN_INT"] + 1.0)
+    working["OPENING_ACTIVITY"] = working["CHG_IN_OI"].clip(lower=0.0)
+    working["FLOW_NOTIONAL"] = working["VOLUME"] * working["LAST_PRICE"]
+
+    spikes = working[
+        (working["VOL_OI_RATIO"] >= 1.0) |
+        (working["OPENING_ACTIVITY"] > 0)
+    ].copy()
 
     return spikes
 
 
 def classify_flow(spikes):
     """
-    Classify institutional flow direction.
+    Classify directional flow using notional activity, not just contract counts.
     """
 
-    if len(spikes) == 0:
+    if spikes is None or len(spikes) == 0:
         return "NO_FLOW"
 
-    call_flow = spikes[
-        spikes["OPTION_TYP"] == "CE"
-    ]
+    call_flow = spikes[spikes["OPTION_TYP"] == "CE"].copy()
+    put_flow = spikes[spikes["OPTION_TYP"] == "PE"].copy()
 
-    put_flow = spikes[
-        spikes["OPTION_TYP"] == "PE"
-    ]
+    call_score = (call_flow["FLOW_NOTIONAL"] * (1.0 + call_flow["OPENING_ACTIVITY"])).sum()
+    put_score = (put_flow["FLOW_NOTIONAL"] * (1.0 + put_flow["OPENING_ACTIVITY"])).sum()
 
-    if len(call_flow) > len(put_flow):
+    if call_score <= 0 and put_score <= 0:
+        return "NO_FLOW"
+
+    if put_score <= 0:
         return "BULLISH_FLOW"
 
-    if len(put_flow) > len(call_flow):
+    ratio = float(call_score / put_score)
+
+    if ratio >= 1.15:
+        return "BULLISH_FLOW"
+
+    if ratio <= 0.87:
         return "BEARISH_FLOW"
 
     return "MIXED_FLOW"
 
 
-def smart_money_signal(option_chain):
-    """
-    Generate signal from options flow.
-    """
-
-    spikes = detect_unusual_volume(option_chain)
-
-    flow = classify_flow(spikes)
-
-    return flow
+def smart_money_signal(option_chain, spot=None):
+    spikes = detect_unusual_volume(option_chain, spot=spot)
+    return classify_flow(spikes)

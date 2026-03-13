@@ -1,47 +1,49 @@
 """
-Options Flow Imbalance Detector
-
-Detects abnormal call/put activity.
-
-Used by professional traders to detect
-smart money positioning.
+Directional options flow based on front-expiry, near-ATM traded premium.
 """
 
 import pandas as pd
 
-
-def calculate_flow_imbalance(option_chain):
-
-    if option_chain.empty:
-        return 0
-
-    calls = option_chain[
-        option_chain["OPTION_TYP"] == "CE"
-    ]
-
-    puts = option_chain[
-        option_chain["OPTION_TYP"] == "PE"
-    ]
-
-    call_volume = calls["totalTradedVolume"].sum()
-    put_volume = puts["totalTradedVolume"].sum()
-
-    if put_volume == 0:
-        return 0
-
-    imbalance = call_volume / put_volume
-
-    return imbalance
+from analytics.flow_utils import front_expiry_atm_slice
 
 
-def flow_signal(option_chain):
+def calculate_flow_imbalance(option_chain, spot=None):
+    if option_chain is None or option_chain.empty:
+        return 1.0
 
-    imbalance = calculate_flow_imbalance(option_chain)
+    df = front_expiry_atm_slice(option_chain, spot=spot, strike_window_steps=4)
+    if df is None or df.empty:
+        return 1.0
 
-    if imbalance > 1.3:
+    calls = df[df["OPTION_TYP"] == "CE"].copy()
+    puts = df[df["OPTION_TYP"] == "PE"].copy()
+
+    call_notional = (
+        pd.to_numeric(calls.get("totalTradedVolume"), errors="coerce").fillna(0.0) *
+        pd.to_numeric(calls.get("lastPrice"), errors="coerce").fillna(0.0)
+    ).sum()
+
+    put_notional = (
+        pd.to_numeric(puts.get("totalTradedVolume"), errors="coerce").fillna(0.0) *
+        pd.to_numeric(puts.get("lastPrice"), errors="coerce").fillna(0.0)
+    ).sum()
+
+    if call_notional <= 0 and put_notional <= 0:
+        return 1.0
+
+    if put_notional <= 0:
+        return 2.0
+
+    return float(call_notional / put_notional)
+
+
+def flow_signal(option_chain, spot=None):
+    imbalance = calculate_flow_imbalance(option_chain, spot=spot)
+
+    if imbalance >= 1.20:
         return "BULLISH_FLOW"
 
-    if imbalance < 0.7:
+    if imbalance <= 0.83:
         return "BEARISH_FLOW"
 
     return "NEUTRAL_FLOW"

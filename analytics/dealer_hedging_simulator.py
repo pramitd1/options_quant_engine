@@ -1,40 +1,85 @@
-import numpy as np
+import pandas as pd
+
+
+def _to_numeric(series_or_value, default=0.0):
+    if isinstance(series_or_value, pd.Series):
+        return pd.to_numeric(series_or_value, errors="coerce").fillna(default)
+    return pd.to_numeric(pd.Series([series_or_value]), errors="coerce").fillna(default).iloc[0]
+
+
+def _dealer_gamma_sign_proxy(df: pd.DataFrame) -> float:
+    """
+    Infer whether open-interest positioning behaves more like long or short gamma.
+    """
+    change_col = "CHG_IN_OI" if "CHG_IN_OI" in df.columns else "changeinOI" if "changeinOI" in df.columns else None
+    oi_col = "OPEN_INT" if "OPEN_INT" in df.columns else "openInterest"
+
+    if change_col:
+        call_change = _to_numeric(df.loc[df["OPTION_TYP"] == "CE", change_col]).sum()
+        put_change = _to_numeric(df.loc[df["OPTION_TYP"] == "PE", change_col]).sum()
+        total_change = abs(call_change) + abs(put_change)
+        if total_change > 0:
+            return 1.0 if (put_change - call_change) >= 0 else -1.0
+
+    call_oi = _to_numeric(df.loc[df["OPTION_TYP"] == "CE", oi_col]).sum()
+    put_oi = _to_numeric(df.loc[df["OPTION_TYP"] == "PE", oi_col]).sum()
+    return 1.0 if put_oi >= call_oi else -1.0
 
 
 def simulate_dealer_hedging(option_chain, price_move=50):
     """
-    Estimate hedging flows if price moves up or down.
-
-    Dealers hedge delta exposure by buying/selling futures.
+    Estimate dealer hedge targets after an up/down move.
     """
+    if option_chain is None or len(option_chain) == 0:
+        return {
+            "hedge_if_up": 0.0,
+            "hedge_if_down": 0.0,
+            "current_hedge": 0.0,
+            "dealer_gamma_sign": 0.0,
+            "gross_gamma_sensitivity": 0.0,
+        }
 
-    option_chain["DELTA_EXPOSURE"] = (
-        option_chain["DELTA"]
-        * option_chain["OPEN_INT"]
-    )
+    df = option_chain.copy()
+    oi_col = "OPEN_INT" if "OPEN_INT" in df.columns else "openInterest"
 
-    total_delta = option_chain["DELTA_EXPOSURE"].sum()
+    delta = _to_numeric(df.get("DELTA"))
+    gamma = _to_numeric(df.get("GAMMA"))
+    oi = _to_numeric(df.get(oi_col))
 
-    hedge_up = total_delta * price_move
+    net_delta = float((delta * oi).sum())
+    gross_gamma_sensitivity = float((gamma.abs() * oi).sum())
+    dealer_gamma_sign = _dealer_gamma_sign_proxy(df)
 
-    hedge_down = total_delta * -price_move
+    up_delta = net_delta + (dealer_gamma_sign * gross_gamma_sensitivity * float(price_move))
+    down_delta = net_delta - (dealer_gamma_sign * gross_gamma_sensitivity * float(price_move))
 
     return {
-
-        "hedge_if_up": hedge_up,
-        "hedge_if_down": hedge_down
+        "hedge_if_up": -up_delta,
+        "hedge_if_down": -down_delta,
+        "current_hedge": -net_delta,
+        "dealer_gamma_sign": dealer_gamma_sign,
+        "gross_gamma_sensitivity": gross_gamma_sensitivity,
     }
 
 
 def hedging_bias(simulation):
     """
-    Determine if hedging will amplify move.
+    Classify whether dealer hedging is more likely to pin or amplify moves.
     """
+    hedge_up = float(simulation.get("hedge_if_up", 0.0) or 0.0)
+    hedge_down = float(simulation.get("hedge_if_down", 0.0) or 0.0)
+    dealer_gamma_sign = float(simulation.get("dealer_gamma_sign", 0.0) or 0.0)
 
-    if simulation["hedge_if_up"] > abs(simulation["hedge_if_down"]):
+    up_mag = abs(hedge_up)
+    down_mag = abs(hedge_down)
+    tolerance = max(up_mag, down_mag, 1.0) * 0.02
 
-        return "UPSIDE_ACCELERATION"
+    if abs(up_mag - down_mag) <= tolerance:
+        return "PINNING"
 
-    else:
+    up_dominant = up_mag > down_mag
 
-        return "DOWNSIDE_ACCELERATION"
+    if dealer_gamma_sign >= 0:
+        return "UPSIDE_PINNING" if up_dominant else "DOWNSIDE_PINNING"
+
+    return "UPSIDE_ACCELERATION" if up_dominant else "DOWNSIDE_ACCELERATION"

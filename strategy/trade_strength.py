@@ -46,6 +46,9 @@ def _gamma_regime_score(gamma_regime):
     if gamma_regime in ["POSITIVE_GAMMA", "LONG_GAMMA_ZONE"]:
         return 2
 
+    if gamma_regime == "NEUTRAL_GAMMA":
+        return 5
+
     return 0
 
 

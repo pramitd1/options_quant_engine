@@ -59,6 +59,12 @@ def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
     if spot is None:
         spot = df["strikePrice"].median()
 
+    if "GAMMA" in df.columns:
+        gamma = pd.to_numeric(df["GAMMA"], errors="coerce").fillna(0.0)
+        oi = pd.to_numeric(df["openInterest"], errors="coerce").fillna(0.0)
+        signed = np.where(df["OPTION_TYP"].astype(str).eq("PE"), -1.0, 1.0)
+        return float(np.sum(gamma * oi * signed))
+
     exposures = []
 
     for _, row in df.iterrows():
@@ -68,7 +74,6 @@ def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
         gamma = approximate_gamma(strike, spot)
         exposure = gamma * oi
 
-        # Put exposure treated as negative in proxy model
         if row["OPTION_TYP"] == "PE":
             exposure *= -1
 

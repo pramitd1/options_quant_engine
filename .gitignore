@@ -10,3 +10,4 @@ logs/
 !.env.example
 data_store/icici_cache/
 debug_samples/NIFTY_spot_snapshot_*.json
+debug_samples/*_option_chain_snapshot_*.csv

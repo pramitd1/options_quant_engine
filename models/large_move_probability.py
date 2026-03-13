@@ -58,6 +58,8 @@ def large_move_probability(
         prob += 0.14
     elif gamma_regime == "POSITIVE_GAMMA":
         prob -= 0.08
+    elif gamma_regime == "NEUTRAL_GAMMA":
+        prob += 0.0
 
     if vacuum_state == "BREAKOUT_ZONE":
         prob += 0.16
@@ -110,5 +112,7 @@ def large_move_probability(
 
     if gamma_regime == "POSITIVE_GAMMA" and vacuum_state == "BREAKOUT_ZONE":
         prob -= 0.05
+    elif gamma_regime == "NEUTRAL_GAMMA" and vacuum_state == "BREAKOUT_ZONE":
+        prob += 0.02
 
     return round(_clip(prob, 0.05, 0.95), 2)

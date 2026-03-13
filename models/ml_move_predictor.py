@@ -5,19 +5,13 @@ from typing import Iterable
 
 import numpy as np
 
-try:
-    from models.move_predictor import MovePredictor as BaseMovePredictor
-except Exception:
-    BaseMovePredictor = None
-
-
 def _clip(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
 class MovePredictor:
-    def __init__(self):
-        self.base_model = BaseMovePredictor() if BaseMovePredictor is not None else None
+    def __init__(self, base_model=None):
+        self.base_model = base_model
 
     def _sigmoid(self, x: float) -> float:
         x = _clip(float(x), -8.0, 8.0)
@@ -32,21 +26,21 @@ class MovePredictor:
 
         # Soft clipping / scaling so raw feature magnitude does not dominate.
         gamma_regime = _clip(vals[0], -1.0, 1.0)
-        vacuum_signal = _clip(vals[1], -1.0, 1.0)
-        hedging_signal = _clip(vals[2], -1.0, 1.0)
-        flow_signal = _clip(vals[3], -1.0, 1.0)
-        iv_regime = _clip(vals[4], -2.0, 2.0) / 2.0
-        range_signal = _clip(vals[5], -2.0, 2.0) / 2.0
-        extra_signal = _clip(vals[6], -2.0, 2.0) / 2.0
+        flow_signal = _clip(vals[1], -1.0, 1.0)
+        vol_signal = _clip(vals[2], -1.0, 1.0)
+        hedging_signal = _clip(vals[3], -1.0, 1.0)
+        spot_flip_signal = _clip(vals[4], -1.0, 1.0)
+        vacuum_signal = _clip(vals[5], -1.0, 1.0)
+        iv_regime = _clip(vals[6], 0.0, 1.0)
 
         return [
             gamma_regime,
-            vacuum_signal,
-            hedging_signal,
             flow_signal,
+            vol_signal,
+            hedging_signal,
+            spot_flip_signal,
+            vacuum_signal,
             iv_regime,
-            range_signal,
-            extra_signal,
         ]
 
     def _heuristic_probability(self, X):
@@ -60,12 +54,12 @@ class MovePredictor:
 
             score = (
                 0.55 * r[0]
-                + 0.80 * r[1]
-                + 0.70 * r[2]
-                + 0.55 * r[3]
-                + 0.35 * r[4]
-                + 0.40 * r[5]
-                + 0.20 * r[6]
+                + 0.65 * r[1]
+                + 0.35 * r[2]
+                + 0.70 * r[3]
+                + 0.45 * r[4]
+                + 0.55 * r[5]
+                + 0.25 * r[6]
             )
 
             # Lower-confidence fallback than before; keeps output in a sensible band.

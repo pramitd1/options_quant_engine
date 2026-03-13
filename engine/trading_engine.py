@@ -54,6 +54,7 @@ from analytics import smart_money_flow as smart_money_flow_mod
 from analytics import liquidity_vacuum as liquidity_vacuum_mod
 from analytics import volatility_surface as volatility_surface_mod
 from analytics.dealer_liquidity_map import build_dealer_liquidity_map
+from analytics.greeks_engine import enrich_chain_with_greeks, summarize_greek_exposures
 
 import models.feature_builder as feature_builder_mod
 import models.large_move_probability as large_move_probability_mod
@@ -218,7 +219,7 @@ def _blend_move_probability(rule_prob, ml_prob):
     return round(_clip(hybrid, 0.05, 0.95), 2)
 
 
-def normalize_option_chain(option_chain):
+def normalize_option_chain(option_chain, spot=None):
     df = option_chain.copy()
 
     rename_map = {
@@ -249,38 +250,22 @@ def normalize_option_chain(option_chain):
     if "LAST_PRICE" in df.columns and "lastPrice" not in df.columns:
         df["lastPrice"] = df["LAST_PRICE"]
 
-    if "DELTA" not in df.columns:
-        deltas = []
-        spot_guess = df["strikePrice"].median() if "strikePrice" in df.columns else 0
-
-        for _, row in df.iterrows():
-            strike = row["strikePrice"]
-            opt_type = row["OPTION_TYP"]
-
-            if strike == spot_guess:
-                delta = 0.5 if opt_type == "CE" else -0.5
-            elif strike < spot_guess:
-                delta = 0.7 if opt_type == "CE" else -0.3
-            else:
-                delta = 0.3 if opt_type == "CE" else -0.7
-
-            deltas.append(delta)
-
-        df["DELTA"] = deltas
-
-    if "GAMMA" not in df.columns:
-        gammas = []
-        spot_guess = df["strikePrice"].median() if "strikePrice" in df.columns else 0
-
-        for _, row in df.iterrows():
-            strike = row["strikePrice"]
-            distance = abs(strike - spot_guess)
-            gammas.append(1 / (1 + distance))
-
-        df["GAMMA"] = gammas
-
     if "EXPIRY_DT" not in df.columns:
         df["EXPIRY_DT"] = "NEAR"
+
+    if spot is None:
+        spot = df["strikePrice"].median() if "strikePrice" in df.columns else None
+
+    greek_cols = ["DELTA", "GAMMA", "THETA", "VEGA", "RHO", "TTE"]
+    has_usable_greeks = all(col in df.columns for col in greek_cols)
+    if has_usable_greeks:
+        gamma_valid = pd.to_numeric(df["GAMMA"], errors="coerce").notna().any()
+        delta_valid = pd.to_numeric(df["DELTA"], errors="coerce").notna().any()
+        tte_valid = pd.to_numeric(df["TTE"], errors="coerce").notna().any()
+        has_usable_greeks = gamma_valid and delta_valid and tte_valid
+
+    if not has_usable_greeks:
+        df = enrich_chain_with_greeks(df, spot=spot)
 
     return df
 
@@ -582,56 +567,68 @@ def decide_direction(
     gamma_regime,
     hedging_bias,
     gamma_event,
+    vanna_regime=None,
+    charm_regime=None,
     backtest_mode=False
 ):
+    bullish_votes = []
+    bearish_votes = []
+
     if final_flow_signal == "BULLISH_FLOW":
-        return "CALL", "FLOW"
+        bullish_votes.append("FLOW")
 
     if final_flow_signal == "BEARISH_FLOW":
-        return "PUT", "FLOW"
+        bearish_votes.append("FLOW")
 
     if gamma_regime in ["NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"]:
         if hedging_bias == "UPSIDE_ACCELERATION":
-            return "CALL", "HEDGING_BIAS"
+            bullish_votes.append("HEDGING_BIAS")
         if hedging_bias == "DOWNSIDE_ACCELERATION":
-            return "PUT", "HEDGING_BIAS"
+            bearish_votes.append("HEDGING_BIAS")
 
     if gamma_event == "GAMMA_SQUEEZE":
         if spot_vs_flip == "ABOVE_FLIP":
-            return "CALL", "GAMMA_SQUEEZE"
+            bullish_votes.append("GAMMA_SQUEEZE")
         if spot_vs_flip == "BELOW_FLIP":
-            return "PUT", "GAMMA_SQUEEZE"
+            bearish_votes.append("GAMMA_SQUEEZE")
 
     if spot_vs_flip == "BELOW_FLIP" and vol_regime == "VOL_EXPANSION":
         if dealer_pos == "Short Gamma":
-            return "PUT", "GAMMA_FLIP"
-        if dealer_pos == "Long Gamma":
-            return "CALL", "GAMMA_FLIP"
+            bearish_votes.append("GAMMA_FLIP")
 
     if spot_vs_flip == "ABOVE_FLIP":
         if dealer_pos == "Long Gamma":
-            return "CALL", "GAMMA_FLIP"
+            bullish_votes.append("GAMMA_FLIP")
         if dealer_pos == "Short Gamma":
-            return "PUT", "GAMMA_FLIP"
+            bearish_votes.append("GAMMA_FLIP")
 
     if dealer_pos == "Short Gamma" and vol_regime == "VOL_EXPANSION":
-        return "PUT", "DEALER_VOL"
+        bearish_votes.append("DEALER_VOL")
 
-    if dealer_pos == "Long Gamma" and vol_regime in ["NORMAL_VOL", "VOL_EXPANSION"]:
-        return "CALL", "DEALER_VOL"
+    # Vanna and charm are treated as secondary structural votes that only
+    # activate when they reinforce the active spot/flip regime.
+    if vanna_regime == "POSITIVE_VANNA" and spot_vs_flip == "ABOVE_FLIP":
+        bullish_votes.append("VANNA")
+    elif vanna_regime == "NEGATIVE_VANNA" and spot_vs_flip == "BELOW_FLIP":
+        bearish_votes.append("VANNA")
+
+    if charm_regime == "POSITIVE_CHARM" and spot_vs_flip == "ABOVE_FLIP":
+        bullish_votes.append("CHARM")
+    elif charm_regime == "NEGATIVE_CHARM" and spot_vs_flip == "BELOW_FLIP":
+        bearish_votes.append("CHARM")
 
     if backtest_mode:
-        if smart_money_signal_value := final_flow_signal:
-            if smart_money_signal_value == "NEUTRAL_FLOW":
-                if dealer_pos == "Long Gamma":
-                    return "CALL", "BACKTEST_FALLBACK"
-                if dealer_pos == "Short Gamma":
-                    return "PUT", "BACKTEST_FALLBACK"
+        if not bullish_votes and not bearish_votes:
+            if spot_vs_flip == "ABOVE_FLIP" and dealer_pos == "Long Gamma":
+                bullish_votes.append("BACKTEST_FALLBACK")
+            elif spot_vs_flip == "BELOW_FLIP" and dealer_pos == "Short Gamma":
+                bearish_votes.append("BACKTEST_FALLBACK")
 
-        if spot_vs_flip == "BELOW_FLIP":
-            return "CALL", "BACKTEST_FALLBACK"
-        if spot_vs_flip == "ABOVE_FLIP":
-            return "PUT", "BACKTEST_FALLBACK"
+    if len(bullish_votes) >= 2 and len(bearish_votes) == 0:
+        return "CALL", "+".join(bullish_votes)
+
+    if len(bearish_votes) >= 2 and len(bullish_votes) == 0:
+        return "PUT", "+".join(bearish_votes)
 
     return None, None
 
@@ -693,8 +690,8 @@ def generate_trade(
     if option_chain is None or option_chain.empty:
         return None
 
-    df = normalize_option_chain(option_chain)
-    prev_df = normalize_option_chain(previous_chain) if previous_chain is not None else None
+    df = normalize_option_chain(option_chain, spot=spot)
+    prev_df = normalize_option_chain(previous_chain, spot=spot) if previous_chain is not None else None
 
     gamma = _call_first(
         gamma_exposure_mod,
@@ -708,6 +705,7 @@ def generate_trade(
         gamma_flip_mod,
         ["gamma_flip_level", "find_gamma_flip"],
         df,
+        spot=spot,
         default=None
     )
 
@@ -757,6 +755,7 @@ def generate_trade(
         options_flow_imbalance_mod,
         ["flow_signal", "calculate_flow_signal"],
         df,
+        spot=spot,
         default="NEUTRAL_FLOW"
     )
 
@@ -764,6 +763,7 @@ def generate_trade(
         smart_money_flow_mod,
         ["smart_money_signal", "classify_flow"],
         df,
+        spot=spot,
         default="NEUTRAL_FLOW"
     )
 
@@ -857,6 +857,7 @@ def generate_trade(
     )
 
     gamma_clusters = [_to_python_number(x) for x in gamma_clusters] if gamma_clusters else []
+    greek_exposures = summarize_greek_exposures(df)
 
     if gamma_regime is None:
         if flip is None:
@@ -971,7 +972,7 @@ def generate_trade(
     )
 
     smart_money_flow_score = _map_smart_money_flow_score(
-        smart_money_flow=final_flow_signal,
+        smart_money_flow=smart_money_signal_value,
         flow_imbalance=flow_imbalance,
     )
 
@@ -1029,6 +1030,8 @@ def generate_trade(
         "dealer_pos": dealer_pos,
         "vol_regime": vol_regime,
         "gamma_regime": gamma_regime,
+        "vanna_regime": greek_exposures.get("vanna_regime"),
+        "charm_regime": greek_exposures.get("charm_regime"),
         "final_flow_signal": final_flow_signal,
         "hedging_bias": hedging_bias,
         "atm_iv": atm_iv,
@@ -1058,6 +1061,8 @@ def generate_trade(
         gamma_regime=gamma_regime,
         hedging_bias=hedging_bias,
         gamma_event=gamma_event,
+        vanna_regime=greek_exposures.get("vanna_regime"),
+        charm_regime=greek_exposures.get("charm_regime"),
         backtest_mode=backtest_mode
     )
 
@@ -1115,6 +1120,15 @@ def generate_trade(
         "spot_vs_flip": spot_vs_flip,
         "gamma_regime": gamma_regime,
         "gamma_clusters": gamma_clusters,
+        "delta_exposure": greek_exposures.get("delta_exposure"),
+        "gamma_exposure_greeks": greek_exposures.get("gamma_exposure_greeks"),
+        "theta_exposure": greek_exposures.get("theta_exposure"),
+        "vega_exposure": greek_exposures.get("vega_exposure"),
+        "rho_exposure": greek_exposures.get("rho_exposure"),
+        "vanna_exposure": greek_exposures.get("vanna_exposure"),
+        "charm_exposure": greek_exposures.get("charm_exposure"),
+        "vanna_regime": greek_exposures.get("vanna_regime"),
+        "charm_regime": greek_exposures.get("charm_regime"),
         "dealer_position": dealer_pos,
         "dealer_inventory_basis": dealer_metrics.get("basis"),
         "call_oi_change": dealer_metrics.get("call_oi_change"),
@@ -1186,6 +1200,15 @@ def generate_trade(
 
     if direction is None:
         base_payload["message"] = "No trade signal"
+        base_payload["trade_status"] = "NO_SIGNAL"
+        return base_payload
+
+    if (
+        final_flow_signal == "NEUTRAL_FLOW"
+        and hybrid_move_probability is not None
+        and hybrid_move_probability < 0.55
+    ):
+        base_payload["message"] = "No trade signal: neutral flow and insufficient directional edge"
         base_payload["trade_status"] = "NO_SIGNAL"
         return base_payload
 

@@ -21,6 +21,8 @@ def build_features(
         gamma_sign = 1.0
     elif gamma_regime in ["POSITIVE_GAMMA", "LONG_GAMMA_ZONE"]:
         gamma_sign = -0.5
+    elif gamma_regime == "NEUTRAL_GAMMA":
+        gamma_sign = 0.0
 
     flow_bias = 0.0
     if final_flow_signal == "BULLISH_FLOW":

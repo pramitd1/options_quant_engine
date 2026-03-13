@@ -66,6 +66,8 @@ RISK_SCORE = 5
 LOT_SIZE = 65
 NUMBER_OF_LOTS = 1
 STRIKE_WINDOW_STEPS = 8
+RISK_FREE_RATE = 0.06
+DIVIDEND_YIELD = 0.0
 
 
 # ================================

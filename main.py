@@ -1,3 +1,4 @@
+import argparse
 import os
 import time
 import warnings
@@ -23,6 +24,12 @@ from config.settings import (
 
 from data.spot_downloader import get_spot_snapshot, save_spot_snapshot
 from data.data_source_router import DataSourceRouter
+from data.replay_loader import (
+    latest_replay_snapshot_paths,
+    load_option_chain_snapshot,
+    load_spot_snapshot,
+    save_option_chain_snapshot,
+)
 from data.expiry_resolver import (
     filter_option_chain_by_expiry,
     ordered_expiries,
@@ -54,6 +61,7 @@ from analytics.dealer_hedging_simulator import (
 )
 from analytics.volatility_surface import atm_vol, vol_regime
 from analytics.intraday_gamma_shift import gamma_shift_signal
+from analytics.greeks_engine import enrich_chain_with_greeks, summarize_greek_exposures
 
 from visualization.dealer_dashboard import print_dealer_dashboard
 
@@ -117,6 +125,16 @@ def choose_data_source():
 
     print(f"Invalid choice. Defaulting to {DEFAULT_DATA_SOURCE}.")
     return DEFAULT_DATA_SOURCE
+
+
+def parse_runtime_args():
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--replay", action="store_true", help="Run once using saved spot and option-chain snapshots")
+    parser.add_argument("--replay-spot", help="Path to a saved spot snapshot JSON file")
+    parser.add_argument("--replay-chain", help="Path to a saved option-chain snapshot CSV/JSON file")
+    parser.add_argument("--replay-dir", default="debug_samples", help="Directory used to auto-discover latest replay snapshots")
+    parser.add_argument("--replay-source", default="REPLAY", help="Label to display as the data source during replay mode")
+    return parser.parse_args()
 
 
 def choose_underlying_symbol():
@@ -449,35 +467,58 @@ def print_diagnostics(trade):
 
 
 def main():
+    args = parse_runtime_args()
     symbol = choose_underlying_symbol()
 
-    source = choose_data_source()
-    prompt_provider_credentials(source)
+    source = args.replay_source.upper().strip() if args.replay else choose_data_source()
+    if not args.replay:
+        prompt_provider_credentials(source)
     apply_budget_constraint = choose_budget_mode()
     lot_size, requested_lots, max_capital = get_budget_inputs(apply_budget_constraint)
-    refresh_interval = _refresh_interval_for_source(source)
+    refresh_interval = 0 if args.replay else _refresh_interval_for_source(source)
 
     print("\nRunning Quant Engine for:", symbol)
     print("Data Source:", source)
     print("Budget Constraint Applied:", apply_budget_constraint)
 
-    try:
-        data_router = DataSourceRouter(source)
-    except Exception as e:
-        print(f"\nFailed to initialize data source '{source}': {e}")
-        print("Check credentials, session tokens, installed packages, and expiry configuration.")
-        return
+    if args.replay:
+        spot_replay_path = args.replay_spot
+        chain_replay_path = args.replay_chain
+        if not spot_replay_path or not chain_replay_path:
+            discovered_spot, discovered_chain = latest_replay_snapshot_paths(symbol, replay_dir=args.replay_dir)
+            spot_replay_path = spot_replay_path or discovered_spot
+            chain_replay_path = chain_replay_path or discovered_chain
+
+        if not spot_replay_path or not chain_replay_path:
+            print("\nReplay mode requires both a spot snapshot and an option-chain snapshot.")
+            print("Use --replay-spot / --replay-chain, or keep snapshots in debug_samples for auto-discovery.")
+            return
+
+        print(f"Replay Spot Snapshot       : {spot_replay_path}")
+        print(f"Replay Option Chain File  : {chain_replay_path}")
+        data_router = None
+    else:
+        try:
+            data_router = DataSourceRouter(source)
+        except Exception as e:
+            print(f"\nFailed to initialize data source '{source}': {e}")
+            print("Check credentials, session tokens, installed packages, and expiry configuration.")
+            return
 
     previous_chain = None
     saved_one_spot_snapshot = False
+    saved_one_option_chain_snapshot = False
 
     try:
         while True:
             try:
-                spot_snapshot = get_spot_snapshot(symbol)
+                if args.replay:
+                    spot_snapshot = load_spot_snapshot(spot_replay_path)
+                else:
+                    spot_snapshot = get_spot_snapshot(symbol)
                 spot_validation = spot_snapshot.get("validation", {})
 
-                if not saved_one_spot_snapshot:
+                if not args.replay and not saved_one_spot_snapshot:
                     try:
                         saved_path = save_spot_snapshot(spot_snapshot)
                         print(f"\nSaved one live spot snapshot to: {saved_path}")
@@ -510,7 +551,10 @@ def main():
                     "lookback_avg_range_pct": lookback_avg_range_pct,
                 })
 
-                option_chain = data_router.get_option_chain(symbol)
+                if args.replay:
+                    option_chain = load_option_chain_snapshot(chain_replay_path)
+                else:
+                    option_chain = data_router.get_option_chain(symbol)
                 resolved_expiry = resolve_selected_expiry(option_chain)
                 option_chain = filter_option_chain_by_expiry(option_chain, resolved_expiry)
                 option_chain_validation = validate_option_chain(option_chain)
@@ -518,22 +562,39 @@ def main():
 
                 if not option_chain_validation.get("is_valid", False):
                     print("\nOption chain invalid. Skipping this cycle.")
+                    if args.replay:
+                        break
                     time.sleep(refresh_interval)
                     continue
 
                 print(f"\n{'option_chain_rows':26}: {len(option_chain)}")
 
-                gamma = safe_call(calculate_gamma_exposure, option_chain, spot, default=None)
-                flip = safe_call(gamma_flip_level, option_chain, default=None)
+                if not args.replay and not saved_one_option_chain_snapshot:
+                    try:
+                        saved_chain_path = save_option_chain_snapshot(
+                            option_chain,
+                            symbol=symbol,
+                            source=source,
+                        )
+                        print(f"Saved one live option chain snapshot to: {saved_chain_path}")
+                    except Exception as save_err:
+                        print(f"Could not save option chain snapshot: {save_err}")
+                    saved_one_option_chain_snapshot = True
+
+                greeks_chain = enrich_chain_with_greeks(option_chain, spot=spot)
+                greek_exposures = summarize_greek_exposures(greeks_chain)
+
+                gamma = safe_call(calculate_gamma_exposure, greeks_chain, spot, default=None)
+                flip = safe_call(gamma_flip_level, greeks_chain, spot=spot, default=None)
                 dealer_metrics = safe_call(dealer_inventory_metrics, option_chain, default={}) or {}
                 dealer_pos = dealer_metrics.get("position")
                 if dealer_pos is None:
                     dealer_pos = safe_call(dealer_inventory_position, option_chain, default=None)
-                vol_regime_value = safe_call(detect_volatility_regime, option_chain, default=None)
+                vol_regime_value = safe_call(detect_volatility_regime, greeks_chain, default=None)
 
                 gamma_path = safe_call(
                     simulate_gamma_path,
-                    option_chain,
+                    greeks_chain,
                     spot,
                     default=([], [])
                 )
@@ -544,25 +605,25 @@ def main():
                     prices, gamma_curve = [], []
 
                 gamma_event = safe_call(detect_gamma_squeeze, prices, gamma_curve, default=None)
-                flow = safe_call(flow_signal, option_chain, default=None)
-                smart_flow = safe_call(smart_money_signal, option_chain, default=None)
-                liquidity_levels = safe_call(strongest_liquidity_levels, option_chain, default=[])
-                voids = safe_call(detect_liquidity_voids, option_chain, default=[])
+                flow = safe_call(flow_signal, greeks_chain, spot=spot, default=None)
+                smart_flow = safe_call(smart_money_signal, greeks_chain, spot=spot, default=None)
+                liquidity_levels = safe_call(strongest_liquidity_levels, greeks_chain, default=[])
+                voids = safe_call(detect_liquidity_voids, greeks_chain, default=[])
                 void_sig = safe_call(liquidity_void_signal, spot, voids, default=None)
-                vacuum_zones = safe_call(detect_liquidity_vacuum, option_chain, default=[])
+                vacuum_zones = safe_call(detect_liquidity_vacuum, greeks_chain, default=[])
                 vacuum_state = safe_call(vacuum_direction, spot, vacuum_zones, default=None)
-                market_gamma = safe_call(calculate_market_gamma, option_chain, default=None)
+                market_gamma = safe_call(calculate_market_gamma, greeks_chain, default=None)
                 gamma_regime = safe_call(market_gamma_regime, market_gamma, default=None)
                 gamma_clusters = safe_call(largest_gamma_strikes, market_gamma, default=None)
-                walls = safe_call(classify_walls, option_chain, default={}) or {}
+                walls = safe_call(classify_walls, greeks_chain, default={}) or {}
 
                 support_wall = walls.get("support_wall") if isinstance(walls, dict) else None
                 resistance_wall = walls.get("resistance_wall") if isinstance(walls, dict) else None
 
-                hedging_flow = safe_call(dealer_hedging_flow, option_chain, default=None)
-                hedging_sim = safe_call(simulate_dealer_hedging, option_chain, default={})
+                hedging_flow = safe_call(dealer_hedging_flow, greeks_chain, default=None)
+                hedging_sim = safe_call(simulate_dealer_hedging, greeks_chain, default={})
                 hedging_bias_value = safe_call(hedging_bias, hedging_sim, default=None)
-                atm_iv_value = safe_call(atm_vol, option_chain, spot, default=None)
+                atm_iv_value = safe_call(atm_vol, greeks_chain, spot, default=None)
 
                 vol_surface_regime = None
                 if atm_iv_value is not None:
@@ -573,7 +634,7 @@ def main():
                     intraday_gamma_state = safe_call(
                         gamma_shift_signal,
                         previous_chain,
-                        option_chain,
+                        greeks_chain,
                         spot,
                         default=None
                     )
@@ -603,6 +664,15 @@ def main():
                     "spot_vs_flip": spot_vs_flip,
                     "gamma_regime": gamma_regime,
                     "gamma_clusters": gamma_clusters,
+                    "delta_exposure": greek_exposures.get("delta_exposure"),
+                    "gamma_exposure_greeks": greek_exposures.get("gamma_exposure_greeks"),
+                    "theta_exposure": greek_exposures.get("theta_exposure"),
+                    "vega_exposure": greek_exposures.get("vega_exposure"),
+                    "rho_exposure": greek_exposures.get("rho_exposure"),
+                    "vanna_exposure": greek_exposures.get("vanna_exposure"),
+                    "charm_exposure": greek_exposures.get("charm_exposure"),
+                    "vanna_regime": greek_exposures.get("vanna_regime"),
+                    "charm_regime": greek_exposures.get("charm_regime"),
                     "dealer_position": dealer_pos,
                     "dealer_inventory_basis": dealer_metrics.get("basis"),
                     "call_oi_change": dealer_metrics.get("call_oi_change"),
@@ -695,10 +765,13 @@ def main():
                     print("\nNo trade signal")
                     print_dealer_dashboard(dashboard_summary)
 
-                previous_chain = option_chain.copy()
+                previous_chain = greeks_chain.copy()
 
             except Exception as e:
                 print("\nEngine error:", e)
+
+            if args.replay:
+                break
 
             time.sleep(refresh_interval)
 
@@ -706,7 +779,8 @@ def main():
         print("\nEngine stopped by user")
 
     finally:
-        data_router.close()
+        if data_router is not None:
+            data_router.close()
 
 
 if __name__ == "__main__":

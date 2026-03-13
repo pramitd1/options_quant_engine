@@ -125,7 +125,7 @@ Market-structure analytics used by both live trading and backtests.
 - `volatility_regime.py`: realized-vol regime
 - `volatility_surface.py`: ATM IV and IV regime
 - Additional simulator/map helpers:
-  - `gamma_path_simulator.py`
+  - `dealer_gamma_path.py`
 
 #### `engine/`
 
@@ -146,8 +146,8 @@ Execution and scoring helpers.
 Move prediction and feature engineering.
 
 - `feature_builder.py`: converts market state into a feature vector
-- `move_predictor.py`: `RandomForestClassifier` model
-- `ml_move_predictor.py`: wrapper with heuristic fallback when the base model is unavailable
+- `move_predictor.py`: training-time `RandomForestClassifier` scaffold
+- `ml_move_predictor.py`: live inference wrapper with deterministic heuristic fallback
 - `large_move_probability.py`: rule-based large move probability
 
 #### `data/`
@@ -162,9 +162,9 @@ Data acquisition, routing, and historical data generation.
 - `historical_option_chain.py`: cache loader or synthetic historical chain builder
 - `historical_iv_surface.py`: optional historical IV-surface lookup for synthetic backtests
 - `intraday_downloader.py`: 5-minute spot downloader utility
-- `live_option_chain.py`: alternate lightweight NSE option-chain loader
 - `synthetic_option_chain.py`: synthetic chain helper
 - `instrument_loader.py`: instrument universe utility
+- `replay_loader.py`: saved spot/option-chain snapshot loader for after-hours replay
 
 #### `backtest/`
 
@@ -183,7 +183,6 @@ Historical replay and evaluation.
 Terminal dashboards and analytics printouts.
 
 - `dealer_dashboard.py`: main terminal dashboard used by `main.py`
-- `dealer_positioning_dashboard.py`
 - `liquidity_dashboard.py`
 
 #### `config/`
@@ -207,13 +206,14 @@ It:
 2. Fills missing fields like `DELTA`, `GAMMA`, and expiry labels with approximations when needed
 3. Computes:
    - gamma / gamma flip / gamma regime
+   - vanna / charm exposures and regimes
    - dealer position and hedging bias
    - options flow and smart-money flow
    - liquidity levels, voids, vacuum zones
    - market gamma map and gamma clusters
    - volatility regime and ATM IV regime
    - intraday gamma shift if a previous snapshot exists
-4. Chooses trade direction from a ruleset
+4. Chooses trade direction from a ruleset that blends flow, gamma/flip, dealer positioning, and vanna/charm structure
 5. Selects a strike near spot
 6. Computes:
    - rule-based large-move probability
@@ -237,6 +237,22 @@ source .venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+```
+
+## Replay Testing
+
+Canonical single-session replay:
+
+```bash
+python main.py --replay \
+  --replay-spot debug_samples/NIFTY_spot_snapshot_2026-03-13T15-25-00+05-30.json \
+  --replay-chain debug_samples/NIFTY_ICICI_option_chain_snapshot_2026-03-13T17-53-29.968000+05-30.csv
+```
+
+Canonical replay bias/regression check:
+
+```bash
+python -m backtest.replay_regression --symbol NIFTY --source ICICI --replay-dir debug_samples
 ```
 
 Dependencies listed in the repository:

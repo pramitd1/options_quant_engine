@@ -3,20 +3,24 @@ import pandas as pd
 
 def calculate_market_gamma(option_chain):
     """
-    Calculate market-wide gamma exposure
+    Calculate strike-wise signed gamma exposure proxy.
     """
+    if option_chain is None or len(option_chain) == 0:
+        return pd.Series(dtype=float)
 
-    option_chain["GAMMA_EXPOSURE"] = (
-        option_chain["GAMMA"]
-        * option_chain["OPEN_INT"]
-        * option_chain["STRIKE_PR"]
-    )
+    df = option_chain.copy()
+    strike_col = "STRIKE_PR" if "STRIKE_PR" in df.columns else "strikePrice"
+    oi_col = "OPEN_INT" if "OPEN_INT" in df.columns else "openInterest"
 
-    gex = option_chain.groupby(
-        "STRIKE_PR"
-    )["GAMMA_EXPOSURE"].sum()
+    gamma = pd.to_numeric(df.get("GAMMA"), errors="coerce").fillna(0.0)
+    oi = pd.to_numeric(df.get(oi_col), errors="coerce").fillna(0.0)
+    strikes = pd.to_numeric(df.get(strike_col), errors="coerce").fillna(0.0)
+    option_type = df.get("OPTION_TYP", pd.Series(index=df.index, dtype=object)).astype(str).str.upper()
+    signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
 
-    return gex
+    df["GAMMA_EXPOSURE"] = gamma * oi * strikes * signed
+
+    return df.groupby(strike_col)["GAMMA_EXPOSURE"].sum()
 
 
 def market_gamma_regime(gex):
@@ -24,13 +28,19 @@ def market_gamma_regime(gex):
     Determine overall gamma regime
     """
 
+    if gex is None or len(gex) == 0:
+        return "UNKNOWN"
+
     total_gex = gex.sum()
+    gross_gex = gex.abs().sum()
+
+    if gross_gex == 0 or abs(total_gex) <= gross_gex * 0.05:
+        return "NEUTRAL_GAMMA"
 
     if total_gex > 0:
         return "POSITIVE_GAMMA"
 
-    else:
-        return "NEGATIVE_GAMMA"
+    return "NEGATIVE_GAMMA"
 
 
 def largest_gamma_strikes(gex, top_n=5):
