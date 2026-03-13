@@ -4,47 +4,73 @@ Dealer Positioning Dashboard
 Displays structural analytics from the options market.
 """
 
+import json
+
+
+def _format_value(value, max_items=8):
+    if isinstance(value, float):
+        return round(value, 2)
+
+    if isinstance(value, list):
+        if len(value) <= max_items:
+            return value
+        preview = value[:max_items]
+        return f"{preview} ... (+{len(value) - max_items} more)"
+
+    if isinstance(value, dict):
+        text = json.dumps(value, default=str)
+        if len(text) <= 180:
+            return value
+        return f"{text[:180]}..."
+
+    return value
+
 
 def print_dealer_dashboard(summary: dict):
     print("\nDEALER POSITIONING DASHBOARD")
     print("--------------------------------------------------")
-    print("Spot Price:", summary.get("spot"))
-    print("Gamma Exposure:", summary.get("gamma_exposure"))
-    print("Market Gamma:", summary.get("market_gamma"))
-    print("Gamma Flip Level:", summary.get("gamma_flip"))
-    print("Spot vs Flip:", summary.get("spot_vs_flip"))
-    print("Gamma Regime:", summary.get("gamma_regime"))
-    print("Gamma Clusters:", summary.get("gamma_clusters"))
-    print("Dealer Inventory:", summary.get("dealer_position"))
-    print("Dealer Hedging Flow:", summary.get("dealer_hedging_flow"))
-    print("Dealer Hedging Bias:", summary.get("dealer_hedging_bias"))
-    print("Intraday Gamma State:", summary.get("intraday_gamma_state"))
-    print("Volatility Regime:", summary.get("volatility_regime"))
-    print("Vol Surface Regime:", summary.get("vol_surface_regime"))
-    print("ATM IV:", summary.get("atm_iv"))
-    print("Flow Signal:", summary.get("flow_signal"))
-    print("Smart Money Flow:", summary.get("smart_money_flow"))
-    print("Final Flow Signal:", summary.get("final_flow_signal"))
-    print("Gamma Event:", summary.get("gamma_event"))
-    print("Support Wall:", summary.get("support_wall"))
-    print("Resistance Wall:", summary.get("resistance_wall"))
-    print("Liquidity Levels:", summary.get("liquidity_levels"))
-    print("Liquidity Voids:", summary.get("liquidity_voids"))
-    print("Liquidity Void Signal:", summary.get("liquidity_void_signal"))
-    print("Liquidity Vacuum Zones:", summary.get("liquidity_vacuum_zones"))
-    print("Liquidity Vacuum State:", summary.get("liquidity_vacuum_state"))
+    ordered_keys = [
+        ("Spot Price", "spot"),
+        ("Gamma Exposure", "gamma_exposure"),
+        ("Market Gamma", "market_gamma"),
+        ("Gamma Flip Level", "gamma_flip"),
+        ("Spot vs Flip", "spot_vs_flip"),
+        ("Gamma Regime", "gamma_regime"),
+        ("Gamma Clusters", "gamma_clusters"),
+        ("Dealer Inventory", "dealer_position"),
+        ("Dealer Hedging Flow", "dealer_hedging_flow"),
+        ("Dealer Hedging Bias", "dealer_hedging_bias"),
+        ("Intraday Gamma State", "intraday_gamma_state"),
+        ("Volatility Regime", "volatility_regime"),
+        ("Vol Surface Regime", "vol_surface_regime"),
+        ("ATM IV", "atm_iv"),
+        ("Flow Signal", "flow_signal"),
+        ("Smart Money Flow", "smart_money_flow"),
+        ("Final Flow Signal", "final_flow_signal"),
+        ("Gamma Event", "gamma_event"),
+        ("Support Wall", "support_wall"),
+        ("Resistance Wall", "resistance_wall"),
+        ("Liquidity Levels", "liquidity_levels"),
+        ("Liquidity Voids", "liquidity_voids"),
+        ("Liquidity Void Signal", "liquidity_void_signal"),
+        ("Liquidity Vacuum Zones", "liquidity_vacuum_zones"),
+        ("Liquidity Vacuum State", "liquidity_vacuum_state"),
+    ]
+
+    for label, key in ordered_keys:
+        print(f"{label:22}: {_format_value(summary.get(key))}")
 
     dealer_map = summary.get("dealer_liquidity_map")
     if dealer_map:
-        print("Dealer Liquidity Map:", dealer_map)
+        print(f"{'Dealer Liquidity Map':22}: {_format_value(dealer_map)}")
 
-    print("Large Move Probability:", summary.get("large_move_probability"))
-    print("ML Move Probability:", summary.get("ml_move_probability"))
+    print(f"{'Large Move Probability':22}: {_format_value(summary.get('large_move_probability'))}")
+    print(f"{'ML Move Probability':22}: {_format_value(summary.get('ml_move_probability'))}")
     print("--------------------------------------------------")
 
     if "scoring_breakdown" in summary and summary["scoring_breakdown"] is not None:
         print("SCORING BREAKDOWN")
         print("--------------------------------------------------")
         for key, value in summary["scoring_breakdown"].items():
-            print(f"{key}: {value}")
+            print(f"{key:22}: {_format_value(value)}")
         print("--------------------------------------------------")

@@ -3,6 +3,39 @@ Global configuration settings for the Options Quant Engine
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+
+def _csv_env_list(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _env_or_placeholder(name: str) -> str:
+    return os.getenv(name, f"YOUR_{name}")
+
+
+def get_zerodha_runtime_config() -> dict:
+    return {
+        "api_key": _env_or_placeholder("ZERODHA_API_KEY"),
+        "api_secret": _env_or_placeholder("ZERODHA_API_SECRET"),
+        "access_token": _env_or_placeholder("ZERODHA_ACCESS_TOKEN"),
+    }
+
+
+def get_icici_runtime_config() -> dict:
+    return {
+        "api_key": _env_or_placeholder("ICICI_BREEZE_API_KEY"),
+        "secret_key": _env_or_placeholder("ICICI_BREEZE_SECRET_KEY"),
+        "session_token": _env_or_placeholder("ICICI_BREEZE_SESSION_TOKEN"),
+    }
 
 
 # ================================
@@ -103,9 +136,9 @@ DATA_SOURCE_OPTIONS = [
 # Zerodha API Credentials
 # ================================
 
-ZERODHA_API_KEY = os.getenv("ZERODHA_API_KEY", "YOUR_ZERODHA_API_KEY")
-ZERODHA_API_SECRET = os.getenv("ZERODHA_API_SECRET", "YOUR_ZERODHA_API_SECRET")
-ZERODHA_ACCESS_TOKEN = os.getenv("ZERODHA_ACCESS_TOKEN", "YOUR_ZERODHA_ACCESS_TOKEN")
+ZERODHA_API_KEY = _env_or_placeholder("ZERODHA_API_KEY")
+ZERODHA_API_SECRET = _env_or_placeholder("ZERODHA_API_SECRET")
+ZERODHA_ACCESS_TOKEN = _env_or_placeholder("ZERODHA_ACCESS_TOKEN")
 
 API_KEY = ZERODHA_API_KEY
 API_SECRET = ZERODHA_API_SECRET
@@ -116,37 +149,23 @@ ACCESS_TOKEN = ZERODHA_ACCESS_TOKEN
 # ICICI Breeze Credentials
 # ================================
 
-ICICI_BREEZE_API_KEY = os.getenv("ICICI_BREEZE_API_KEY", "48nWvK1@5m595035578JvN488P7X2336")
-ICICI_BREEZE_SECRET_KEY = os.getenv("ICICI_BREEZE_SECRET_KEY", "8eP1*B8370902vAmE59262g5u372r2$0")
-ICICI_BREEZE_SESSION_TOKEN = os.getenv("ICICI_BREEZE_SESSION_TOKEN", "54993310")
+ICICI_BREEZE_API_KEY = _env_or_placeholder("ICICI_BREEZE_API_KEY")
+ICICI_BREEZE_SECRET_KEY = _env_or_placeholder("ICICI_BREEZE_SECRET_KEY")
+ICICI_BREEZE_SESSION_TOKEN = _env_or_placeholder("ICICI_BREEZE_SESSION_TOKEN")
 
-# Primary fallback expiry
-ICICI_DEFAULT_EXPIRY_DATE = os.getenv(
-    "ICICI_DEFAULT_EXPIRY_DATE",
-    "2026-03-19T06:00:00.000Z"
-)
+# Optional manual fallback expiry. Leave blank to rely on dynamic expiry generation.
+ICICI_DEFAULT_EXPIRY_DATE = os.getenv("ICICI_DEFAULT_EXPIRY_DATE", "").strip()
 
-# Keep these lists in settings.py so this remains the only user-edit file.
-# Order matters: the loader will try them one by one until one works.
+# Optional manual overrides. Comma-separated ISO timestamps are supported via env vars.
+# If these are empty, the loader generates upcoming weekly expiries automatically.
 ICICI_SYMBOL_EXPIRY_CANDIDATES = {
-    "NIFTY": [
-        os.getenv("ICICI_NIFTY_EXPIRY_1", "2026-03-19T06:00:00.000Z"),
-        os.getenv("ICICI_NIFTY_EXPIRY_2", "2026-03-26T06:00:00.000Z"),
-        os.getenv("ICICI_NIFTY_EXPIRY_3", "2026-04-30T06:00:00.000Z"),
-    ],
-    "BANKNIFTY": [
-        os.getenv("ICICI_BANKNIFTY_EXPIRY_1", "2026-03-18T06:00:00.000Z"),
-        os.getenv("ICICI_BANKNIFTY_EXPIRY_2", "2026-03-25T06:00:00.000Z"),
-        os.getenv("ICICI_BANKNIFTY_EXPIRY_3", "2026-03-31T06:00:00.000Z"),
-    ],
-    "FINNIFTY": [
-        os.getenv("ICICI_FINNIFTY_EXPIRY_1", "2026-03-17T06:00:00.000Z"),
-        os.getenv("ICICI_FINNIFTY_EXPIRY_2", "2026-03-24T06:00:00.000Z"),
-        os.getenv("ICICI_FINNIFTY_EXPIRY_3", "2026-03-31T06:00:00.000Z"),
-    ],
+    "NIFTY": _csv_env_list("ICICI_NIFTY_EXPIRIES"),
+    "BANKNIFTY": _csv_env_list("ICICI_BANKNIFTY_EXPIRIES"),
+    "FINNIFTY": _csv_env_list("ICICI_FINNIFTY_EXPIRIES"),
 }
 
-ICICI_DEBUG = True
+NSE_DEBUG = os.getenv("NSE_DEBUG", "false").strip().lower() == "true"
+ICICI_DEBUG = os.getenv("ICICI_DEBUG", "false").strip().lower() == "true"
 
 
 # ================================

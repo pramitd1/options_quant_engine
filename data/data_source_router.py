@@ -5,6 +5,7 @@ Routes option-chain requests to Zerodha, NSE, or ICICI.
 Keeps a common interface for the rest of the engine.
 """
 
+from config.settings import ICICI_DEBUG, NSE_DEBUG
 from data.zerodha_option_chain import ZerodhaOptionChain
 from data.nse_option_chain_downloader import NSEOptionChainDownloader
 from data.icici_breeze_option_chain import ICICIBreezeOptionChain
@@ -23,10 +24,10 @@ class DataSourceRouter:
             self.loader = ZerodhaOptionChain()
 
         elif self.source == "NSE":
-            self.loader = NSEOptionChainDownloader(debug=True)
+            self.loader = NSEOptionChainDownloader(debug=NSE_DEBUG)
 
         elif self.source == "ICICI":
-            self.loader = ICICIBreezeOptionChain(debug=True)
+            self.loader = ICICIBreezeOptionChain(debug=ICICI_DEBUG)
 
         else:
             raise ValueError(

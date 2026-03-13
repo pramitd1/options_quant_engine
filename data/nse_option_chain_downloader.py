@@ -10,6 +10,7 @@ Hardened version for NSE's silent anti-bot behavior:
 import json
 import random
 import time
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -34,6 +35,7 @@ class NSEOptionChainDownloader:
     def __init__(self, debug=False):
         self.debug = debug
         self.session = None
+        self.last_error = None
         self._new_session()
 
     def _log(self, *args):
@@ -139,6 +141,7 @@ class NSEOptionChainDownloader:
 
             data, err = self._request_json_once(url, referer=referer)
             if data:
+                self.last_error = None
                 self._log("json_keys", list(data.keys())[:10])
                 return data
 
@@ -148,6 +151,7 @@ class NSEOptionChainDownloader:
             self._new_session()
             time.sleep(0.8 + random.uniform(0.2, 0.8))
 
+        self.last_error = last_error
         self._log("request_failed", f"url={url}", f"last_error={last_error}")
         return {}
 
@@ -199,6 +203,10 @@ class NSEOptionChainDownloader:
         return None
 
     def _extract_nearest_expiry(self, items: list):
+        expiries = self._extract_ordered_expiries(items)
+        return expiries[0] if expiries else None
+
+    def _extract_ordered_expiries(self, items: list):
         expiries = []
 
         for item in items:
@@ -209,8 +217,65 @@ class NSEOptionChainDownloader:
             if expiry and expiry not in expiries:
                 expiries.append(expiry)
 
-        self._log("detected_expiries", expiries[:10])
-        return expiries[0] if expiries else None
+        sortable = []
+        unsortable = []
+
+        for expiry in expiries:
+            try:
+                sortable.append((datetime.strptime(expiry, "%d-%b-%Y"), expiry))
+            except Exception:
+                unsortable.append(expiry)
+
+        sortable.sort(key=lambda item: item[0])
+        ordered = [expiry for _, expiry in sortable] + unsortable
+        self._log("detected_expiries", ordered[:10])
+        return ordered
+
+    def fetch_available_expiries(self, symbol="NIFTY") -> list[str]:
+        symbol = symbol.upper().strip()
+        data = self._get_legacy_chain_json(symbol)
+
+        if not data:
+            self._log("available_expiries_failed", symbol, self.last_error)
+            return []
+
+        items = self._extract_rows(data)
+        if not items:
+            self._log("available_expiries_no_rows", symbol)
+            return []
+
+        return self._extract_ordered_expiries(items)
+
+    def _safe_float(self, value, default=0.0):
+        try:
+            if value in (None, ""):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    def _validate_dataframe_quality(self, df: pd.DataFrame):
+        if df is None or df.empty:
+            return {
+                "is_valid": False,
+                "row_count": 0,
+                "ce_rows": 0,
+                "pe_rows": 0,
+                "priced_rows": 0,
+            }
+
+        ce_rows = int((df["OPTION_TYP"] == "CE").sum()) if "OPTION_TYP" in df.columns else 0
+        pe_rows = int((df["OPTION_TYP"] == "PE").sum()) if "OPTION_TYP" in df.columns else 0
+        priced_rows = int((pd.to_numeric(df["lastPrice"], errors="coerce") > 0).sum()) if "lastPrice" in df.columns else 0
+        row_count = len(df)
+
+        return {
+            "is_valid": row_count >= 20 and ce_rows > 0 and pe_rows > 0 and priced_rows > 0,
+            "row_count": row_count,
+            "ce_rows": ce_rows,
+            "pe_rows": pe_rows,
+            "priced_rows": priced_rows,
+        }
 
     def _rows_to_df(self, items: list, expiry_filter=None) -> pd.DataFrame:
         rows = []
@@ -230,16 +295,16 @@ class NSEOptionChainDownloader:
                 rows.append({
                     "strikePrice": strike,
                     "OPTION_TYP": "CE",
-                    "lastPrice": ce.get("lastPrice", 0),
-                    "openInterest": ce.get("openInterest", 0),
-                    "changeinOI": ce.get("changeinOpenInterest", 0),
-                    "impliedVolatility": ce.get("impliedVolatility", 0),
-                    "totalTradedVolume": ce.get("totalTradedVolume", 0),
-                    "IV": ce.get("impliedVolatility", 0),
-                    "VOLUME": ce.get("totalTradedVolume", 0),
-                    "OPEN_INT": ce.get("openInterest", 0),
+                    "lastPrice": self._safe_float(ce.get("lastPrice", 0), 0.0),
+                    "openInterest": self._safe_float(ce.get("openInterest", 0), 0.0),
+                    "changeinOI": self._safe_float(ce.get("changeinOpenInterest", 0), 0.0),
+                    "impliedVolatility": self._safe_float(ce.get("impliedVolatility", 0), 0.0),
+                    "totalTradedVolume": self._safe_float(ce.get("totalTradedVolume", 0), 0.0),
+                    "IV": self._safe_float(ce.get("impliedVolatility", 0), 0.0),
+                    "VOLUME": self._safe_float(ce.get("totalTradedVolume", 0), 0.0),
+                    "OPEN_INT": self._safe_float(ce.get("openInterest", 0), 0.0),
                     "STRIKE_PR": strike,
-                    "LAST_PRICE": ce.get("lastPrice", 0),
+                    "LAST_PRICE": self._safe_float(ce.get("lastPrice", 0), 0.0),
                     "EXPIRY_DT": ce.get("expiryDate", item_expiry),
                 })
 
@@ -248,16 +313,16 @@ class NSEOptionChainDownloader:
                 rows.append({
                     "strikePrice": strike,
                     "OPTION_TYP": "PE",
-                    "lastPrice": pe.get("lastPrice", 0),
-                    "openInterest": pe.get("openInterest", 0),
-                    "changeinOI": pe.get("changeinOpenInterest", 0),
-                    "impliedVolatility": pe.get("impliedVolatility", 0),
-                    "totalTradedVolume": pe.get("totalTradedVolume", 0),
-                    "IV": pe.get("impliedVolatility", 0),
-                    "VOLUME": pe.get("totalTradedVolume", 0),
-                    "OPEN_INT": pe.get("openInterest", 0),
+                    "lastPrice": self._safe_float(pe.get("lastPrice", 0), 0.0),
+                    "openInterest": self._safe_float(pe.get("openInterest", 0), 0.0),
+                    "changeinOI": self._safe_float(pe.get("changeinOpenInterest", 0), 0.0),
+                    "impliedVolatility": self._safe_float(pe.get("impliedVolatility", 0), 0.0),
+                    "totalTradedVolume": self._safe_float(pe.get("totalTradedVolume", 0), 0.0),
+                    "IV": self._safe_float(pe.get("impliedVolatility", 0), 0.0),
+                    "VOLUME": self._safe_float(pe.get("totalTradedVolume", 0), 0.0),
+                    "OPEN_INT": self._safe_float(pe.get("openInterest", 0), 0.0),
                     "STRIKE_PR": strike,
-                    "LAST_PRICE": pe.get("lastPrice", 0),
+                    "LAST_PRICE": self._safe_float(pe.get("lastPrice", 0), 0.0),
                     "EXPIRY_DT": pe.get("expiryDate", item_expiry),
                 })
 
@@ -270,26 +335,38 @@ class NSEOptionChainDownloader:
 
         data = self._get_legacy_chain_json(symbol)
         if not data:
-            print("Option chain download error: empty or blocked NSE response")
+            detail = f" ({self.last_error})" if self.last_error else ""
+            print(f"Option chain download error: empty or blocked NSE response{detail}")
             return pd.DataFrame()
 
         items = self._extract_rows(data)
         self._log("raw_item_count", len(items))
 
         if not items:
-            print("Option chain download error: could not fetch option chain rows")
+            print("Option chain download error: could not fetch option chain rows from NSE payload")
             return pd.DataFrame()
 
         nearest_expiry = self._extract_nearest_expiry(items)
 
         if nearest_expiry is not None:
             df = self._rows_to_df(items, expiry_filter=nearest_expiry)
-            if not df.empty:
+            quality = self._validate_dataframe_quality(df)
+            self._log("nearest_expiry_quality", nearest_expiry, quality)
+            if quality["is_valid"]:
                 return df
 
         df = self._rows_to_df(items, expiry_filter=None)
-        if not df.empty:
+        quality = self._validate_dataframe_quality(df)
+        self._log("unfiltered_quality", quality)
+        if quality["is_valid"] or not df.empty:
             return df
 
         print("Option chain download error: could not build option chain dataframe")
         return pd.DataFrame()
+
+    def close(self):
+        if self.session is not None:
+            try:
+                self.session.close()
+            except Exception:
+                pass

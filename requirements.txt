@@ -6,3 +6,5 @@ yfinance
 requests
 scipy
 kiteconnect
+breeze-connect
+python-dotenv

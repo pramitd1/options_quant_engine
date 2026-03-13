@@ -1,7 +1,7 @@
 from kiteconnect import KiteConnect
 import pandas as pd
 
-from config.settings import API_KEY, ACCESS_TOKEN, QUOTE_BATCH_SIZE
+from config.settings import QUOTE_BATCH_SIZE, get_zerodha_runtime_config
 
 
 class ZerodhaOptionChain:
@@ -11,8 +11,19 @@ class ZerodhaOptionChain:
     """
 
     def __init__(self):
-        self.kite = KiteConnect(api_key=API_KEY)
-        self.kite.set_access_token(ACCESS_TOKEN)
+        creds = get_zerodha_runtime_config()
+
+        api_key = creds["api_key"]
+        access_token = creds["access_token"]
+
+        if str(api_key).startswith("YOUR_"):
+            raise ValueError("ZERODHA_API_KEY is not configured")
+
+        if str(access_token).startswith("YOUR_"):
+            raise ValueError("ZERODHA_ACCESS_TOKEN is not configured")
+
+        self.kite = KiteConnect(api_key=api_key)
+        self.kite.set_access_token(access_token)
 
         print("Connected to Zerodha")
         self.instruments_df = None

@@ -26,9 +26,15 @@ def compute_realized_volatility(option_chain):
     if option_chain.empty:
         return 0
 
-    prices = option_chain["lastPrice"]
+    prices = pd.to_numeric(option_chain["lastPrice"], errors="coerce")
+    prices = prices.replace([np.inf, -np.inf], np.nan)
+    prices = prices.where(prices > 0).dropna()
 
-    returns = prices.pct_change().dropna()
+    if len(prices) < 2:
+        return 0
+
+    returns = prices.pct_change(fill_method=None)
+    returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(returns) == 0:
         return 0
