@@ -9,3 +9,4 @@ logs/
 .env.*
 !.env.example
 data_store/icici_cache/
+debug_samples/NIFTY_spot_snapshot_*.json
