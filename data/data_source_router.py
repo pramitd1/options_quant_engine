@@ -9,6 +9,7 @@ from config.settings import ICICI_DEBUG, NSE_DEBUG
 from data.zerodha_option_chain import ZerodhaOptionChain
 from data.nse_option_chain_downloader import NSEOptionChainDownloader
 from data.icici_breeze_option_chain import ICICIBreezeOptionChain
+from data.provider_normalization import normalize_live_option_chain
 
 
 class DataSourceRouter:
@@ -40,13 +41,16 @@ class DataSourceRouter:
         """
 
         if self.source == "ZERODHA":
-            return self.loader.build_option_chain(symbol)
+            raw_chain = self.loader.build_option_chain(symbol)
+            return normalize_live_option_chain(raw_chain, source=self.source, symbol=symbol)
 
         if self.source == "NSE":
-            return self.loader.fetch_option_chain(symbol)
+            raw_chain = self.loader.fetch_option_chain(symbol)
+            return normalize_live_option_chain(raw_chain, source=self.source, symbol=symbol)
 
         if self.source == "ICICI":
-            return self.loader.fetch_option_chain(symbol)
+            raw_chain = self.loader.fetch_option_chain(symbol)
+            return normalize_live_option_chain(raw_chain, source=self.source, symbol=symbol)
 
         raise ValueError("Invalid source selected")
 

@@ -60,6 +60,8 @@ def print_dealer_dashboard(summary: dict):
         ("Flow Signal", "flow_signal"),
         ("Smart Money Flow", "smart_money_flow"),
         ("Final Flow Signal", "final_flow_signal"),
+        ("Signal Regime", "signal_regime"),
+        ("Execution Regime", "execution_regime"),
         ("Macro Event Risk", "macro_event_risk_score"),
         ("Event Window", "event_window_status"),
         ("Event Lockdown", "event_lockdown_flag"),
@@ -81,6 +83,7 @@ def print_dealer_dashboard(summary: dict):
         ("Liquidity Void Signal", "liquidity_void_signal"),
         ("Liquidity Vacuum Zones", "liquidity_vacuum_zones"),
         ("Liquidity Vacuum State", "liquidity_vacuum_state"),
+        ("Provider Health", "provider_health"),
     ]
 
     for label, key in ordered_keys:

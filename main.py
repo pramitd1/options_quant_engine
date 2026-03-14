@@ -30,9 +30,9 @@ from data.replay_loader import (
     load_spot_snapshot,
     save_option_chain_snapshot,
 )
+from data.option_chain_validation import validate_option_chain
 from data.expiry_resolver import (
     filter_option_chain_by_expiry,
-    ordered_expiries,
     resolve_selected_expiry,
 )
 from macro.scheduled_event_risk import evaluate_scheduled_event_risk
@@ -40,6 +40,14 @@ from macro.macro_news_aggregator import build_macro_news_state
 from news.service import build_default_headline_service
 
 from engine.trading_engine import generate_trade
+from engine.runtime_metadata import TRADER_VIEW_KEYS
+from research.signal_evaluation import (
+    CAPTURE_POLICY_ALL,
+    SIGNAL_DATASET_PATH,
+    normalize_capture_policy,
+    save_signal_evaluation,
+    should_capture_signal,
+)
 
 from analytics.gamma_exposure import calculate_gamma_exposure
 from analytics.gamma_flip import gamma_flip_level
@@ -67,49 +75,6 @@ from analytics.intraday_gamma_shift import gamma_shift_signal
 from analytics.greeks_engine import enrich_chain_with_greeks, summarize_greek_exposures
 
 from visualization.dealer_dashboard import print_dealer_dashboard
-
-
-TRADER_VIEW_KEYS = [
-    "symbol",
-    "spot",
-    "direction",
-    "direction_source",
-    "selected_expiry",
-    "strike",
-    "option_type",
-    "entry_price",
-    "target",
-    "stop_loss",
-    "trade_strength",
-    "signal_quality",
-    "trade_status",
-    "budget_constraint_applied",
-    "lot_size",
-    "requested_lots",
-    "number_of_lots",
-    "optimized_lots",
-    "capital_per_lot",
-    "capital_required",
-    "max_affordable_lots",
-    "budget_ok",
-    "hybrid_move_probability",
-    "large_move_probability",
-    "ml_move_probability",
-    "macro_event_risk_score",
-    "event_window_status",
-    "event_lockdown_flag",
-    "minutes_to_next_event",
-    "next_event_name",
-    "macro_regime",
-    "macro_sentiment_score",
-    "volatility_shock_score",
-    "news_confidence_score",
-    "macro_adjustment_score",
-    "macro_position_size_multiplier",
-    "macro_suggested_lots",
-    "data_quality_score",
-    "data_quality_status",
-]
 
 
 def _refresh_interval_for_source(source: str) -> int:
@@ -149,6 +114,11 @@ def parse_runtime_args():
     parser.add_argument("--replay-chain", help="Path to a saved option-chain snapshot CSV/JSON file")
     parser.add_argument("--replay-dir", default="debug_samples", help="Directory used to auto-discover latest replay snapshots")
     parser.add_argument("--replay-source", default="REPLAY", help="Label to display as the data source during replay mode")
+    parser.add_argument(
+        "--signal-capture-policy",
+        default=CAPTURE_POLICY_ALL,
+        help="Signal capture policy: TRADE_ONLY, ACTIONABLE, or ALL_SIGNALS",
+    )
     return parser.parse_args()
 
 
@@ -263,115 +233,6 @@ def build_non_overlapping_trade_output(trade):
             filtered[key] = value
 
     return filtered
-
-
-def validate_option_chain(option_chain):
-    issues = []
-    warnings = []
-
-    if option_chain is None:
-        issues.append("option_chain_none")
-        return {
-            "is_valid": False,
-            "issues": issues,
-            "warnings": warnings,
-            "row_count": 0,
-            "ce_rows": 0,
-            "pe_rows": 0,
-            "priced_rows": 0,
-        }
-
-    if option_chain.empty:
-        issues.append("option_chain_empty")
-        return {
-            "is_valid": False,
-            "issues": issues,
-            "warnings": warnings,
-            "row_count": 0,
-            "ce_rows": 0,
-            "pe_rows": 0,
-            "priced_rows": 0,
-        }
-
-    required_cols = ["strikePrice", "OPTION_TYP", "lastPrice"]
-    missing_cols = [col for col in required_cols if col not in option_chain.columns]
-    if missing_cols:
-        issues.append(f"missing_columns:{','.join(missing_cols)}")
-
-    row_count = len(option_chain)
-    ce_rows = 0
-    pe_rows = 0
-    priced_rows = 0
-    iv_rows = 0
-    selected_expiry = None
-    expiry_count = 0
-    expiry_missing_rows = 0
-
-    try:
-        ce_rows = int((option_chain["OPTION_TYP"] == "CE").sum())
-        pe_rows = int((option_chain["OPTION_TYP"] == "PE").sum())
-    except Exception:
-        warnings.append("option_type_count_failed")
-
-    try:
-        priced_rows = int((pd.to_numeric(option_chain["lastPrice"], errors="coerce") > 0).sum())
-    except Exception:
-        warnings.append("priced_row_count_failed")
-
-    try:
-        iv_rows = int((pd.to_numeric(option_chain.get("impliedVolatility", option_chain.get("IV")), errors="coerce") > 0).sum())
-    except Exception:
-        warnings.append("iv_row_count_failed")
-
-    try:
-        expiries = ordered_expiries(option_chain)
-        expiry_count = len(expiries)
-        selected_expiry = expiries[0] if expiries else None
-        if expiry_count > 1:
-            warnings.append(f"multiple_expiries_detected:{expiry_count}")
-    except Exception:
-        warnings.append("expiry_summary_failed")
-
-    try:
-        expiry_series = option_chain.get("EXPIRY_DT")
-        if expiry_series is not None:
-            expiry_missing_rows = int(pd.Series(expiry_series).isna().sum())
-            if expiry_missing_rows > 0:
-                warnings.append(f"missing_expiry_rows:{expiry_missing_rows}")
-    except Exception:
-        warnings.append("expiry_missing_row_count_failed")
-
-    if row_count < 20:
-        issues.append(f"too_few_rows:{row_count}")
-
-    if ce_rows == 0:
-        issues.append("no_ce_rows")
-
-    if pe_rows == 0:
-        issues.append("no_pe_rows")
-
-    if priced_rows == 0:
-        issues.append("no_priced_rows")
-
-    if priced_rows > 0 and priced_rows < max(10, int(0.2 * row_count)):
-        warnings.append(f"low_priced_row_ratio:{priced_rows}/{row_count}")
-
-    if row_count > 0 and iv_rows == 0:
-        warnings.append("no_positive_iv_rows")
-
-    return {
-        "is_valid": len(issues) == 0,
-        "issues": issues,
-        "warnings": warnings,
-        "row_count": row_count,
-        "ce_rows": ce_rows,
-        "pe_rows": pe_rows,
-        "priced_rows": priced_rows,
-        "iv_rows": iv_rows,
-        "selected_expiry": selected_expiry,
-        "expiry_count": expiry_count,
-        "expiry_missing_rows": expiry_missing_rows,
-    }
 
 
 def print_validation_block(title, validation):
@@ -500,6 +361,7 @@ def print_diagnostics(trade):
         "move_probability_components",
         "spot_validation",
         "option_chain_validation",
+        "provider_health",
         "data_quality_reasons",
         "macro_adjustment_reasons",
         "confirmation_status",
@@ -526,6 +388,7 @@ def print_diagnostics(trade):
 
 def main():
     args = parse_runtime_args()
+    signal_capture_policy = normalize_capture_policy(args.signal_capture_policy)
     symbol = choose_underlying_symbol()
     headline_service = build_default_headline_service()
 
@@ -567,6 +430,8 @@ def main():
     previous_chain = None
     saved_one_spot_snapshot = False
     saved_one_option_chain_snapshot = False
+    latest_saved_spot_path = None
+    latest_saved_chain_path = None
 
     try:
         while True:
@@ -580,6 +445,7 @@ def main():
                 if not args.replay and not saved_one_spot_snapshot:
                     try:
                         saved_path = save_spot_snapshot(spot_snapshot)
+                        latest_saved_spot_path = saved_path
                         print(f"\nSaved one live spot snapshot to: {saved_path}")
                     except Exception as save_err:
                         print(f"\nCould not save spot snapshot: {save_err}")
@@ -696,6 +562,7 @@ def main():
                             symbol=symbol,
                             source=source,
                         )
+                        latest_saved_chain_path = saved_chain_path
                         print(f"Saved one live option chain snapshot to: {saved_chain_path}")
                     except Exception as save_err:
                         print(f"Could not save option chain snapshot: {save_err}")
@@ -724,6 +591,40 @@ def main():
 
                 if trade:
                     trade["selected_expiry"] = option_chain_validation.get("selected_expiry")
+
+                    signal_capture_payload = {
+                        "ok": True,
+                        "mode": "REPLAY" if args.replay else "LIVE",
+                        "source": source,
+                        "symbol": symbol,
+                        "saved_paths": {
+                            "spot": latest_saved_spot_path,
+                            "chain": latest_saved_chain_path,
+                        },
+                        "spot_snapshot": spot_snapshot,
+                        "spot_summary": {
+                            "spot": spot,
+                            "day_open": day_open,
+                            "day_high": day_high,
+                            "day_low": day_low,
+                            "prev_close": prev_close,
+                            "timestamp": spot_timestamp,
+                            "lookback_avg_range_pct": lookback_avg_range_pct,
+                            "ticker": spot_snapshot.get("ticker"),
+                        },
+                        "option_chain_validation": option_chain_validation,
+                        "trade": trade,
+                    }
+
+                    if should_capture_signal(trade, signal_capture_policy):
+                        try:
+                            save_signal_evaluation(signal_capture_payload)
+                            print(f"\n{'signal_capture':26}: CAPTURED -> {SIGNAL_DATASET_PATH}")
+                        except Exception as capture_err:
+                            print(f"\n{'signal_capture':26}: FAILED ({type(capture_err).__name__}: {capture_err})")
+                    else:
+                        print(f"\n{'signal_capture':26}: SKIPPED_POLICY ({signal_capture_policy})")
+
                     print_trader_view(trade)
 
                     dashboard_for_print = dict(trade)

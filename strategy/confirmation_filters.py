@@ -10,6 +10,8 @@ Design goals:
 - remain robust even when some inputs are missing
 """
 
+from config.symbol_microstructure import DEFAULT_MICROSTRUCTURE_CONFIG, get_microstructure_config
+
 
 def _safe_float(x, default=None):
     try:
@@ -33,6 +35,7 @@ def _sign_label(score):
 def compute_confirmation_filters(
     direction,
     spot,
+    symbol=None,
     day_open=None,
     prev_close=None,
     intraday_range_pct=None,
@@ -72,6 +75,7 @@ def compute_confirmation_filters(
     prev_close_px = _safe_float(prev_close, None)
     range_pct = _safe_float(intraday_range_pct, None)
     move_prob = _safe_float(hybrid_move_probability, None)
+    micro_cfg = get_microstructure_config(symbol)
 
     if direction not in ["CALL", "PUT"]:
         return {
@@ -123,16 +127,16 @@ def compute_confirmation_filters(
 
     # 3) Range expansion confirmation
     if range_pct is not None:
-        if range_pct >= 0.70:
+        if range_pct >= micro_cfg.get("range_expansion_strong", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_strong"]):
             breakdown["range_expansion_score"] = 3
             reasons.append("strong_intraday_range_expansion")
-        elif range_pct >= 0.40:
+        elif range_pct >= micro_cfg.get("range_expansion_moderate", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_moderate"]):
             breakdown["range_expansion_score"] = 2
             reasons.append("moderate_intraday_range_expansion")
-        elif range_pct >= 0.20:
+        elif range_pct >= micro_cfg.get("range_expansion_low", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_low"]):
             breakdown["range_expansion_score"] = 1
             reasons.append("early_intraday_range_expansion")
-        elif range_pct < 0.08:
+        elif range_pct < micro_cfg.get("range_expansion_cold", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_cold"]):
             breakdown["range_expansion_score"] = -1
             reasons.append("very_low_intraday_range_expansion")
 

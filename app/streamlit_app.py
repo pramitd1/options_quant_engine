@@ -20,6 +20,11 @@ from config.settings import (
     NUMBER_OF_LOTS,
 )
 from app.engine_runner import run_engine_snapshot
+from research.signal_evaluation import (
+    SIGNAL_DATASET_PATH,
+    build_research_report,
+    load_signals_dataset,
+)
 
 
 st.set_page_config(
@@ -254,6 +259,13 @@ def _safe_metric_value(value):
     return "-" if value in (None, "") else value
 
 
+def _safe_float(value):
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return None
+    return float(numeric)
+
+
 def _display_path(path_value: str) -> str:
     if not path_value:
         return "-"
@@ -382,7 +394,7 @@ def _render_trade_metrics(trade: dict):
         ("Strike", trade.get("strike")),
         ("Entry", trade.get("entry_price")),
         ("Strength", trade.get("trade_strength")),
-        ("Macro Regime", trade.get("macro_regime")),
+        ("Signal Regime", trade.get("signal_regime")),
     ]
     for col, (label, value) in zip(cols, summary_items):
         col.markdown(
@@ -411,9 +423,11 @@ def _render_trade_metrics(trade: dict):
 def _render_decision_panel(trade: dict):
     focus_cards = [
         ("Direction Source", trade.get("direction_source")),
+        ("Execution Regime", trade.get("execution_regime")),
         ("Selected Expiry", trade.get("selected_expiry")),
         ("Target / Stop", f"{trade.get('target')} / {trade.get('stop_loss')}"),
         ("Capital Required", trade.get("capital_required")),
+        ("Provider Health", (trade.get("provider_health") or {}).get("summary_status")),
         ("Macro Adjustment", trade.get("macro_adjustment_score")),
         ("Position Size Multiplier", trade.get("macro_position_size_multiplier")),
     ]
@@ -699,6 +713,114 @@ def _render_replay_tools(result: dict):
         )
 
 
+def _render_research_metric_card(label: str, value: str):
+    st.markdown(
+        f"""
+        <div class="oqe-summary-card">
+            <div class="oqe-summary-label">{label}</div>
+            <div class="oqe-summary-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_research_table(title: str, frame: pd.DataFrame, *, caption: str | None = None):
+    st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
+    st.subheader(title)
+    if caption:
+        st.caption(caption)
+    if frame is None or frame.empty:
+        st.info("No research data is available for this view yet.")
+    else:
+        st.dataframe(frame, use_container_width=True, hide_index=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_signal_research_dashboard():
+    dataset = load_signals_dataset()
+
+    st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
+    st.subheader("Signal Evaluation Summary")
+    st.caption(f"Canonical dataset: {_display_path(str(SIGNAL_DATASET_PATH))}")
+
+    if dataset.empty:
+        st.info("No signal evaluation rows are available yet. Run a live or replay snapshot to start building the research dataset.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    report = build_research_report(dataset)
+    total_signals = len(dataset)
+    scored_signals = int(dataset.get("composite_signal_score", pd.Series(dtype="float64")).notna().sum())
+    completed_outcomes = int(dataset.get("outcome_status", pd.Series(dtype="object")).astype(str).str.upper().eq("COMPLETE").sum())
+    avg_composite_score = _safe_float(dataset.get("composite_signal_score", pd.Series(dtype="float64")).mean())
+    avg_move_probability = _safe_float(dataset.get("move_probability", pd.Series(dtype="float64")).mean())
+    avg_hit_rate = _safe_float(report["move_probability_calibration"].get("actual_hit_rate", pd.Series(dtype="float64")).mean())
+
+    metric_cols = st.columns(6)
+    metric_values = [
+        ("Signals", f"{total_signals}"),
+        ("Scored Rows", f"{scored_signals}"),
+        ("Complete Outcomes", f"{completed_outcomes}"),
+        ("Avg Composite", "-" if avg_composite_score is None else f"{avg_composite_score:.2f}"),
+        ("Avg Move Prob", "-" if avg_move_probability is None else f"{avg_move_probability:.2%}"),
+        ("Avg Hit Rate", "-" if avg_hit_rate is None else f"{avg_hit_rate:.2%}"),
+    ]
+    for column, (label, value) in zip(metric_cols, metric_values):
+        with column:
+            _render_research_metric_card(label, value)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    score_cols = st.columns([1.25, 1.25, 1.1])
+    with score_cols[0]:
+        _render_research_table(
+            "Average Score by Signal Quality",
+            report["average_score_by_signal_quality"],
+            caption="Shows how the component and composite scores behave across quality buckets.",
+        )
+    with score_cols[1]:
+        _render_research_table(
+            "Move Probability Calibration",
+            report["move_probability_calibration"],
+            caption="Compares predicted move probability buckets with realized hit behavior.",
+        )
+    with score_cols[2]:
+        _render_research_table(
+            "Average Realized Return by Horizon",
+            report["average_realized_return_by_horizon"],
+            caption="Helps assess how quickly signals monetize after capture.",
+        )
+
+    performance_cols = st.columns(2)
+    with performance_cols[0]:
+        _render_research_table(
+            "Hit Rate by Trade Strength",
+            report["hit_rate_by_trade_strength"],
+            caption="Useful for checking whether stronger setups are actually more reliable.",
+        )
+    with performance_cols[1]:
+        _render_research_table(
+            "Hit Rate by Macro Regime",
+            report["hit_rate_by_macro_regime"],
+            caption="Highlights whether some macro states are materially better for signal performance.",
+        )
+
+    regime_cols = st.columns([1.2, 0.8])
+    with regime_cols[0]:
+        _render_research_table(
+            "Top Regime Fingerprints",
+            report["regime_fingerprint_performance"],
+            caption="Condition clusters that currently show the strongest composite scores and hit rates.",
+        )
+    with regime_cols[1]:
+        _render_research_table(
+            "Signal Count by Regime",
+            report["signal_count_by_regime"],
+            caption="Quick coverage view so we can separate robust clusters from thin samples.",
+        )
+
+
 def _inject_autorefresh(interval_seconds: int):
     interval_ms = max(int(interval_seconds * 1000), 5000)
     components.html(
@@ -837,12 +959,15 @@ def main():
     _render_runbar(result)
     _render_run_paths(result)
 
-    snapshot_tab, replay_tools_tab, macro_lab_tab = st.tabs(
-        ["Current Snapshot", "Replay Tools", "Macro / News Lab"]
+    snapshot_tab, research_tab, replay_tools_tab, macro_lab_tab = st.tabs(
+        ["Current Snapshot", "Signal Research", "Replay Tools", "Macro / News Lab"]
     )
 
     with snapshot_tab:
         _render_workstation(result)
+
+    with research_tab:
+        _render_signal_research_dashboard()
 
     with replay_tools_tab:
         _render_replay_tools(result)

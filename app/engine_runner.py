@@ -11,12 +11,20 @@ from data.replay_loader import (
     load_spot_snapshot,
     save_option_chain_snapshot,
 )
+from data.option_chain_validation import validate_option_chain
 from data.expiry_resolver import filter_option_chain_by_expiry, resolve_selected_expiry
 from macro.scheduled_event_risk import evaluate_scheduled_event_risk
 from macro.macro_news_aggregator import build_macro_news_state
 from news.service import build_default_headline_service
 from engine.trading_engine import generate_trade
-from main import TRADER_VIEW_KEYS, validate_option_chain
+from engine.runtime_metadata import TRADER_VIEW_KEYS
+from research.signal_evaluation import (
+    CAPTURE_POLICY_ALL,
+    SIGNAL_DATASET_PATH,
+    normalize_capture_policy,
+    save_signal_evaluation,
+    should_capture_signal,
+)
 
 
 def _set_runtime_credentials(source: str, credentials: Optional[Dict[str, str]] = None) -> None:
@@ -93,10 +101,13 @@ def run_engine_snapshot(
     replay_chain: Optional[str] = None,
     replay_dir: str = "debug_samples",
     save_live_snapshots: bool = False,
+    capture_signal_evaluation: bool = True,
+    signal_capture_policy: str = CAPTURE_POLICY_ALL,
 ) -> Dict[str, object]:
     mode = mode.upper().strip()
     source = source.upper().strip()
     replay_mode = mode == "REPLAY"
+    signal_capture_policy = normalize_capture_policy(signal_capture_policy)
     headline_service = build_default_headline_service()
     data_router = None
 
@@ -203,7 +214,7 @@ def run_engine_snapshot(
             if trade:
                 trade["selected_expiry"] = option_chain_validation.get("selected_expiry")
 
-        return {
+        result_payload = {
             "ok": True,
             "mode": mode,
             "source": source,
@@ -232,7 +243,22 @@ def run_engine_snapshot(
             "trader_view_rows": _trade_view_rows(trade) if trade else pd.DataFrame(columns=["field", "value"]),
             "ranked_strikes": pd.DataFrame(trade.get("ranked_strike_candidates", [])) if trade else pd.DataFrame(),
             "headline_records": pd.DataFrame(_jsonable_headline_state(headline_state)["records"]),
+            "signal_dataset_path": str(SIGNAL_DATASET_PATH),
+            "signal_capture_status": "SKIPPED",
+            "signal_capture_policy": signal_capture_policy,
         }
+
+        if capture_signal_evaluation and should_capture_signal(trade, signal_capture_policy):
+            try:
+                save_signal_evaluation(result_payload)
+                result_payload["signal_capture_status"] = "CAPTURED"
+            except Exception as exc:
+                result_payload["signal_capture_status"] = f"FAILED:{type(exc).__name__}"
+                result_payload["signal_capture_error"] = str(exc)
+        elif capture_signal_evaluation and trade:
+            result_payload["signal_capture_status"] = f"SKIPPED_POLICY:{signal_capture_policy}"
+
+        return result_payload
     except Exception as exc:
         return {
             "ok": False,
