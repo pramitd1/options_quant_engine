@@ -28,6 +28,7 @@ from analytics import volatility_regime as volatility_regime_mod
 from analytics import volatility_surface as volatility_surface_mod
 from analytics.dealer_liquidity_map import build_dealer_liquidity_map
 from analytics.greeks_engine import enrich_chain_with_greeks, summarize_greek_exposures
+from config.global_risk_policy import get_global_risk_policy_config
 from config.signal_policy import (
     get_direction_thresholds,
     get_direction_vote_weights,
@@ -319,6 +320,7 @@ def _clean_zone_list(zones):
 
 
 def derive_global_risk_trade_modifiers(global_risk_state):
+    cfg = get_global_risk_policy_config()
     global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
     features = global_risk_state.get("global_risk_features", {})
     features = features if isinstance(features, dict) else {}
@@ -330,12 +332,12 @@ def derive_global_risk_trade_modifiers(global_risk_state):
     volatility_explosion_probability = _safe_float(features.get("volatility_explosion_probability"), 0.0)
     oil_shock_score = _safe_float(features.get("oil_shock_score"), 0.0)
 
-    if volatility_explosion_probability > 0.7:
-        feature_adjustment_score -= 6
+    if volatility_explosion_probability > cfg.volatility_explosion_penalty_threshold:
+        feature_adjustment_score += int(cfg.volatility_explosion_penalty_score)
         adjustment_reasons.append("volatility_explosion_probability_high")
 
-    if oil_shock_score >= 0.7:
-        feature_adjustment_score -= 4
+    if oil_shock_score >= cfg.oil_shock_penalty_threshold:
+        feature_adjustment_score += int(cfg.oil_shock_penalty_score)
         adjustment_reasons.append("oil_shock_score_high")
 
     effective_adjustment_score = base_adjustment_score + feature_adjustment_score

@@ -4,6 +4,8 @@ Deterministic raw feature model for the gamma-vol acceleration overlay.
 
 from __future__ import annotations
 
+from config.gamma_vol_acceleration_policy import get_gamma_vol_acceleration_policy_config
+
 
 def _clip(value, lo, hi):
     return max(lo, min(hi, value))
@@ -44,104 +46,124 @@ def _holding_context(global_risk_state, holding_profile):
 
 
 def _gamma_regime_score(gamma_regime):
+    cfg = get_gamma_vol_acceleration_policy_config()
     gamma_regime = str(gamma_regime or "").upper().strip()
     if gamma_regime in {"SHORT_GAMMA_ZONE", "NEGATIVE_GAMMA"}:
-        return 0.85
+        return cfg.gamma_regime_short_score
     if gamma_regime in {"LONG_GAMMA_ZONE", "POSITIVE_GAMMA"}:
-        return -0.55
+        return cfg.gamma_regime_long_score
     return 0.0
 
 
 def _flip_proximity_score(gamma_flip_distance_pct, spot_vs_flip):
+    cfg = get_gamma_vol_acceleration_policy_config()
     spot_vs_flip = str(spot_vs_flip or "").upper().strip()
     distance = _safe_float(gamma_flip_distance_pct, None)
 
     if spot_vs_flip == "AT_FLIP":
-        return 1.0
+        return cfg.flip_at_score
 
     if distance is None:
         if spot_vs_flip in {"ABOVE_FLIP", "BELOW_FLIP"}:
-            return 0.25
+            return cfg.flip_unknown_context_score
         return 0.0
 
-    if distance <= 0.10:
-        return 1.0
-    if distance <= 0.25:
-        return 0.82
-    if distance <= 0.50:
-        return 0.62
-    if distance <= 0.90:
-        return 0.38
-    return 0.12
+    if distance <= cfg.flip_distance_1_pct:
+        return cfg.flip_distance_1_score
+    if distance <= cfg.flip_distance_2_pct:
+        return cfg.flip_distance_2_score
+    if distance <= cfg.flip_distance_3_pct:
+        return cfg.flip_distance_3_score
+    if distance <= cfg.flip_distance_4_pct:
+        return cfg.flip_distance_4_score
+    return cfg.flip_distance_far_score
 
 
 def _volatility_transition_score(volatility_compression_score, volatility_shock_score, volatility_explosion_probability):
+    cfg = get_gamma_vol_acceleration_policy_config()
     compression = _clip(_safe_float(volatility_compression_score, 0.0), 0.0, 1.0)
     shock = _clip(_safe_float(volatility_shock_score, 0.0), 0.0, 1.0)
     explosion = _clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0)
-    return round(_clip((0.45 * compression) + (0.30 * shock) + (0.25 * explosion), 0.0, 1.0), 4)
+    return round(_clip(
+        (cfg.vol_transition_compression_weight * compression)
+        + (cfg.vol_transition_shock_weight * shock)
+        + (cfg.vol_transition_explosion_weight * explosion),
+        0.0,
+        1.0,
+    ), 4)
 
 
 def _liquidity_vacuum_score(liquidity_vacuum_state):
+    cfg = get_gamma_vol_acceleration_policy_config()
     mapping = {
-        "BREAKOUT_ZONE": 0.9,
-        "NEAR_VACUUM": 0.7,
-        "VACUUM_WATCH": 0.45,
-        "VACUUM_CONTAINED": 0.2,
+        "BREAKOUT_ZONE": cfg.liquidity_breakout_score,
+        "NEAR_VACUUM": cfg.liquidity_near_vacuum_score,
+        "VACUUM_WATCH": cfg.liquidity_watch_score,
+        "VACUUM_CONTAINED": cfg.liquidity_contained_score,
         "NO_VACUUM": 0.0,
     }
     return mapping.get(str(liquidity_vacuum_state or "").upper().strip(), 0.0)
 
 
 def _hedging_bias_score(dealer_hedging_bias):
+    cfg = get_gamma_vol_acceleration_policy_config()
     bias = str(dealer_hedging_bias or "").upper().strip()
     if bias == "UPSIDE_ACCELERATION":
-        return 0.9
+        return cfg.hedging_upside_acceleration_score
     if bias == "DOWNSIDE_ACCELERATION":
-        return -0.9
+        return -cfg.hedging_upside_acceleration_score
     if bias == "UPSIDE_PINNING":
-        return 0.15
+        return cfg.hedging_upside_pinning_score
     if bias == "DOWNSIDE_PINNING":
-        return -0.15
+        return cfg.hedging_downside_pinning_score
     if bias == "PINNING":
         return 0.0
     return 0.0
 
 
 def _pinning_dampener(dealer_hedging_bias):
+    cfg = get_gamma_vol_acceleration_policy_config()
     bias = str(dealer_hedging_bias or "").upper().strip()
     if bias == "PINNING":
-        return 0.45
+        return cfg.pinning_bias_full_dampener
     if bias in {"UPSIDE_PINNING", "DOWNSIDE_PINNING"}:
-        return 0.25
+        return cfg.pinning_bias_partial_dampener
     return 0.0
 
 
 def _intraday_extension_score(intraday_range_pct):
+    cfg = get_gamma_vol_acceleration_policy_config()
     value = _safe_float(intraday_range_pct, None)
     if value is None:
         return 0.0
-    if value <= 0.35:
+    if value <= cfg.intraday_extension_low_threshold:
         return 0.0
-    if value <= 0.70:
-        return 0.25
-    if value <= 1.00:
-        return 0.45
-    return 0.65
+    if value <= cfg.intraday_extension_mid_threshold:
+        return cfg.intraday_extension_mid_score
+    if value <= cfg.intraday_extension_high_threshold:
+        return cfg.intraday_extension_high_score
+    return cfg.intraday_extension_extreme_score
 
 
 def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_explosion_probability):
+    cfg = get_gamma_vol_acceleration_policy_config()
     event_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     state = str(global_risk_state or "").upper().strip()
     global_state_boost = {
-        "VOL_SHOCK": 1.0,
-        "EVENT_LOCKDOWN": 0.95,
-        "RISK_OFF": 0.60,
-        "GLOBAL_NEUTRAL": 0.15,
+        "VOL_SHOCK": cfg.macro_global_state_vol_shock,
+        "EVENT_LOCKDOWN": cfg.macro_global_state_event_lockdown,
+        "RISK_OFF": cfg.macro_global_state_risk_off,
+        "GLOBAL_NEUTRAL": cfg.macro_global_state_neutral,
         "RISK_ON": 0.0,
-    }.get(state, 0.10)
+    }.get(state, cfg.macro_global_state_unknown)
     explosion = _clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0)
-    return round(_clip((0.45 * event_norm) + (0.30 * global_state_boost) + (0.25 * explosion), 0.0, 1.0), 4)
+    return round(_clip(
+        (cfg.macro_global_event_weight * event_norm)
+        + (cfg.macro_global_state_weight * global_state_boost)
+        + (cfg.macro_global_explosion_weight * explosion),
+        0.0,
+        1.0,
+    ), 4)
 
 
 def build_gamma_vol_acceleration_features(
@@ -161,6 +183,7 @@ def build_gamma_vol_acceleration_features(
     support_wall=None,
     resistance_wall=None,
 ):
+    cfg = get_gamma_vol_acceleration_policy_config()
     holding_context = _holding_context(global_risk_state, holding_profile)
     global_state_label = (
         global_risk_state.get("global_risk_state")
@@ -208,78 +231,78 @@ def build_gamma_vol_acceleration_features(
     positive_gamma_pressure = max(gamma_regime_score, 0.0)
     gamma_dampener = max(-gamma_regime_score, 0.0)
     acceleration_core = _clip(
-        (0.34 * positive_gamma_pressure)
-        + (0.18 * flip_proximity_score)
-        + (0.16 * volatility_transition_score)
-        + (0.12 * liquidity_vacuum_score)
-        + (0.10 * abs(hedging_bias_score))
-        + (0.05 * intraday_extension_score)
-        + (0.05 * macro_global_boost),
+        (cfg.acceleration_gamma_weight * positive_gamma_pressure)
+        + (cfg.acceleration_flip_weight * flip_proximity_score)
+        + (cfg.acceleration_vol_weight * volatility_transition_score)
+        + (cfg.acceleration_liquidity_weight * liquidity_vacuum_score)
+        + (cfg.acceleration_hedging_weight * abs(hedging_bias_score))
+        + (cfg.acceleration_intraday_weight * intraday_extension_score)
+        + (cfg.acceleration_macro_weight * macro_global_boost),
         0.0,
         1.0,
     )
     dampening_core = _clip(
-        (0.60 * gamma_dampener)
-        + (0.40 * pinning_dampener),
+        (cfg.dampening_gamma_weight * gamma_dampener)
+        + (cfg.dampening_pinning_weight * pinning_dampener),
         0.0,
         1.0,
     )
-    normalized_acceleration = _clip((acceleration_core - (0.50 * dampening_core)) * feature_confidence, 0.0, 1.0)
+    normalized_acceleration = _clip((acceleration_core - (cfg.acceleration_dampening_weight * dampening_core)) * feature_confidence, 0.0, 1.0)
 
     spot_vs_flip_label = str(spot_vs_flip or "").upper().strip()
     upside_alignment = 0.0
     downside_alignment = 0.0
     if spot_vs_flip_label == "ABOVE_FLIP":
-        upside_alignment += 0.18
+        upside_alignment += cfg.alignment_above_flip_boost
     elif spot_vs_flip_label == "BELOW_FLIP":
-        downside_alignment += 0.18
+        downside_alignment += cfg.alignment_below_flip_boost
     elif spot_vs_flip_label == "AT_FLIP":
-        upside_alignment += 0.08
-        downside_alignment += 0.08
+        upside_alignment += cfg.alignment_at_flip_boost
+        downside_alignment += cfg.alignment_at_flip_boost
 
     if hedging_bias_score > 0:
-        upside_alignment += min(0.24, hedging_bias_score * 0.24)
+        upside_alignment += min(cfg.alignment_bias_cap, hedging_bias_score * cfg.alignment_bias_weight)
     elif hedging_bias_score < 0:
-        downside_alignment += min(0.24, abs(hedging_bias_score) * 0.24)
+        downside_alignment += min(cfg.alignment_bias_cap, abs(hedging_bias_score) * cfg.alignment_bias_weight)
 
     upside_squeeze_risk = round(_clip(
-        (0.40 * positive_gamma_pressure)
-        + (0.18 * flip_proximity_score)
-        + (0.16 * volatility_transition_score)
-        + (0.10 * liquidity_vacuum_score)
-        + (0.06 * intraday_extension_score)
-        + (0.10 * macro_global_boost)
+        (cfg.directional_gamma_weight * positive_gamma_pressure)
+        + (cfg.directional_flip_weight * flip_proximity_score)
+        + (cfg.directional_vol_weight * volatility_transition_score)
+        + (cfg.directional_liquidity_weight * liquidity_vacuum_score)
+        + (cfg.directional_intraday_weight * intraday_extension_score)
+        + (cfg.directional_macro_weight * macro_global_boost)
         + upside_alignment
-        - (0.28 * dampening_core),
+        - (cfg.directional_dampening_weight * dampening_core),
         0.0,
         1.0,
     ) * feature_confidence, 4)
     downside_airpocket_risk = round(_clip(
-        (0.40 * positive_gamma_pressure)
-        + (0.18 * flip_proximity_score)
-        + (0.16 * volatility_transition_score)
-        + (0.10 * liquidity_vacuum_score)
-        + (0.06 * intraday_extension_score)
-        + (0.10 * macro_global_boost)
+        (cfg.directional_gamma_weight * positive_gamma_pressure)
+        + (cfg.directional_flip_weight * flip_proximity_score)
+        + (cfg.directional_vol_weight * volatility_transition_score)
+        + (cfg.directional_liquidity_weight * liquidity_vacuum_score)
+        + (cfg.directional_intraday_weight * intraday_extension_score)
+        + (cfg.directional_macro_weight * macro_global_boost)
         + downside_alignment
-        - (0.28 * dampening_core),
+        - (cfg.directional_dampening_weight * dampening_core),
         0.0,
         1.0,
     ) * feature_confidence, 4)
     overnight_convexity_risk = round(_clip(
-        (0.28 * normalized_acceleration)
-        + (0.20 * _clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0))
-        + (0.18 * _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0))
-        + (0.14 * max(upside_squeeze_risk, downside_airpocket_risk))
-        + (0.10 * macro_global_boost)
-        + (0.10 * (1.0 if holding_context["overnight_relevant"] else 0.0))
-        - (0.22 * dampening_core),
+        (cfg.overnight_acceleration_weight * normalized_acceleration)
+        + (cfg.overnight_explosion_weight * _clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0))
+        + (cfg.overnight_macro_event_weight * _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0))
+        + (cfg.overnight_directional_weight * max(upside_squeeze_risk, downside_airpocket_risk))
+        + (cfg.overnight_macro_boost_weight * macro_global_boost)
+        + (cfg.overnight_context_weight * (1.0 if holding_context["overnight_relevant"] else 0.0))
+        - (cfg.overnight_dampening_weight * dampening_core),
         0.0,
         1.0,
     ), 4)
 
     warnings = []
-    if feature_confidence < 0.55:
+    if feature_confidence < cfg.partial_coverage_warning_threshold:
         warnings.append("gamma_vol_partial_input_coverage")
     if gamma_regime is None:
         warnings.append("gamma_regime_missing")

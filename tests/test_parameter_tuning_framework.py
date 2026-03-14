@@ -16,8 +16,14 @@ from tuning.objectives import apply_selection_policy, compute_objective
 from tuning.packs import list_parameter_packs, load_parameter_pack, resolve_parameter_pack
 from tuning.promotion import evaluate_promotion, load_promotion_state
 from tuning.registry import get_parameter_registry
+from tuning.campaigns import default_group_tuning_plans, run_group_tuning_campaign
 from tuning.runtime import temporary_parameter_pack
-from tuning.search import run_grid_search, run_random_search
+from tuning.search import (
+    run_coordinate_descent_search,
+    run_grid_search,
+    run_latin_hypercube_search,
+    run_random_search,
+)
 
 
 def _build_dataset_frame():
@@ -94,6 +100,10 @@ def test_parameter_registry_exposes_key_groups():
     assert "confirmation_filter.core.flow_support" in registry.keys()
     assert "macro_news.adjustment.lockdown_adjustment_score" in registry.keys()
     assert "global_risk.core.risk_adjustment_extreme" in registry.keys()
+    assert "strike_selection.core.strike_window_steps" in registry.keys()
+    assert "large_move_probability.core.base_probability" in registry.keys()
+    assert "event_windows.core.pre_event_warning_minutes" in registry.keys()
+    assert "keyword_category.impact.geopolitics" in registry.keys()
     assert "evaluation_thresholds.selection.trade_strength_floor" in registry.keys()
 
 
@@ -175,6 +185,7 @@ def test_search_strategies_return_reproducible_results(tmp_path):
     grid_results = run_grid_search(
         "baseline_v1",
         grid={"trade_strength.direction_thresholds.min_score": [1.6, 1.75]},
+        dataset_path=dataset_path,
         persist=False,
         selection_thresholds={"trade_strength_floor": 45},
     )
@@ -187,12 +198,70 @@ def test_search_strategies_return_reproducible_results(tmp_path):
             "trade_strength.direction_thresholds.min_margin",
             "macro_news.adjustment.lockdown_adjustment_score",
         ],
+        dataset_path=dataset_path,
         iterations=2,
         seed=11,
         persist=False,
     )
     assert len(random_results) == 2
     assert all("objective_score" in row for row in random_results)
+
+    lhs_results = run_latin_hypercube_search(
+        "baseline_v1",
+        parameter_keys=[
+            "trade_strength.direction_thresholds.min_score",
+            "trade_strength.direction_thresholds.min_margin",
+            "global_risk.core.risk_adjustment_extreme",
+        ],
+        dataset_path=dataset_path,
+        iterations=3,
+        seed=13,
+        persist=False,
+    )
+    assert len(lhs_results) == 3
+
+    coord_results = run_coordinate_descent_search(
+        "baseline_v1",
+        parameter_keys=[
+            "trade_strength.direction_thresholds.min_score",
+            "trade_strength.direction_thresholds.min_margin",
+        ],
+        dataset_path=dataset_path,
+        initial_overrides={"trade_strength.direction_thresholds.min_score": 1.75},
+        passes=1,
+        persist=False,
+    )
+    assert len(coord_results) >= 1
+    assert all("parameter_overrides" in row for row in coord_results)
+
+
+def test_group_tuning_campaign_builds_registry_driven_plans(tmp_path):
+    plans = default_group_tuning_plans(allow_live_unsafe=True)
+    groups = {plan.group for plan in plans}
+    assert "trade_strength" in groups
+    assert "strike_selection" in groups
+    assert "large_move_probability" in groups
+    assert "keyword_category" in groups
+
+    dataset_path = tmp_path / "signals.csv"
+    write_signals_dataset(_build_dataset_frame(), dataset_path)
+
+    campaign = run_group_tuning_campaign(
+        "baseline_v1",
+        dataset_path=dataset_path,
+        groups=["trade_strength", "option_efficiency"],
+        allow_live_unsafe=False,
+        walk_forward_config={
+            "split_type": "rolling",
+            "train_window_days": 2,
+            "validation_window_days": 1,
+            "minimum_train_rows": 1,
+            "minimum_validation_rows": 1,
+        },
+        persist=False,
+    )
+    assert len(campaign["steps"]) == 2
+    assert "final_overrides" in campaign
 
 
 def test_promotion_workflow_requires_more_than_single_win(tmp_path):

@@ -8,6 +8,13 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from macro.macro_news_config import get_headline_classification_config
+from config.news_category_policy import (
+    get_category_global_bias_multipliers,
+    get_category_impact_multipliers,
+    get_category_india_bias_multipliers,
+    get_category_sentiment_multipliers,
+    get_category_vol_multipliers,
+)
 from news.keyword_rules import HEADLINE_RULES, NEGATIVE_KEYWORDS, POSITIVE_KEYWORDS
 from news.models import HeadlineRecord
 
@@ -39,6 +46,11 @@ class HeadlineClassification:
 
 def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
     cfg = get_headline_classification_config()
+    sentiment_multipliers = get_category_sentiment_multipliers()
+    vol_multipliers = get_category_vol_multipliers()
+    impact_multipliers = get_category_impact_multipliers()
+    india_bias_multipliers = get_category_india_bias_multipliers()
+    global_bias_multipliers = get_category_global_bias_multipliers()
     text = record.headline.lower()
     matched_rules = []
     matched_categories = []
@@ -56,14 +68,21 @@ def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
         if not keywords:
             continue
 
+        category = str(rule["category"])
+        sentiment_multiplier = float(sentiment_multipliers.get(category, 1.0))
+        vol_multiplier = float(vol_multipliers.get(category, 1.0))
+        impact_multiplier = float(impact_multipliers.get(category, 1.0))
+        india_bias_multiplier = float(india_bias_multipliers.get(category, 1.0))
+        global_bias_multiplier = float(global_bias_multipliers.get(category, 1.0))
+
         matched_rules.append(rule["name"])
-        matched_categories.append(rule["category"])
+        matched_categories.append(category)
         matched_keywords.extend(keywords)
-        sentiment += float(rule["sentiment_weight"])
-        matched_vol_weights.append(float(rule["vol_weight"]))
-        impact = max(impact, float(rule["impact_score"]))
-        india_bias += float(rule["india_macro_bias"])
-        global_bias += float(rule["global_risk_bias"])
+        sentiment += float(rule["sentiment_weight"]) * sentiment_multiplier
+        matched_vol_weights.append(float(rule["vol_weight"]) * vol_multiplier)
+        impact = max(impact, float(rule["impact_score"]) * impact_multiplier)
+        india_bias += float(rule["india_macro_bias"]) * india_bias_multiplier
+        global_bias += float(rule["global_risk_bias"]) * global_bias_multiplier
 
     positive_hits = sum(1 for keyword in POSITIVE_KEYWORDS if keyword in text)
     negative_hits = sum(1 for keyword in NEGATIVE_KEYWORDS if keyword in text)

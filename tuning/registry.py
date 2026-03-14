@@ -8,8 +8,17 @@ from dataclasses import fields
 from typing import Any
 
 from config.dealer_hedging_pressure_policy import DealerHedgingPressurePolicyConfig
+from config.event_window_policy import EventWindowPolicyConfig
 from config.gamma_vol_acceleration_policy import GammaVolAccelerationPolicyConfig
 from config.global_risk_policy import GlobalRiskPolicyConfig
+from config.large_move_policy import LARGE_MOVE_PROBABILITY_CONFIG
+from config.news_category_policy import (
+    CATEGORY_GLOBAL_BIAS_MULTIPLIERS,
+    CATEGORY_IMPACT_MULTIPLIERS,
+    CATEGORY_INDIA_BIAS_MULTIPLIERS,
+    CATEGORY_SENTIMENT_MULTIPLIERS,
+    CATEGORY_VOL_MULTIPLIERS,
+)
 from config.option_efficiency_policy import OptionEfficiencyPolicyConfig
 from config.signal_evaluation_scoring import (
     SIGNAL_EVALUATION_DIRECTION_WEIGHTS,
@@ -27,6 +36,7 @@ from config.signal_policy import (
     TRADE_RUNTIME_THRESHOLDS,
     TRADE_STRENGTH_WEIGHTS,
 )
+from config.strike_selection_policy import STRIKE_SELECTION_SCORE_CONFIG
 from macro.macro_news_config import (
     HeadlineClassificationConfig,
     MacroNewsAdjustmentConfig,
@@ -34,6 +44,82 @@ from macro.macro_news_config import (
     MacroNewsRegimeConfig,
 )
 from tuning.models import ParameterDefinition
+
+
+GROUP_TUNING_METADATA = {
+    "trade_strength": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "low",
+        "tuning_priority": 10,
+    },
+    "confirmation_filter": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "low",
+        "tuning_priority": 12,
+    },
+    "macro_news": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 20,
+    },
+    "global_risk": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 22,
+    },
+    "gamma_vol_acceleration": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 26,
+    },
+    "dealer_pressure": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 28,
+    },
+    "option_efficiency": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "medium",
+        "tuning_priority": 24,
+    },
+    "strike_selection": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 34,
+    },
+    "large_move_probability": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "medium",
+        "tuning_priority": 32,
+    },
+    "event_windows": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "medium",
+        "tuning_priority": 36,
+    },
+    "keyword_category": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 38,
+    },
+    "evaluation_thresholds": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 30,
+    },
+}
 
 
 class ParameterRegistry:
@@ -89,6 +175,7 @@ def _parameter_definition(
     max_value: float | int | None = None,
     allowed_values: tuple[Any, ...] | None = None,
 ) -> ParameterDefinition:
+    metadata = GROUP_TUNING_METADATA.get(group, {})
     return ParameterDefinition(
         key=key,
         name=key.split(".")[-1],
@@ -103,6 +190,11 @@ def _parameter_definition(
         min_value=min_value,
         max_value=max_value,
         allowed_values=allowed_values,
+        search_strategy=str(metadata.get("search_strategy", "group_random_search")),
+        validation_mode=str(metadata.get("validation_mode", "walk_forward_regime_aware")),
+        overfit_risk=str(metadata.get("overfit_risk", "medium")),
+        tuning_priority=int(metadata.get("tuning_priority", 50)),
+        tune_as_group=True,
     )
 
 
@@ -331,6 +423,106 @@ def build_default_parameter_registry() -> ParameterRegistry:
             category="core",
             config_obj=OptionEfficiencyPolicyConfig(),
             description_prefix="Option efficiency parameter",
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="strike_selection.core",
+            module="config.strike_selection_policy",
+            group="strike_selection",
+            category="core",
+            mapping=STRIKE_SELECTION_SCORE_CONFIG,
+            description_prefix="Strike selection parameter",
+            min_value=-100.0,
+            max_value=1000000.0,
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="large_move_probability.core",
+            module="config.large_move_policy",
+            group="large_move_probability",
+            category="core",
+            mapping=LARGE_MOVE_PROBABILITY_CONFIG,
+            description_prefix="Large-move probability parameter",
+            min_value=-1.0,
+            max_value=1.0,
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="event_windows.core",
+            module="config.event_window_policy",
+            group="event_windows",
+            category="core",
+            config_obj=EventWindowPolicyConfig(),
+            description_prefix="Event window parameter",
+            live_safe=False,
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="keyword_category.sentiment",
+            module="config.news_category_policy",
+            group="keyword_category",
+            category="sentiment",
+            mapping=CATEGORY_SENTIMENT_MULTIPLIERS,
+            description_prefix="Keyword category sentiment multiplier",
+            min_value=0.5,
+            max_value=1.5,
+            live_safe=False,
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="keyword_category.volatility",
+            module="config.news_category_policy",
+            group="keyword_category",
+            category="volatility",
+            mapping=CATEGORY_VOL_MULTIPLIERS,
+            description_prefix="Keyword category volatility multiplier",
+            min_value=0.5,
+            max_value=1.5,
+            live_safe=False,
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="keyword_category.impact",
+            module="config.news_category_policy",
+            group="keyword_category",
+            category="impact",
+            mapping=CATEGORY_IMPACT_MULTIPLIERS,
+            description_prefix="Keyword category impact multiplier",
+            min_value=0.5,
+            max_value=1.5,
+            live_safe=False,
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="keyword_category.india_bias",
+            module="config.news_category_policy",
+            group="keyword_category",
+            category="india_bias",
+            mapping=CATEGORY_INDIA_BIAS_MULTIPLIERS,
+            description_prefix="Keyword category India bias multiplier",
+            min_value=0.5,
+            max_value=1.5,
+            live_safe=False,
+        )
+    )
+    definitions.extend(
+        _from_mapping(
+            prefix="keyword_category.global_bias",
+            module="config.news_category_policy",
+            group="keyword_category",
+            category="global_bias",
+            mapping=CATEGORY_GLOBAL_BIAS_MULTIPLIERS,
+            description_prefix="Keyword category global-risk bias multiplier",
+            min_value=0.5,
+            max_value=1.5,
+            live_safe=False,
         )
     )
 

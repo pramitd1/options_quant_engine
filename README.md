@@ -59,14 +59,14 @@ python scripts/signal_evaluation_report.py
 
 ## Current System Shape
 
-The engine now has four important overlay packages sitting on top of the core microstructure signal path:
+The engine now has five important overlay packages plus a dedicated research-governance stack sitting on top of the core microstructure signal path:
 
 - `macro/` and `news/`: scheduled event risk, headline classification, macro/news aggregation
 - `risk/global_risk_*`: external/global regime classification, overnight gap risk, volatility expansion risk
 - `risk/gamma_vol_acceleration_*`: convexity and acceleration overlay
 - `risk/dealer_hedging_pressure_*`: dealer-flow and pinning/acceleration overlay
 - `risk/option_efficiency_*`: expected move and option-buying efficiency overlay
-- `tuning/`: parameter registry, named packs, experiment runner, search, promotion, and reporting
+- `tuning/`: parameter registry, named packs, experiment runner, advanced search, automated campaigns, promotion, and reporting
   plus walk-forward and regime-aware validation
 
 These layers are intentionally modifiers and filters. They do not replace the core directional engine.
@@ -105,6 +105,7 @@ These layers are intentionally modifiers and filters. They do not replace the co
 - runtime pack activation in [runtime.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/runtime.py)
 - objective evaluation and experiments in [objectives.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/objectives.py) and [experiments.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/experiments.py)
 - search, promotion, and ledger inspection in [search.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/search.py), [promotion.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/promotion.py), and [reporting.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/reporting.py)
+- automated group tuning campaigns in [campaigns.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/campaigns.py)
 - walk-forward split engine and regime-aware validation in [walk_forward.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/walk_forward.py), [regimes.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/regimes.py), and [validation.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/validation.py)
 - live shadow comparison and rollout logging in [shadow.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/shadow.py)
 
@@ -243,6 +244,16 @@ Named packs currently live under [parameter_packs](/Users/pramitdutta/Desktop/op
 
 Pack format is JSON and supports inheritance through `parent` plus a flat `overrides` map keyed by stable parameter ids such as `trade_strength.scoring.flow_call_bullish` or `global_risk.core.risk_adjustment_extreme`.
 
+The governed tuning surface now extends well beyond the original threshold packs and includes:
+
+- strike-selection heuristics
+- large-move probability coefficients
+- event-window risk policy
+- category-level headline rule multipliers
+- raw overlay feature coefficients for global risk, gamma-vol acceleration, dealer hedging pressure, and option efficiency
+
+The parameter registry now covers the main engine and research groups end to end, so tuning campaigns can act on a materially broader but still auditable surface instead of leaving the overlay math buried in code.
+
 ## Promotion And Shadow Mode
 
 The production-governance layer now supports four explicit pack roles:
@@ -276,7 +287,16 @@ The tuning subsystem is designed for controlled research, not naive profit chasi
 3. experiments evaluate packs against the canonical signal dataset with time-based train/validation splitting
 4. objective scores combine hit rate, composite quality, tradeability, target reachability, drawdown proxy, stability, and frequency sanity checks
 5. walk-forward validation adds explicit out-of-sample split metrics, regime summaries, and robustness scoring
-6. promotion from `baseline` to `candidate` to `live` can now consume out-of-sample and robustness hooks in addition to sample-count, stability, and signal-frequency checks
+6. search supports bounded random search, Latin hypercube exploration, coordinate-descent refinement, and registry-driven group campaigns
+7. promotion from `baseline` to `candidate` to `live` can now consume out-of-sample and robustness hooks in addition to sample-count, stability, and signal-frequency checks
+
+The practical implication is that the system is now much closer to a governed quantitative research stack:
+
+- the engine generates signals
+- the signal evaluation dataset records what the market actually did afterward
+- the tuning framework searches registry-governed parameter groups
+- walk-forward and regime-aware validation decide whether changes generalize
+- promotion and shadow mode handle rollout conservatively
 
 Structured research outputs are written under `research/parameter_tuning/` when experiment persistence is enabled.
 
@@ -327,9 +347,27 @@ Parameter tuning framework:
 pytest -q tests/test_parameter_tuning_framework.py
 ```
 
+Automated group tuning campaign:
+
+```python
+from tuning import run_group_tuning_campaign
+
+campaign = run_group_tuning_campaign(
+    "baseline_v1",
+    groups=["trade_strength", "confirmation_filter", "option_efficiency"],
+    walk_forward_config={
+        "split_type": "rolling",
+        "train_window_days": 180,
+        "validation_window_days": 60,
+        "minimum_train_rows": 50,
+        "minimum_validation_rows": 20,
+    },
+)
+```
+
 ## Notes
 
 - The engine is intentionally conservative about missing or stale inputs and should degrade to neutral rather than inventing state.
 - Global risk, gamma-vol, dealer pressure, and option efficiency are overlays, not standalone direction engines.
 - The system is intentionally decoupled from actual executed trades; the canonical signal dataset is the research truth source.
-- The next major research step should be calibration and tuning against the canonical dataset rather than adding hidden rule complexity first.
+- The remaining research challenge is no longer basic parameter centralization; it is disciplined calibration and validation of the now much larger governed surface without overfitting.

@@ -10,12 +10,12 @@ from __future__ import annotations
 from config.settings import (
     BACKTEST_MIN_TRADE_STRENGTH,
     LOT_SIZE,
-    MACRO_EVENT_WATCH_RISK_THRESHOLD,
     MAX_CAPITAL_PER_TRADE,
     NUMBER_OF_LOTS,
     STOP_LOSS_PERCENT,
     TARGET_PROFIT_PERCENT,
 )
+from config.event_window_policy import get_event_window_policy_config
 from config.signal_policy import get_trade_runtime_thresholds
 from engine.trading_engine_support import (
     _clip,
@@ -147,14 +147,23 @@ def generate_trade(
         direction=direction,
         macro_news_state=macro_news_state,
     )
+    event_cfg = get_event_window_policy_config()
 
     macro_event_score_adjustment = 0
     if event_window_status == "PRE_EVENT_WATCH":
-        macro_event_score_adjustment = -6 if macro_event_risk_score >= MACRO_EVENT_WATCH_RISK_THRESHOLD else -3
+        macro_event_score_adjustment = (
+            event_cfg.pre_event_watch_penalty_high
+            if macro_event_risk_score >= event_cfg.watch_risk_threshold
+            else event_cfg.pre_event_watch_penalty_normal
+        )
     elif event_window_status == "POST_EVENT_COOLDOWN":
-        macro_event_score_adjustment = -4 if macro_event_risk_score >= MACRO_EVENT_WATCH_RISK_THRESHOLD else -2
+        macro_event_score_adjustment = (
+            event_cfg.post_event_cooldown_penalty_high
+            if macro_event_risk_score >= event_cfg.watch_risk_threshold
+            else event_cfg.post_event_cooldown_penalty_normal
+        )
     elif event_window_status in {"PRE_EVENT_LOCKDOWN", "LIVE_EVENT"}:
-        macro_event_score_adjustment = -10
+        macro_event_score_adjustment = event_cfg.lockdown_penalty
 
     confirmation["score_adjustment"] += macro_news_adjustments["macro_confirmation_adjustment"]
 

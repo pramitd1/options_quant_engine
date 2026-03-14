@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Codex" />
+  <meta name="dcterms.date" content="2026-03-14" />
+  <title>Options Quant Engine Parameter Inventory</title>
+  <style>
+
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">:root {
+--ink: #16202a;
+--muted: #5d6b79;
+--accent: #0e7490;
+--accent-dark: #0b5c73;
+--accent-soft: #e6f4f7;
+--paper-soft: #f8fbfc;
+--cover-bg: #0f1720;
+--cover-glow: rgba(14, 116, 144, 0.22);
+--rule: #d7e2e8;
+--paper: #ffffff;
+--code-bg: #f6f8fa;
+}
+@page {
+size: A4;
+margin: 20mm 16mm 18mm 16mm;
+}
+html {
+background: var(--paper);
+color: var(--ink);
+font-size: 15px;
+line-height: 1.58;
+}
+body {
+margin: 0 auto;
+max-width: 780px;
+padding: 28px 20px 42px;
+font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+text-rendering: optimizeLegibility;
+counter-reset: section;
+}
+header#title-block-header {
+display: none;
+}
+.title {
+margin: 0;
+font-size: 2.5rem;
+line-height: 1.03;
+letter-spacing: -0.03em;
+}
+.subtitle {
+margin: 12px 0 0;
+color: var(--accent);
+font-size: 1rem;
+font-weight: 700;
+letter-spacing: 0.12em;
+text-transform: uppercase;
+}
+.author,
+.date {
+margin-top: 8px;
+color: var(--muted);
+font-size: 0.92rem;
+}
+.author::before {
+content: "Prepared as: ";
+color: var(--accent-dark);
+font-weight: 600;
+}
+.date::before {
+content: "Updated: ";
+color: var(--accent-dark);
+font-weight: 600;
+}
+h1,
+h2,
+h3,
+h4 {
+color: var(--ink);
+page-break-after: avoid;
+break-after: avoid-page;
+}
+h1 {
+margin: 2.2rem 0 0.8rem;
+font-size: 1.85rem;
+letter-spacing: -0.02em;
+}
+h2 {
+margin: 2rem 0 0.75rem;
+padding-top: 0.35rem;
+font-size: 1.28rem;
+border-top: 1px solid var(--rule);
+}
+h3 {
+margin: 1.35rem 0 0.55rem;
+font-size: 1.02rem;
+color: var(--accent);
+text-transform: uppercase;
+letter-spacing: 0.05em;
+}
+p,
+ul,
+ol,
+table,
+blockquote,
+pre {
+margin-top: 0.72rem;
+margin-bottom: 0.72rem;
+}
+ul,
+ol {
+padding-left: 1.4rem;
+}
+li {
+margin: 0.18rem 0;
+}
+a {
+color: var(--accent);
+text-decoration: none;
+}
+strong {
+color: #0f1720;
+}
+code {
+background: var(--code-bg);
+border-radius: 4px;
+padding: 0.08rem 0.34rem;
+font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+font-size: 0.9em;
+}
+pre {
+background: var(--code-bg);
+border: 1px solid var(--rule);
+border-radius: 8px;
+padding: 12px 14px;
+overflow-x: auto;
+}
+pre code {
+padding: 0;
+background: transparent;
+border-radius: 0;
+}
+blockquote {
+margin-left: 0;
+padding: 10px 14px;
+border-left: 4px solid var(--accent);
+background: var(--accent-soft);
+color: var(--ink);
+}
+table {
+width: 100%;
+border-collapse: collapse;
+display: table;
+font-size: 0.95rem;
+}
+th,
+td {
+padding: 8px 10px;
+border-bottom: 1px solid var(--rule);
+vertical-align: top;
+text-align: left;
+}
+th {
+color: var(--muted);
+font-size: 0.82rem;
+font-weight: 700;
+letter-spacing: 0.06em;
+text-transform: uppercase;
+}
+#TOC {
+margin: 20px 0 28px;
+padding: 16px 18px;
+border: 1px solid var(--rule);
+border-radius: 10px;
+background: var(--paper-soft);
+page-break-inside: avoid;
+}
+#TOC::before {
+content: "Contents";
+display: block;
+margin-bottom: 8px;
+color: var(--muted);
+font-size: 0.82rem;
+font-weight: 700;
+letter-spacing: 0.08em;
+text-transform: uppercase;
+}
+#TOC ul {
+margin: 0;
+padding-left: 1.1rem;
+}
+#TOC li {
+margin: 0.15rem 0;
+}
+hr {
+border: none;
+border-top: 1px solid var(--rule);
+margin: 1.2rem 0;
+}
+img,
+svg {
+max-width: 100%;
+}
+.executive-summary {
+margin: 0 0 22px;
+padding: 16px 18px 18px;
+border: 1px solid var(--rule);
+border-radius: 12px;
+background: linear-gradient(180deg, #fcfeff 0%, #f3fafc 100%);
+box-shadow: 0 10px 24px rgba(16, 32, 42, 0.05);
+page-break-inside: avoid;
+}
+.summary-label {
+margin-bottom: 10px;
+color: var(--accent-dark);
+font-size: 0.78rem;
+font-weight: 800;
+letter-spacing: 0.12em;
+text-transform: uppercase;
+}
+.summary-grid {
+display: grid;
+grid-template-columns: repeat(3, minmax(0, 1fr));
+gap: 12px;
+margin: 18px 0 8px;
+}
+.summary-card {
+padding: 12px 13px;
+border: 1px solid var(--rule);
+border-radius: 10px;
+background: rgba(255, 255, 255, 0.86);
+font-size: 0.95rem;
+}
+.summary-card-title {
+margin-bottom: 6px;
+color: var(--ink);
+font-size: 0.8rem;
+font-weight: 800;
+letter-spacing: 0.08em;
+text-transform: uppercase;
+}
+.memo-cover {
+min-height: 240mm;
+padding: 34mm 20mm 22mm;
+color: #f4f8fb;
+background:
+radial-gradient(circle at top right, var(--cover-glow), transparent 34%),
+linear-gradient(160deg, #0b1220 0%, #102635 48%, #10323d 100%);
+border-radius: 16px;
+box-sizing: border-box;
+page-break-after: always;
+break-after: page;
+}
+.cover-kicker {
+margin-bottom: 24px;
+color: #9fd7e5;
+font-size: 0.82rem;
+font-weight: 800;
+letter-spacing: 0.18em;
+text-transform: uppercase;
+}
+.cover-title {
+margin: 0;
+color: #ffffff;
+font-size: 3.3rem;
+line-height: 0.98;
+letter-spacing: -0.045em;
+}
+.cover-subtitle {
+margin-top: 14px;
+max-width: 12ch;
+color: #d9eef4;
+font-size: 1.28rem;
+font-weight: 600;
+line-height: 1.15;
+}
+.cover-rule {
+width: 120px;
+height: 4px;
+margin: 28px 0 24px;
+background: linear-gradient(90deg, #44bdd6 0%, #d9eef4 100%);
+border-radius: 999px;
+}
+.cover-summary {
+max-width: 34em;
+color: #e4eef2;
+font-size: 1.02rem;
+line-height: 1.7;
+}
+.cover-meta {
+display: grid;
+grid-template-columns: repeat(2, minmax(0, 1fr));
+gap: 14px 24px;
+margin-top: 40px;
+padding-top: 22px;
+border-top: 1px solid rgba(217, 238, 244, 0.18);
+font-size: 0.94rem;
+}
+.cover-meta span {
+display: block;
+margin-bottom: 5px;
+color: #8fbdc8;
+font-size: 0.74rem;
+font-weight: 700;
+letter-spacing: 0.08em;
+text-transform: uppercase;
+}
+.page-break {
+page-break-before: always;
+break-before: page;
+height: 0;
+}
+.appendix-note {
+margin: 0 0 18px;
+padding: 12px 14px;
+border: 1px solid var(--rule);
+border-radius: 10px;
+background: var(--paper-soft);
+color: var(--muted);
+}
+@media print {
+html {
+font-size: 11.5pt;
+}
+body {
+max-width: none;
+padding: 0;
+}
+#TOC,
+.executive-summary,
+.summary-grid,
+blockquote,
+pre,
+table {
+break-inside: avoid-page;
+}
+}
+@media (max-width: 720px) {
+body {
+padding: 20px 16px 32px;
+}
+.title {
+font-size: 2rem;
+}
+.memo-cover {
+min-height: auto;
+padding: 28px 20px 24px;
+}
+.cover-title {
+font-size: 2.45rem;
+}
+.cover-meta {
+grid-template-columns: 1fr;
+}
+.summary-grid {
+grid-template-columns: 1fr;
+}
+}
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Options Quant Engine Parameter Inventory</h1>
+<p class="subtitle">Governed Tuning Surface Review</p>
+<p class="author">Codex</p>
+<p class="date">2026-03-14</p>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#executive-summary" id="toc-executive-summary"><span class="toc-section-number">1</span> Executive Summary</a></li>
+<li><a href="#registry-snapshot" id="toc-registry-snapshot"><span class="toc-section-number">2</span> Registry Snapshot</a></li>
+<li><a href="#parameter-groups" id="toc-parameter-groups"><span class="toc-section-number">3</span> Parameter Groups</a>
+<ul>
+<li><a href="#1-trade-strength" id="toc-1-trade-strength"><span class="toc-section-number">3.1</span> 1. Trade Strength</a></li>
+<li><a href="#2-confirmation-filter" id="toc-2-confirmation-filter"><span class="toc-section-number">3.2</span> 2. Confirmation Filter</a></li>
+<li><a href="#3-macro--news" id="toc-3-macro--news"><span class="toc-section-number">3.3</span> 3. Macro / News</a></li>
+<li><a href="#4-global-risk" id="toc-4-global-risk"><span class="toc-section-number">3.4</span> 4. Global Risk</a></li>
+<li><a href="#5-gamma-vol-acceleration" id="toc-5-gamma-vol-acceleration"><span class="toc-section-number">3.5</span> 5. Gamma-Vol Acceleration</a></li>
+<li><a href="#6-dealer-hedging-pressure" id="toc-6-dealer-hedging-pressure"><span class="toc-section-number">3.6</span> 6. Dealer Hedging
+Pressure</a></li>
+<li><a href="#7-option-efficiency--expected-move" id="toc-7-option-efficiency--expected-move"><span class="toc-section-number">3.7</span> 7. Option Efficiency / Expected
+Move</a></li>
+<li><a href="#8-strike-selection" id="toc-8-strike-selection"><span class="toc-section-number">3.8</span> 8. Strike Selection</a></li>
+<li><a href="#9-event-window-policy" id="toc-9-event-window-policy"><span class="toc-section-number">3.9</span> 9. Event Window Policy</a></li>
+<li><a href="#10-evaluation-thresholds" id="toc-10-evaluation-thresholds"><span class="toc-section-number">3.10</span> 10. Evaluation
+Thresholds</a></li>
+<li><a href="#11-large-move-probability" id="toc-11-large-move-probability"><span class="toc-section-number">3.11</span> 11. Large-Move
+Probability</a></li>
+<li><a href="#12-backtest--harness-parameters" id="toc-12-backtest--harness-parameters"><span class="toc-section-number">3.12</span> 12. Backtest / Harness
+Parameters</a></li>
+</ul></li>
+<li><a href="#recommended-tuning-methodology-by-group" id="toc-recommended-tuning-methodology-by-group"><span class="toc-section-number">4</span> Recommended Tuning Methodology By
+Group</a>
+<ul>
+<li><a href="#tune-first" id="toc-tune-first"><span class="toc-section-number">4.1</span> Tune First</a></li>
+<li><a href="#tune-second" id="toc-tune-second"><span class="toc-section-number">4.2</span> Tune Second</a></li>
+<li><a href="#leave-alone-for-now" id="toc-leave-alone-for-now"><span class="toc-section-number">4.3</span> Leave Alone For Now</a></li>
+</ul></li>
+<li><a href="#overfitting-risk-review" id="toc-overfitting-risk-review"><span class="toc-section-number">5</span> Overfitting Risk Review</a>
+<ul>
+<li><a href="#highest-risk" id="toc-highest-risk"><span class="toc-section-number">5.1</span> Highest Risk</a></li>
+<li><a href="#medium-risk" id="toc-medium-risk"><span class="toc-section-number">5.2</span> Medium Risk</a></li>
+<li><a href="#lower-risk" id="toc-lower-risk"><span class="toc-section-number">5.3</span> Lower Risk</a></li>
+</ul></li>
+<li><a href="#practical-recommendation" id="toc-practical-recommendation"><span class="toc-section-number">6</span> Practical Recommendation</a></li>
+<li><a href="#appendix-remaining-intentionally-non-centralized-areas" id="toc-appendix-remaining-intentionally-non-centralized-areas"><span class="toc-section-number">7</span> Appendix: Remaining Intentionally
+Non-Centralized Areas</a></li>
+</ul>
+</nav>
+<h1 data-number="1" id="executive-summary"><span class="header-section-number">1</span> Executive Summary</h1>
+<p>The repository now has a materially broader governed tuning surface
+than it did earlier in the project. The parameter registry currently
+covers <code>616</code> parameters across <code>12</code> logical
+groups:</p>
+<ul>
+<li><code>trade_strength</code></li>
+<li><code>confirmation_filter</code></li>
+<li><code>macro_news</code></li>
+<li><code>global_risk</code></li>
+<li><code>gamma_vol_acceleration</code></li>
+<li><code>dealer_pressure</code></li>
+<li><code>option_efficiency</code></li>
+<li><code>evaluation_thresholds</code></li>
+<li><code>strike_selection</code></li>
+<li><code>large_move_probability</code></li>
+<li><code>event_windows</code></li>
+<li><code>keyword_category</code></li>
+</ul>
+<p>The most important architectural change is that the system is no
+longer limited to tuning only top-level thresholds and penalties. A
+large portion of the raw overlay feature math is now exposed through
+registry-governed policy configs, especially in:</p>
+<ul>
+<li><code>global_risk</code></li>
+<li><code>gamma_vol_acceleration</code></li>
+<li><code>dealer_pressure</code></li>
+<li><code>option_efficiency</code></li>
+</ul>
+<p>This is a meaningful improvement because it brings more of the true
+live model surface into the same research, validation, and promotion
+framework.</p>
+<p>The signal-evaluation-first principle still holds:</p>
+<p><code>market data -&gt; signal generation -&gt; signal evaluation dataset -&gt; tuning / validation / promotion</code></p>
+<p>Actual executed trades remain outside the learning loop.</p>
+<h1 data-number="2" id="registry-snapshot"><span class="header-section-number">2</span> Registry Snapshot</h1>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th style="text-align: right;">Count</th>
+<th>Main sources</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>trade_strength</code></td>
+<td style="text-align: right;">48</td>
+<td><code>config/signal_policy.py</code></td>
+</tr>
+<tr>
+<td><code>confirmation_filter</code></td>
+<td style="text-align: right;">28</td>
+<td><code>config/signal_policy.py</code></td>
+</tr>
+<tr>
+<td><code>macro_news</code></td>
+<td style="text-align: right;">50</td>
+<td><code>macro/macro_news_config.py</code></td>
+</tr>
+<tr>
+<td><code>global_risk</code></td>
+<td style="text-align: right;">122</td>
+<td><code>config/global_risk_policy.py</code></td>
+</tr>
+<tr>
+<td><code>gamma_vol_acceleration</code></td>
+<td style="text-align: right;">85</td>
+<td><code>config/gamma_vol_acceleration_policy.py</code></td>
+</tr>
+<tr>
+<td><code>dealer_pressure</code></td>
+<td style="text-align: right;">101</td>
+<td><code>config/dealer_hedging_pressure_policy.py</code></td>
+</tr>
+<tr>
+<td><code>option_efficiency</code></td>
+<td style="text-align: right;">30</td>
+<td><code>config/option_efficiency_policy.py</code></td>
+</tr>
+<tr>
+<td><code>evaluation_thresholds</code></td>
+<td style="text-align: right;">27</td>
+<td><code>config/signal_evaluation_scoring.py</code></td>
+</tr>
+<tr>
+<td><code>strike_selection</code></td>
+<td style="text-align: right;">55</td>
+<td><code>config/strike_selection_policy.py</code></td>
+</tr>
+<tr>
+<td><code>large_move_probability</code></td>
+<td style="text-align: right;">20</td>
+<td><code>config/large_move_policy.py</code></td>
+</tr>
+<tr>
+<td><code>event_windows</code></td>
+<td style="text-align: right;">15</td>
+<td><code>config/event_window_policy.py</code></td>
+</tr>
+<tr>
+<td><code>keyword_category</code></td>
+<td style="text-align: right;">35</td>
+<td><code>config/news_category_policy.py</code></td>
+</tr>
+</tbody>
+</table>
+<h1 data-number="3" id="parameter-groups"><span class="header-section-number">3</span> Parameter Groups</h1>
+<h2 data-number="3.1" id="1-trade-strength"><span class="header-section-number">3.1</span> 1. Trade Strength</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Direction vote weights</td>
+<td><code>config/signal_policy.py</code>,
+<code>strategy/trade_strength.py</code></td>
+<td>directional vote contribution from flow, gamma, hedging, vanna,
+charm</td>
+<td>Registry-governed</td>
+<td>Coordinate descent and small bounded search</td>
+</tr>
+<tr>
+<td>Trade strength scoring weights</td>
+<td><code>config/signal_policy.py</code>,
+<code>strategy/trade_strength.py</code></td>
+<td>additive signal strength from flow, walls, gamma, liquidity,
+vol</td>
+<td>Registry-governed</td>
+<td>Group-level campaign</td>
+</tr>
+<tr>
+<td>Consensus scoring</td>
+<td><code>config/signal_policy.py</code>,
+<code>strategy/trade_strength.py</code></td>
+<td>alignment bonuses and conflict penalties</td>
+<td>Registry-governed</td>
+<td>Coordinate descent</td>
+</tr>
+<tr>
+<td>Runtime thresholds</td>
+<td><code>config/signal_policy.py</code>,
+<code>engine/trading_engine.py</code></td>
+<td>trade/watchlist/quality transitions</td>
+<td>Registry-governed</td>
+<td>Tune first with walk-forward validation</td>
+</tr>
+<tr>
+<td>Direction thresholds</td>
+<td><code>config/signal_policy.py</code></td>
+<td>minimum vote score and vote margin</td>
+<td>Registry-governed</td>
+<td>Tune first</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.2" id="2-confirmation-filter"><span class="header-section-number">3.2</span> 2. Confirmation Filter</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Confirmation thresholds and veto rules</td>
+<td><code>config/signal_policy.py</code>,
+<code>strategy/confirmation_filters.py</code></td>
+<td>strong/confirmed/mixed states, move-prob cutoffs, veto
+sensitivity</td>
+<td>Registry-governed</td>
+<td>Coordinate descent with walk-forward validation</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.3" id="3-macro--news"><span class="header-section-number">3.3</span> 3. Macro / News</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Headline classification config</td>
+<td><code>macro/macro_news_config.py</code>,
+<code>news/classifier.py</code></td>
+<td>hit weights, vol bonuses, bias weights</td>
+<td>Registry-governed</td>
+<td>Latin hypercube on bounded ranges</td>
+</tr>
+<tr>
+<td>Aggregation config</td>
+<td><code>macro/macro_news_config.py</code>,
+<code>macro/macro_news_aggregator.py</code></td>
+<td>decay, confidence, headline velocity weighting</td>
+<td>Registry-governed</td>
+<td>Regime-aware tuning only</td>
+</tr>
+<tr>
+<td>Regime config</td>
+<td><code>macro/macro_news_config.py</code>,
+<code>macro/macro_news_aggregator.py</code></td>
+<td>risk-on / risk-off mapping</td>
+<td>Registry-governed</td>
+<td>Walk-forward and regime-aware only</td>
+</tr>
+<tr>
+<td>Adjustment config</td>
+<td><code>macro/macro_news_config.py</code>,
+<code>macro/engine_adjustments.py</code></td>
+<td>score, confirmation, and size-cap overlays</td>
+<td>Registry-governed</td>
+<td>High-priority tuning group</td>
+</tr>
+<tr>
+<td>Category multipliers</td>
+<td><code>config/news_category_policy.py</code>,
+<code>news/classifier.py</code></td>
+<td>category-level sentiment, vol, impact, India/global bias
+scaling</td>
+<td>Registry-governed</td>
+<td>Tune category weights, not individual keywords</td>
+</tr>
+<tr>
+<td>Raw keyword dictionaries</td>
+<td><code>news/keyword_rules.py</code></td>
+<td>actual keyword match universe</td>
+<td>Hard-coded by design</td>
+<td>Keep fixed for now</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.4" id="4-global-risk"><span class="header-section-number">3.4</span> 4. Global Risk</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Policy thresholds</td>
+<td><code>config/global_risk_policy.py</code>,
+<code>risk/global_risk_regime.py</code></td>
+<td>regime thresholds, overnight thresholds, size caps, adjustment
+scores</td>
+<td>Registry-governed</td>
+<td>Walk-forward and regime-aware only</td>
+</tr>
+<tr>
+<td>Raw feature thresholds</td>
+<td><code>config/global_risk_policy.py</code>,
+<code>risk/global_risk_features.py</code></td>
+<td>oil, gold, copper, VIX, US equity, rates, FX shock cutoffs</td>
+<td>Registry-governed</td>
+<td>Bounded Latin hypercube only</td>
+</tr>
+<tr>
+<td>Blend coefficients</td>
+<td><code>config/global_risk_policy.py</code>,
+<code>risk/global_risk_features.py</code>,
+<code>risk/global_risk_regime.py</code></td>
+<td>risk-off / risk-on pressure, global score composition, overnight gap
+composition</td>
+<td>Registry-governed</td>
+<td>Tune as grouped campaigns, not individually</td>
+</tr>
+<tr>
+<td>Engine modifiers</td>
+<td><code>config/global_risk_policy.py</code>,
+<code>engine/trading_engine_support.py</code></td>
+<td>extra penalties from vol explosion and oil shock</td>
+<td>Registry-governed</td>
+<td>Tune conservatively after regime validation</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.5" id="5-gamma-vol-acceleration"><span class="header-section-number">3.5</span> 5. Gamma-Vol Acceleration</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Regime thresholds</td>
+<td><code>config/gamma_vol_acceleration_policy.py</code>,
+<code>risk/gamma_vol_acceleration_regime.py</code></td>
+<td>risk-state bands, directional thresholds, overnight thresholds</td>
+<td>Registry-governed</td>
+<td>Tune first inside this group</td>
+</tr>
+<tr>
+<td>Raw feature coefficients</td>
+<td><code>config/gamma_vol_acceleration_policy.py</code>,
+<code>risk/gamma_vol_acceleration_features.py</code></td>
+<td>gamma, flip proximity, vol transition, vacuum, hedging, macro/global
+blend</td>
+<td>Registry-governed</td>
+<td>Group-level Latin hypercube plus coordinate refinement</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.6" id="6-dealer-hedging-pressure"><span class="header-section-number">3.6</span> 6. Dealer Hedging Pressure</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Regime thresholds</td>
+<td><code>config/dealer_hedging_pressure_policy.py</code>,
+<code>risk/dealer_hedging_pressure_regime.py</code></td>
+<td>pressure, pinning, two-sided instability, overnight thresholds</td>
+<td>Registry-governed</td>
+<td>Tune first inside this group</td>
+</tr>
+<tr>
+<td>Raw feature coefficients</td>
+<td><code>config/dealer_hedging_pressure_policy.py</code>,
+<code>risk/dealer_hedging_pressure_features.py</code></td>
+<td>gamma base, flow confirmation, structure, vacuum, macro/global
+blend</td>
+<td>Registry-governed</td>
+<td>Group-level campaign with strict robustness filtering</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.7" id="7-option-efficiency--expected-move"><span class="header-section-number">3.7</span> 7. Option Efficiency / Expected
+Move</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Classifier thresholds</td>
+<td><code>config/option_efficiency_policy.py</code>,
+<code>risk/option_efficiency_layer.py</code></td>
+<td>efficiency bands, overnight penalties, adjustment rules</td>
+<td>Registry-governed</td>
+<td>Tune early to mid priority</td>
+</tr>
+<tr>
+<td>Raw feature coefficients</td>
+<td><code>config/option_efficiency_policy.py</code>,
+<code>risk/option_efficiency_features.py</code></td>
+<td>IV normalization, effective delta clamps, convexity multiplier,
+expected option move scaling</td>
+<td>Registry-governed</td>
+<td>Tune as grouped coefficients, not as isolated parameters</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.8" id="8-strike-selection"><span class="header-section-number">3.8</span> 8. Strike Selection</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Strike ranking heuristics</td>
+<td><code>config/strike_selection_policy.py</code>,
+<code>strategy/strike_selector.py</code></td>
+<td>moneyness bands, premium bands, liquidity cutoffs, wall penalties,
+IV preference</td>
+<td>Registry-governed</td>
+<td>Group-level campaign after core signal thresholds</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.9" id="9-event-window-policy"><span class="header-section-number">3.9</span> 9. Event Window Policy</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Event window geometry and penalties</td>
+<td><code>config/event_window_policy.py</code>,
+<code>macro/scheduled_event_risk.py</code>,
+<code>engine/trading_engine.py</code></td>
+<td>warning/lockdown/cooldown windows, severity risk levels, event
+penalties</td>
+<td>Registry-governed</td>
+<td>Conservative bounded search only</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.10" id="10-evaluation-thresholds"><span class="header-section-number">3.10</span> 10. Evaluation Thresholds</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Composite score weights</td>
+<td><code>config/signal_evaluation_scoring.py</code>,
+<code>research/signal_evaluation/evaluator.py</code></td>
+<td>direction / magnitude / timing / tradeability blend</td>
+<td>Registry-governed</td>
+<td>Research-only tuning</td>
+</tr>
+<tr>
+<td>Selection policy thresholds</td>
+<td><code>config/signal_evaluation_scoring.py</code>,
+<code>tuning/objectives.py</code></td>
+<td>which signals are selected in experiments</td>
+<td>Registry-governed</td>
+<td>Tune carefully; high circularity risk</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.11" id="11-large-move-probability"><span class="header-section-number">3.11</span> 11. Large-Move
+Probability</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Probability coefficients</td>
+<td><code>config/large_move_policy.py</code>,
+<code>models/large_move_probability.py</code></td>
+<td>probability uplift / penalties from gamma, vacuum, hedging, IV
+percentile, range</td>
+<td>Registry-governed</td>
+<td>Latin hypercube on narrow bounds</td>
+</tr>
+</tbody>
+</table>
+<h2 data-number="3.12" id="12-backtest--harness-parameters"><span class="header-section-number">3.12</span> 12. Backtest / Harness
+Parameters</h2>
+<table>
+<thead>
+<tr>
+<th>Group</th>
+<th>Where used</th>
+<th>What it controls</th>
+<th>Governance state</th>
+<th>Recommended tuning method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TP / SL defaults</td>
+<td><code>config/settings.py</code>,
+<code>strategy/exit_model.py</code></td>
+<td>hypothetical trade geometry</td>
+<td>Settings-based</td>
+<td>Leave mostly fixed for now</td>
+</tr>
+<tr>
+<td>Slippage / spread / commissions</td>
+<td><code>config/settings.py</code>, backtest modules</td>
+<td>backtest realism assumptions</td>
+<td>Settings-based</td>
+<td>Do not tune for alpha</td>
+</tr>
+<tr>
+<td>Sweep grids</td>
+<td><code>config/settings.py</code>,
+<code>backtest/parameter_sweep.py</code></td>
+<td>research search scaffolding</td>
+<td>Settings-based</td>
+<td>Adjust only as research tooling, not model tuning</td>
+</tr>
+</tbody>
+</table>
+<h1 data-number="4" id="recommended-tuning-methodology-by-group"><span class="header-section-number">4</span> Recommended Tuning Methodology By
+Group</h1>
+<h2 data-number="4.1" id="tune-first"><span class="header-section-number">4.1</span> Tune First</h2>
+<ol type="1">
+<li>Trade strength runtime thresholds and direction thresholds</li>
+<li>Confirmation filter thresholds</li>
+<li>Macro/news adjustment weights</li>
+<li>Global risk regime and overnight thresholds</li>
+<li>Option efficiency thresholds</li>
+<li>Gamma-vol and dealer-pressure regime thresholds</li>
+</ol>
+<h2 data-number="4.2" id="tune-second"><span class="header-section-number">4.2</span> Tune Second</h2>
+<ol type="1">
+<li>Global risk raw blend coefficients</li>
+<li>Gamma-vol raw feature coefficients</li>
+<li>Dealer-pressure raw feature coefficients</li>
+<li>Option-efficiency raw feature coefficients</li>
+<li>Strike-selection heuristics</li>
+<li>Large-move probability coefficients</li>
+</ol>
+<h2 data-number="4.3" id="leave-alone-for-now"><span class="header-section-number">4.3</span> Leave Alone For Now</h2>
+<ol type="1">
+<li>Raw keyword lists in <code>news/keyword_rules.py</code></li>
+<li>Risk-free rate and dividend yield assumptions</li>
+<li>Backtest friction settings</li>
+<li>Default TP / SL percentages until more outcome calibration is
+available</li>
+</ol>
+<h1 data-number="5" id="overfitting-risk-review"><span class="header-section-number">5</span> Overfitting Risk Review</h1>
+<h2 data-number="5.1" id="highest-risk"><span class="header-section-number">5.1</span> Highest Risk</h2>
+<ul>
+<li>category and overlay coefficient tuning in low-sample regimes</li>
+<li>evaluation-selection thresholds in
+<code>config/signal_evaluation_scoring.py</code></li>
+<li>strike-selection heuristics in
+<code>strategy/strike_selector.py</code></li>
+<li>any attempt to tune raw keywords instead of category
+multipliers</li>
+</ul>
+<h2 data-number="5.2" id="medium-risk"><span class="header-section-number">5.2</span> Medium Risk</h2>
+<ul>
+<li>global risk and macro/news regime thresholds</li>
+<li>dealer-pressure and gamma-vol raw blends</li>
+<li>large-move probability coefficients</li>
+</ul>
+<h2 data-number="5.3" id="lower-risk"><span class="header-section-number">5.3</span> Lower Risk</h2>
+<ul>
+<li>trade strength runtime thresholds</li>
+<li>direction thresholds</li>
+<li>confirmation thresholds</li>
+</ul>
+<h1 data-number="6" id="practical-recommendation"><span class="header-section-number">6</span> Practical Recommendation</h1>
+<p>The tuning program should now be thought of in three layers:</p>
+<ol type="1">
+<li>tune the core threshold groups first</li>
+<li>tune the overlay coefficient groups only after the thresholds are
+stable</li>
+<li>keep keyword universes and execution-external artifacts outside the
+tuning surface</li>
+</ol>
+<p>The important improvement versus the earlier system is that the
+second layer is now genuinely available for governed research instead of
+remaining buried in feature code.</p>
+<h1 data-number="7" id="appendix-remaining-intentionally-non-centralized-areas"><span class="header-section-number">7</span> Appendix: Remaining Intentionally
+Non-Centralized Areas</h1>
+<ul>
+<li><code>news/keyword_rules.py</code>
+<ul>
+<li><code>HEADLINE_RULES</code></li>
+<li><code>POSITIVE_KEYWORDS</code></li>
+<li><code>NEGATIVE_KEYWORDS</code></li>
+</ul></li>
+<li>some research-harness settings in
+<code>config/settings.py</code></li>
+<li>scenario fixture JSON files under <code>config/</code></li>
+</ul>
+<p>These remain intentionally less dynamic because they are better
+treated as taxonomy, research scaffolding, or operational assumptions
+rather than direct optimization targets.</p>
+</body>
+</html>

@@ -8,6 +8,8 @@ import math
 
 import pandas as pd
 
+from config.option_efficiency_policy import get_option_efficiency_policy_config
+
 
 def _clip(value, lo, hi):
     return max(lo, min(hi, value))
@@ -39,19 +41,21 @@ def _holding_context(global_risk_state, holding_profile):
 
 
 def _normalize_iv(value):
+    cfg = get_option_efficiency_policy_config()
     iv = _safe_float(value, None)
     if iv is None or iv <= 0:
         return None, None
 
-    if iv > 1.5:
+    if iv > cfg.iv_percent_unit_threshold:
         return iv / 100.0, "PERCENT"
     return iv, "DECIMAL"
 
 
 def _parse_time_to_expiry_years(expiry_value=None, valuation_time=None, tte=None):
+    cfg = get_option_efficiency_policy_config()
     tte_value = _safe_float(tte, None)
     if tte_value not in (None, 0):
-        return max(tte_value, 1.0 / (365.0 * 24.0)), "DIRECT_TTE"
+        return max(tte_value, cfg.minimum_time_to_expiry_years), "DIRECT_TTE"
 
     if expiry_value is None:
         return None, None
@@ -67,7 +71,7 @@ def _parse_time_to_expiry_years(expiry_value=None, valuation_time=None, tte=None
         valuation_ts = pd.Timestamp.utcnow()
 
     time_years = (expiry_ts - valuation_ts).total_seconds() / (365.0 * 24.0 * 3600.0)
-    return max(float(time_years), 1.0 / (365.0 * 24.0)), "PARSED_EXPIRY"
+    return max(float(time_years), cfg.minimum_time_to_expiry_years), "PARSED_EXPIRY"
 
 
 def _expected_move_quality(iv_source, dte_source):
@@ -79,20 +83,22 @@ def _expected_move_quality(iv_source, dte_source):
 
 
 def _effective_delta(delta):
+    cfg = get_option_efficiency_policy_config()
     value = abs(_safe_float(delta, 0.0))
     if value <= 0:
         return None
-    return _clip(value, 0.25, 0.85)
+    return _clip(value, cfg.min_effective_delta, cfg.max_effective_delta)
 
 
 def _strike_moneyness_bucket(direction, strike, spot):
+    cfg = get_option_efficiency_policy_config()
     spot_value = _safe_float(spot, None)
     strike_value = _safe_float(strike, None)
     if spot_value in (None, 0) or strike_value is None:
         return "UNKNOWN"
 
     distance_pct = abs(strike_value - spot_value) / spot_value * 100.0
-    if distance_pct <= 0.20:
+    if distance_pct <= cfg.strike_moneyness_atm_distance_pct:
         return "ATM"
 
     if direction == "CALL":
@@ -103,9 +109,10 @@ def _strike_moneyness_bucket(direction, strike, spot):
 
 
 def _payoff_hint(strike_moneyness_bucket, strike_distance_ratio, premium_ratio):
-    if strike_moneyness_bucket == "OTM" and strike_distance_ratio is not None and strike_distance_ratio > 1.0:
+    cfg = get_option_efficiency_policy_config()
+    if strike_moneyness_bucket == "OTM" and strike_distance_ratio is not None and strike_distance_ratio > cfg.payoff_far_otm_distance_ratio:
         return "far_otm_requires_large_move"
-    if strike_moneyness_bucket == "ITM" and premium_ratio is not None and premium_ratio < 0.65:
+    if strike_moneyness_bucket == "ITM" and premium_ratio is not None and premium_ratio < cfg.payoff_deep_itm_premium_ratio:
         return "deep_itm_premium_heavy"
     if strike_moneyness_bucket == "ATM":
         return "atm_convexity_balanced"
@@ -144,6 +151,7 @@ def build_option_efficiency_features(
     delta=None,
     holding_profile="AUTO",
 ):
+    cfg = get_option_efficiency_policy_config()
     holding_context = _holding_context(global_risk_state, holding_profile)
     iv_decimal, iv_unit = _normalize_iv(atm_iv)
     iv_source = "ATM_IV" if iv_decimal is not None else None
@@ -178,36 +186,43 @@ def build_option_efficiency_features(
     direction = str(direction or "").upper().strip()
     if entry_value not in (None, 0) and target_value is not None and spot_value not in (None, 0):
         option_gain_target = max(target_value - entry_value, 0.0)
-        delta_for_target = effective_delta if effective_delta is not None else 0.35
-        target_distance_points = option_gain_target / max(delta_for_target, 0.25)
+        delta_for_target = effective_delta if effective_delta is not None else cfg.fallback_delta
+        target_distance_points = option_gain_target / max(delta_for_target, cfg.target_delta_floor)
 
         intrinsic_hurdle = 0.0
         if strike_value is not None:
             if direction == "CALL":
-                intrinsic_hurdle = max(strike_value - spot_value, 0.0) * 0.75
+                intrinsic_hurdle = max(strike_value - spot_value, 0.0) * cfg.target_intrinsic_hurdle_multiplier
             elif direction == "PUT":
-                intrinsic_hurdle = max(spot_value - strike_value, 0.0) * 0.75
+                intrinsic_hurdle = max(spot_value - strike_value, 0.0) * cfg.target_intrinsic_hurdle_multiplier
         target_distance_points = round(max(target_distance_points, intrinsic_hurdle), 2)
         target_distance_pct = round((target_distance_points / spot_value) * 100.0, 4)
         if expected_move_points not in (None, 0):
             expected_move_coverage_ratio = round(expected_move_points / max(target_distance_points, 1e-6), 4)
 
-    trade_prob = _clip(_safe_float(hybrid_move_probability, 0.5), 0.05, 0.95)
+    trade_prob = _clip(_safe_float(hybrid_move_probability, 0.5), cfg.trade_probability_floor, cfg.trade_probability_ceiling)
     gamma_vol_norm = _clip(_safe_float(gamma_vol_acceleration_score, 0.0) / 100.0, 0.0, 1.0)
     dealer_pressure_norm = _clip(_safe_float(dealer_hedging_pressure_score, 0.0) / 100.0, 0.0, 1.0)
     volatility_shock_norm = _clip(_safe_float(volatility_shock_score, 0.0), 0.0, 1.0)
     volatility_compression_norm = _clip(_safe_float(volatility_compression_score, 0.0), 0.0, 1.0)
     macro_event_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
-    convexity_multiplier = 1.0 + (0.22 * gamma_vol_norm) + (0.16 * dealer_pressure_norm)
+    convexity_multiplier = (
+        cfg.convexity_base
+        + (cfg.convexity_gamma_vol_weight * gamma_vol_norm)
+        + (cfg.convexity_dealer_pressure_weight * dealer_pressure_norm)
+    )
     if str(liquidity_vacuum_state or "").upper().strip() in {"BREAKOUT_ZONE", "NEAR_VACUUM"}:
-        convexity_multiplier += 0.08
+        convexity_multiplier += cfg.convexity_liquidity_vacuum_bonus
 
     expected_option_move_value = None
     premium_coverage_ratio = None
     if expected_move_points is not None and entry_value not in (None, 0):
-        delta_for_efficiency = effective_delta if effective_delta is not None else 0.35
+        delta_for_efficiency = effective_delta if effective_delta is not None else cfg.fallback_delta
         expected_option_move_value = round(
-            expected_move_points * delta_for_efficiency * convexity_multiplier * (0.75 + 0.50 * trade_prob),
+            expected_move_points
+            * delta_for_efficiency
+            * convexity_multiplier
+            * (cfg.option_move_probability_base + cfg.option_move_probability_weight * trade_prob),
             2,
         )
         premium_coverage_ratio = round(expected_option_move_value / max(entry_value, 1e-6), 4)

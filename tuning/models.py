@@ -23,6 +23,11 @@ class ParameterDefinition:
     min_value: float | int | None = None
     max_value: float | int | None = None
     allowed_values: tuple[Any, ...] | None = None
+    search_strategy: str = "group_random_search"
+    validation_mode: str = "walk_forward_regime_aware"
+    overfit_risk: str = "medium"
+    tuning_priority: int = 50
+    tune_as_group: bool = True
 
     def to_dict(self, current_value: Any | None = None) -> dict[str, Any]:
         payload = asdict(self)
@@ -90,6 +95,7 @@ class ExperimentResult:
     validation_results: dict[str, Any] = field(default_factory=dict)
     robustness_metrics: dict[str, Any] = field(default_factory=dict)
     comparison_summary: dict[str, Any] = field(default_factory=dict)
+    tuning_campaign: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +114,33 @@ class ExperimentResult:
             "validation_results": dict(self.validation_results),
             "robustness_metrics": dict(self.robustness_metrics),
             "comparison_summary": dict(self.comparison_summary),
+            "tuning_campaign": dict(self.tuning_campaign),
+        }
+
+
+@dataclass(frozen=True)
+class TuningGroupPlan:
+    group: str
+    description: str
+    search_strategy: str
+    validation_mode: str
+    parameter_keys: tuple[str, ...] = ()
+    max_trials: int = 24
+    overfit_risk: str = "medium"
+    live_safe_only: bool = True
+    notes: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "group": self.group,
+            "description": self.description,
+            "search_strategy": self.search_strategy,
+            "validation_mode": self.validation_mode,
+            "parameter_keys": list(self.parameter_keys),
+            "max_trials": int(self.max_trials),
+            "overfit_risk": self.overfit_risk,
+            "live_safe_only": bool(self.live_safe_only),
+            "notes": self.notes,
         }
 
 

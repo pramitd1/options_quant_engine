@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <meta name="author" content="Codex" />
+  <meta name="dcterms.date" content="2026-03-14" />
+  <title>Advanced Parameter Tuning Roadmap</title>
+  <style>
+
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <style type="text/css">:root {
+--ink: #16202a;
+--muted: #5d6b79;
+--accent: #0e7490;
+--accent-dark: #0b5c73;
+--accent-soft: #e6f4f7;
+--paper-soft: #f8fbfc;
+--cover-bg: #0f1720;
+--cover-glow: rgba(14, 116, 144, 0.22);
+--rule: #d7e2e8;
+--paper: #ffffff;
+--code-bg: #f6f8fa;
+}
+@page {
+size: A4;
+margin: 20mm 16mm 18mm 16mm;
+}
+html {
+background: var(--paper);
+color: var(--ink);
+font-size: 15px;
+line-height: 1.58;
+}
+body {
+margin: 0 auto;
+max-width: 780px;
+padding: 28px 20px 42px;
+font-family: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+text-rendering: optimizeLegibility;
+counter-reset: section;
+}
+header#title-block-header {
+display: none;
+}
+.title {
+margin: 0;
+font-size: 2.5rem;
+line-height: 1.03;
+letter-spacing: -0.03em;
+}
+.subtitle {
+margin: 12px 0 0;
+color: var(--accent);
+font-size: 1rem;
+font-weight: 700;
+letter-spacing: 0.12em;
+text-transform: uppercase;
+}
+.author,
+.date {
+margin-top: 8px;
+color: var(--muted);
+font-size: 0.92rem;
+}
+.author::before {
+content: "Prepared as: ";
+color: var(--accent-dark);
+font-weight: 600;
+}
+.date::before {
+content: "Updated: ";
+color: var(--accent-dark);
+font-weight: 600;
+}
+h1,
+h2,
+h3,
+h4 {
+color: var(--ink);
+page-break-after: avoid;
+break-after: avoid-page;
+}
+h1 {
+margin: 2.2rem 0 0.8rem;
+font-size: 1.85rem;
+letter-spacing: -0.02em;
+}
+h2 {
+margin: 2rem 0 0.75rem;
+padding-top: 0.35rem;
+font-size: 1.28rem;
+border-top: 1px solid var(--rule);
+}
+h3 {
+margin: 1.35rem 0 0.55rem;
+font-size: 1.02rem;
+color: var(--accent);
+text-transform: uppercase;
+letter-spacing: 0.05em;
+}
+p,
+ul,
+ol,
+table,
+blockquote,
+pre {
+margin-top: 0.72rem;
+margin-bottom: 0.72rem;
+}
+ul,
+ol {
+padding-left: 1.4rem;
+}
+li {
+margin: 0.18rem 0;
+}
+a {
+color: var(--accent);
+text-decoration: none;
+}
+strong {
+color: #0f1720;
+}
+code {
+background: var(--code-bg);
+border-radius: 4px;
+padding: 0.08rem 0.34rem;
+font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+font-size: 0.9em;
+}
+pre {
+background: var(--code-bg);
+border: 1px solid var(--rule);
+border-radius: 8px;
+padding: 12px 14px;
+overflow-x: auto;
+}
+pre code {
+padding: 0;
+background: transparent;
+border-radius: 0;
+}
+blockquote {
+margin-left: 0;
+padding: 10px 14px;
+border-left: 4px solid var(--accent);
+background: var(--accent-soft);
+color: var(--ink);
+}
+table {
+width: 100%;
+border-collapse: collapse;
+display: table;
+font-size: 0.95rem;
+}
+th,
+td {
+padding: 8px 10px;
+border-bottom: 1px solid var(--rule);
+vertical-align: top;
+text-align: left;
+}
+th {
+color: var(--muted);
+font-size: 0.82rem;
+font-weight: 700;
+letter-spacing: 0.06em;
+text-transform: uppercase;
+}
+#TOC {
+margin: 20px 0 28px;
+padding: 16px 18px;
+border: 1px solid var(--rule);
+border-radius: 10px;
+background: var(--paper-soft);
+page-break-inside: avoid;
+}
+#TOC::before {
+content: "Contents";
+display: block;
+margin-bottom: 8px;
+color: var(--muted);
+font-size: 0.82rem;
+font-weight: 700;
+letter-spacing: 0.08em;
+text-transform: uppercase;
+}
+#TOC ul {
+margin: 0;
+padding-left: 1.1rem;
+}
+#TOC li {
+margin: 0.15rem 0;
+}
+hr {
+border: none;
+border-top: 1px solid var(--rule);
+margin: 1.2rem 0;
+}
+img,
+svg {
+max-width: 100%;
+}
+.executive-summary {
+margin: 0 0 22px;
+padding: 16px 18px 18px;
+border: 1px solid var(--rule);
+border-radius: 12px;
+background: linear-gradient(180deg, #fcfeff 0%, #f3fafc 100%);
+box-shadow: 0 10px 24px rgba(16, 32, 42, 0.05);
+page-break-inside: avoid;
+}
+.summary-label {
+margin-bottom: 10px;
+color: var(--accent-dark);
+font-size: 0.78rem;
+font-weight: 800;
+letter-spacing: 0.12em;
+text-transform: uppercase;
+}
+.summary-grid {
+display: grid;
+grid-template-columns: repeat(3, minmax(0, 1fr));
+gap: 12px;
+margin: 18px 0 8px;
+}
+.summary-card {
+padding: 12px 13px;
+border: 1px solid var(--rule);
+border-radius: 10px;
+background: rgba(255, 255, 255, 0.86);
+font-size: 0.95rem;
+}
+.summary-card-title {
+margin-bottom: 6px;
+color: var(--ink);
+font-size: 0.8rem;
+font-weight: 800;
+letter-spacing: 0.08em;
+text-transform: uppercase;
+}
+.memo-cover {
+min-height: 240mm;
+padding: 34mm 20mm 22mm;
+color: #f4f8fb;
+background:
+radial-gradient(circle at top right, var(--cover-glow), transparent 34%),
+linear-gradient(160deg, #0b1220 0%, #102635 48%, #10323d 100%);
+border-radius: 16px;
+box-sizing: border-box;
+page-break-after: always;
+break-after: page;
+}
+.cover-kicker {
+margin-bottom: 24px;
+color: #9fd7e5;
+font-size: 0.82rem;
+font-weight: 800;
+letter-spacing: 0.18em;
+text-transform: uppercase;
+}
+.cover-title {
+margin: 0;
+color: #ffffff;
+font-size: 3.3rem;
+line-height: 0.98;
+letter-spacing: -0.045em;
+}
+.cover-subtitle {
+margin-top: 14px;
+max-width: 12ch;
+color: #d9eef4;
+font-size: 1.28rem;
+font-weight: 600;
+line-height: 1.15;
+}
+.cover-rule {
+width: 120px;
+height: 4px;
+margin: 28px 0 24px;
+background: linear-gradient(90deg, #44bdd6 0%, #d9eef4 100%);
+border-radius: 999px;
+}
+.cover-summary {
+max-width: 34em;
+color: #e4eef2;
+font-size: 1.02rem;
+line-height: 1.7;
+}
+.cover-meta {
+display: grid;
+grid-template-columns: repeat(2, minmax(0, 1fr));
+gap: 14px 24px;
+margin-top: 40px;
+padding-top: 22px;
+border-top: 1px solid rgba(217, 238, 244, 0.18);
+font-size: 0.94rem;
+}
+.cover-meta span {
+display: block;
+margin-bottom: 5px;
+color: #8fbdc8;
+font-size: 0.74rem;
+font-weight: 700;
+letter-spacing: 0.08em;
+text-transform: uppercase;
+}
+.page-break {
+page-break-before: always;
+break-before: page;
+height: 0;
+}
+.appendix-note {
+margin: 0 0 18px;
+padding: 12px 14px;
+border: 1px solid var(--rule);
+border-radius: 10px;
+background: var(--paper-soft);
+color: var(--muted);
+}
+@media print {
+html {
+font-size: 11.5pt;
+}
+body {
+max-width: none;
+padding: 0;
+}
+#TOC,
+.executive-summary,
+.summary-grid,
+blockquote,
+pre,
+table {
+break-inside: avoid-page;
+}
+}
+@media (max-width: 720px) {
+body {
+padding: 20px 16px 32px;
+}
+.title {
+font-size: 2rem;
+}
+.memo-cover {
+min-height: auto;
+padding: 28px 20px 24px;
+}
+.cover-title {
+font-size: 2.45rem;
+}
+.cover-meta {
+grid-template-columns: 1fr;
+}
+.summary-grid {
+grid-template-columns: 1fr;
+}
+}
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Advanced Parameter Tuning Roadmap</h1>
+<p class="subtitle">Signal-Evaluation-First Statistical and Machine
+Learning Research Plan</p>
+<p class="author">Codex</p>
+<p class="date">2026-03-14</p>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#executive-summary" id="toc-executive-summary"><span class="toc-section-number">1</span> Executive Summary</a></li>
+<li><a href="#architecture-diagram" id="toc-architecture-diagram"><span class="toc-section-number">2</span> Architecture Diagram</a></li>
+<li><a href="#strategic-principles" id="toc-strategic-principles"><span class="toc-section-number">3</span> Strategic Principles</a>
+<ul>
+<li><a href="#research-boundary" id="toc-research-boundary"><span class="toc-section-number">3.1</span> Research Boundary</a></li>
+<li><a href="#optimization-philosophy" id="toc-optimization-philosophy"><span class="toc-section-number">3.2</span> Optimization Philosophy</a></li>
+</ul></li>
+<li><a href="#phased-implementation-plan" id="toc-phased-implementation-plan"><span class="toc-section-number">4</span> Phased Implementation Plan</a></li>
+<li><a href="#methods-by-phase" id="toc-methods-by-phase"><span class="toc-section-number">5</span> Methods By Phase</a>
+<ul>
+<li><a href="#phase-1-statistical-tuning-baseline" id="toc-phase-1-statistical-tuning-baseline"><span class="toc-section-number">5.1</span> Phase 1: Statistical Tuning
+Baseline</a></li>
+<li><a href="#phase-2-experiment-meta-analysis" id="toc-phase-2-experiment-meta-analysis"><span class="toc-section-number">5.2</span> Phase 2: Experiment
+Meta-Analysis</a></li>
+<li><a href="#phase-3-surrogate-optimization" id="toc-phase-3-surrogate-optimization"><span class="toc-section-number">5.3</span> Phase 3: Surrogate
+Optimization</a></li>
+<li><a href="#phase-4-regime-conditional-tuning" id="toc-phase-4-regime-conditional-tuning"><span class="toc-section-number">5.4</span> Phase 4: Regime-Conditional
+Tuning</a></li>
+<li><a href="#phase-5-machine-learning-pack-recommendation" id="toc-phase-5-machine-learning-pack-recommendation"><span class="toc-section-number">5.5</span> Phase 5: Machine Learning Pack
+Recommendation</a></li>
+<li><a href="#phase-6-neural-meta-models" id="toc-phase-6-neural-meta-models"><span class="toc-section-number">5.6</span> Phase 6: Neural
+Meta-Models</a></li>
+</ul></li>
+<li><a href="#recommended-file-and-module-design" id="toc-recommended-file-and-module-design"><span class="toc-section-number">6</span> Recommended File and Module
+Design</a>
+<ul>
+<li><a href="#phase-1-and-2-modules" id="toc-phase-1-and-2-modules"><span class="toc-section-number">6.1</span> Phase 1 and 2 Modules</a></li>
+<li><a href="#phase-3-modules" id="toc-phase-3-modules"><span class="toc-section-number">6.2</span> Phase 3 Modules</a></li>
+<li><a href="#phase-4-modules" id="toc-phase-4-modules"><span class="toc-section-number">6.3</span> Phase 4 Modules</a></li>
+<li><a href="#phase-5-modules" id="toc-phase-5-modules"><span class="toc-section-number">6.4</span> Phase 5 Modules</a></li>
+<li><a href="#phase-6-modules" id="toc-phase-6-modules"><span class="toc-section-number">6.5</span> Phase 6 Modules</a></li>
+<li><a href="#shared-design-requirements" id="toc-shared-design-requirements"><span class="toc-section-number">6.6</span> Shared Design
+Requirements</a></li>
+</ul></li>
+<li><a href="#risks-and-governance-controls" id="toc-risks-and-governance-controls"><span class="toc-section-number">7</span> Risks and Governance Controls</a>
+<ul>
+<li><a href="#core-risks" id="toc-core-risks"><span class="toc-section-number">7.1</span> Core Risks</a></li>
+<li><a href="#mandatory-controls" id="toc-mandatory-controls"><span class="toc-section-number">7.2</span> Mandatory Controls</a></li>
+<li><a href="#model-specific-controls" id="toc-model-specific-controls"><span class="toc-section-number">7.3</span> Model-Specific Controls</a></li>
+</ul></li>
+<li><a href="#evaluation-and-decision-framework" id="toc-evaluation-and-decision-framework"><span class="toc-section-number">8</span> Evaluation and Decision
+Framework</a>
+<ul>
+<li><a href="#core-metrics" id="toc-core-metrics"><span class="toc-section-number">8.1</span> Core Metrics</a></li>
+<li><a href="#decision-layers" id="toc-decision-layers"><span class="toc-section-number">8.2</span> Decision Layers</a></li>
+</ul></li>
+<li><a href="#practical-milestone-plan" id="toc-practical-milestone-plan"><span class="toc-section-number">9</span> Practical Milestone Plan</a>
+<ul>
+<li><a href="#milestone-1" id="toc-milestone-1"><span class="toc-section-number">9.1</span> Milestone 1</a></li>
+<li><a href="#milestone-2" id="toc-milestone-2"><span class="toc-section-number">9.2</span> Milestone 2</a></li>
+<li><a href="#milestone-3" id="toc-milestone-3"><span class="toc-section-number">9.3</span> Milestone 3</a></li>
+<li><a href="#milestone-4" id="toc-milestone-4"><span class="toc-section-number">9.4</span> Milestone 4</a></li>
+<li><a href="#milestone-5" id="toc-milestone-5"><span class="toc-section-number">9.5</span> Milestone 5</a></li>
+</ul></li>
+<li><a href="#recommendations" id="toc-recommendations"><span class="toc-section-number">10</span> Recommendations</a>
+<ul>
+<li><a href="#what-to-do-next" id="toc-what-to-do-next"><span class="toc-section-number">10.1</span> What to do next</a></li>
+<li><a href="#what-not-to-do-yet" id="toc-what-not-to-do-yet"><span class="toc-section-number">10.2</span> What not to do yet</a></li>
+</ul></li>
+<li><a href="#appendix-a-advanced-methods-and-best-use-cases" id="toc-appendix-a-advanced-methods-and-best-use-cases"><span class="toc-section-number">11</span> Appendix A: Advanced Methods and
+Best Use Cases</a></li>
+<li><a href="#appendix-b-governance-rules" id="toc-appendix-b-governance-rules"><span class="toc-section-number">12</span> Appendix B: Governance
+Rules</a></li>
+</ul>
+</nav>
+<h1 data-number="1" id="executive-summary"><span class="header-section-number">1</span> Executive Summary</h1>
+<p>This memo defines the recommended roadmap for extending
+<code>options_quant_engine</code> from governed parameter search into
+more advanced statistical, machine learning, and eventually neural
+optimization methods.</p>
+<p>The governing principle is unchanged:</p>
+<p><code>market data -&gt; signal generation -&gt; signal evaluation dataset -&gt; tuning / validation / promotion</code></p>
+<p>Actual executed trades remain outside the learning loop. The
+objective is not to create an online self-modifying strategy. The
+objective is to build a research-to-production calibration program that
+is statistically disciplined, regime-aware, auditable, and safe.</p>
+<p>The recommended sequence is:</p>
+<ol type="1">
+<li>strengthen statistical tuning and parameter sensitivity
+analysis</li>
+<li>build experiment meta-analysis and surrogate optimization</li>
+<li>add regime-conditional optimization</li>
+<li>add machine-learning-based pack recommendation</li>
+<li>use neural methods only if the experiment ledger becomes
+sufficiently large</li>
+</ol>
+<p>This sequence is intentionally conservative. It maximizes research
+signal while containing overfitting and governance risk.</p>
+<h1 data-number="2" id="architecture-diagram"><span class="header-section-number">2</span> Architecture Diagram</h1>
+<pre class="text"><code>                               +----------------------+
+                               |   Live / Replay Data |
+                               +----------+-----------+
+                                          |
+                                          v
++----------------+              +---------+----------+
+| Parameter      |              | Signal Generation  |
+| Registry       +-------------&gt;+ Engine             |
+| Packs          |              | (authoritative)    |
++-------+--------+              +---------+----------+
+        |                                 |
+        |                                 v
+        |                      +----------+-----------+
+        |                      | Signal Evaluation    |
+        |                      | Dataset              |
+        |                      +----------+-----------+
+        |                                 |
+        |                                 v
+        |                      +----------+-----------+
+        |                      | Walk-Forward /       |
+        |                      | Regime Validation    |
+        |                      +----------+-----------+
+        |                                 |
+        |                                 v
+        |                      +----------+-----------+
+        |                      | Objective Framework  |
+        |                      | Robustness Metrics   |
+        |                      +----------+-----------+
+        |                                 |
+        |                                 v
+        |      +--------------------------+---------------------------+
+        |      |                                                      |
+        v      v                                                      v
++-------+------+---------+        +-----------------------------------+--+
+| Statistical Search     |        | Experiment Meta-Dataset / Surrogates |
+| Grid / LHS / Random    |        | Effect Models / Bayesian Search      |
++-------+------+---------+        +-------------------+------------------+
+        |      |                                      |
+        +------+------------------+-------------------+
+                               |
+                               v
+                  +------------+-------------+
+                  | Candidate Parameter Pack |
+                  +------------+-------------+
+                               |
+                               v
+                  +------------+-------------+
+                  | Promotion Governance     |
+                  | Shadow Mode / Approval   |
+                  +------------+-------------+
+                               |
+                               v
+                  +------------+-------------+
+                  | Live Pack / Rollback     |
+                  +--------------------------+</code></pre>
+<h1 data-number="3" id="strategic-principles"><span class="header-section-number">3</span> Strategic Principles</h1>
+<h2 data-number="3.1" id="research-boundary"><span class="header-section-number">3.1</span> Research Boundary</h2>
+<ul>
+<li>Tuning must remain based on the signal evaluation dataset, not
+actual fills.</li>
+<li>Promotion must depend on out-of-sample and regime-aware validation,
+not one favorable period.</li>
+<li>Advanced methods may propose parameter packs, but they do not bypass
+validation, shadow mode, approval, or rollback controls.</li>
+</ul>
+<h2 data-number="3.2" id="optimization-philosophy"><span class="header-section-number">3.2</span> Optimization Philosophy</h2>
+<ul>
+<li>Optimize for robust signal quality, not just one-dimensional
+profit.</li>
+<li>Prefer interpretable methods until there is clear evidence that
+additional model complexity is justified.</li>
+<li>Treat parameter groups as structured families rather than
+independent knobs whenever possible.</li>
+</ul>
+<h1 data-number="4" id="phased-implementation-plan"><span class="header-section-number">4</span> Phased Implementation Plan</h1>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Objective</th>
+<th>Main methods</th>
+<th>Promotion to next phase requires</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>statistical baseline and sensitivity map</td>
+<td>grid, bounded random, Latin hypercube, coordinate descent</td>
+<td>stable out-of-sample performance and repeatable sensitivity
+reports</td>
+</tr>
+<tr>
+<td>2</td>
+<td>experiment meta-analysis</td>
+<td>regularized regression, GAMs, bootstrap, interaction analysis</td>
+<td>clear parameter-effect evidence and tighter search bounds</td>
+</tr>
+<tr>
+<td>3</td>
+<td>surrogate optimization</td>
+<td>Bayesian optimization, TPE, boosted-tree surrogates, multi-objective
+search</td>
+<td>consistent surrogate usefulness over naive search</td>
+</tr>
+<tr>
+<td>4</td>
+<td>regime-conditional tuning</td>
+<td>hierarchical models, multi-task optimization, regime-conditioned
+surrogates</td>
+<td>better robustness without fragmenting sample sizes</td>
+</tr>
+<tr>
+<td>5</td>
+<td>ML pack recommendation</td>
+<td>ranking models, contextual offline policy selection, calibrated
+classifiers</td>
+<td>shadow-mode evidence that recommendations add value</td>
+</tr>
+<tr>
+<td>6</td>
+<td>neural meta-models</td>
+<td>deep surrogates, tabular neural meta-models, constrained
+meta-learning</td>
+<td>sufficient experiment scale and robust governance controls</td>
+</tr>
+</tbody>
+</table>
+<h1 data-number="5" id="methods-by-phase"><span class="header-section-number">5</span> Methods By Phase</h1>
+<h2 data-number="5.1" id="phase-1-statistical-tuning-baseline"><span class="header-section-number">5.1</span> Phase 1: Statistical Tuning
+Baseline</h2>
+<h3 data-number="5.1.1" id="purpose"><span class="header-section-number">5.1.1</span> Purpose</h3>
+<p>Create a strong non-ML baseline so later advanced methods learn from
+stable and governed research outputs.</p>
+<h3 data-number="5.1.2" id="scope"><span class="header-section-number">5.1.2</span> Scope</h3>
+<ul>
+<li>finalize objective definitions</li>
+<li>standardize walk-forward and regime-aware validation
+configuration</li>
+<li>run parameter-group campaigns rather than indiscriminate whole-space
+search</li>
+<li>generate sensitivity reports for each major parameter family</li>
+</ul>
+<h3 data-number="5.1.3" id="recommended-methods"><span class="header-section-number">5.1.3</span> Recommended methods</h3>
+<ul>
+<li>bounded grid search for discrete thresholds</li>
+<li>Latin hypercube sampling for medium-dimensional continuous
+groups</li>
+<li>random search for broad but bounded parameter groups</li>
+<li>coordinate descent for threshold families with interpretable
+monotonic effects</li>
+<li>ablation studies to test whether a parameter group actually
+matters</li>
+</ul>
+<h3 data-number="5.1.4" id="deliverables"><span class="header-section-number">5.1.4</span> Deliverables</h3>
+<ul>
+<li>baseline benchmark packs</li>
+<li>sensitivity report by parameter group</li>
+<li>interaction map for key parameter families</li>
+<li>freeze / tune / deprioritize classification for each group</li>
+</ul>
+<h2 data-number="5.2" id="phase-2-experiment-meta-analysis"><span class="header-section-number">5.2</span> Phase 2: Experiment
+Meta-Analysis</h2>
+<h3 data-number="5.2.1" id="purpose-1"><span class="header-section-number">5.2.1</span> Purpose</h3>
+<p>Model the experiment ledger itself to understand which parameters
+matter, where they matter, and how stable they are.</p>
+<h3 data-number="5.2.2" id="recommended-methods-1"><span class="header-section-number">5.2.2</span> Recommended methods</h3>
+<ul>
+<li>elastic-net or ridge regression on experiment-level outcomes</li>
+<li>generalized additive models for nonlinear but interpretable
+parameter effects</li>
+<li>bootstrap confidence intervals for effect stability</li>
+<li>interaction screening for coupled parameter groups</li>
+<li>hierarchical models where regime buckets are treated as partial
+pools</li>
+</ul>
+<h3 data-number="5.2.3" id="deliverables-1"><span class="header-section-number">5.2.3</span> Deliverables</h3>
+<ul>
+<li>parameter effect size report</li>
+<li>uncertainty bands by regime</li>
+<li>parameter instability warnings</li>
+<li>recommended bounds tightening</li>
+</ul>
+<h2 data-number="5.3" id="phase-3-surrogate-optimization"><span class="header-section-number">5.3</span> Phase 3: Surrogate
+Optimization</h2>
+<h3 data-number="5.3.1" id="purpose-2"><span class="header-section-number">5.3.1</span> Purpose</h3>
+<p>Use learned approximations of the objective surface to propose more
+promising candidate packs than naive search alone.</p>
+<h3 data-number="5.3.2" id="recommended-methods-2"><span class="header-section-number">5.3.2</span> Recommended methods</h3>
+<ul>
+<li>Gaussian-process Bayesian optimization for smaller search
+spaces</li>
+<li>Tree-structured Parzen Estimator for mixed or larger search
+spaces</li>
+<li>gradient-boosted surrogate models for flexible response
+modeling</li>
+<li>constrained multi-objective optimization over:
+<ul>
+<li>out-of-sample score</li>
+<li>robustness score</li>
+<li>signal frequency</li>
+<li>drawdown proxy</li>
+<li>regime collapse penalties</li>
+</ul></li>
+</ul>
+<h3 data-number="5.3.3" id="operating-rule"><span class="header-section-number">5.3.3</span> Operating rule</h3>
+<p>Surrogates may propose packs. They do not approve packs.</p>
+<h3 data-number="5.3.4" id="deliverables-2"><span class="header-section-number">5.3.4</span> Deliverables</h3>
+<ul>
+<li>expected-improvement candidate proposals</li>
+<li>uncertainty-aware candidate ranking</li>
+<li>surrogate-versus-naive-search performance comparison</li>
+</ul>
+<h2 data-number="5.4" id="phase-4-regime-conditional-tuning"><span class="header-section-number">5.4</span> Phase 4: Regime-Conditional
+Tuning</h2>
+<h3 data-number="5.4.1" id="purpose-3"><span class="header-section-number">5.4.1</span> Purpose</h3>
+<p>Allow parameter logic to adapt at the research level to persistent
+regime differences without turning the engine into an unstable
+regime-switching system.</p>
+<h3 data-number="5.4.2" id="best-candidate-groups"><span class="header-section-number">5.4.2</span> Best candidate groups</h3>
+<ul>
+<li><code>macro_news</code></li>
+<li><code>global_risk</code></li>
+<li><code>gamma_vol_acceleration</code></li>
+<li><code>dealer_pressure</code></li>
+<li><code>option_efficiency</code></li>
+</ul>
+<h3 data-number="5.4.3" id="recommended-methods-3"><span class="header-section-number">5.4.3</span> Recommended methods</h3>
+<ul>
+<li>hierarchical Bayesian priors across regime buckets</li>
+<li>regime-conditioned surrogate models</li>
+<li>multi-task optimization across regime slices</li>
+<li>shrinkage toward a global baseline to prevent fragmentation</li>
+</ul>
+<h3 data-number="5.4.4" id="deliverables-3"><span class="header-section-number">5.4.4</span> Deliverables</h3>
+<ul>
+<li>regime-conditional candidate packs</li>
+<li>regime transfer and stability report</li>
+<li>robustness comparison versus one-size-fits-all baseline packs</li>
+</ul>
+<h2 data-number="5.5" id="phase-5-machine-learning-pack-recommendation"><span class="header-section-number">5.5</span> Phase 5: Machine Learning Pack
+Recommendation</h2>
+<h3 data-number="5.5.1" id="purpose-4"><span class="header-section-number">5.5.1</span> Purpose</h3>
+<p>Use machine learning to recommend among approved or candidate pack
+families, not to mutate the live engine directly.</p>
+<h3 data-number="5.5.2" id="recommended-methods-4"><span class="header-section-number">5.5.2</span> Recommended methods</h3>
+<ul>
+<li>calibrated classification models for candidate-over-baseline
+likelihood</li>
+<li>ranking models for pack-family selection</li>
+<li>contextual offline policy selection using regime and diagnostic
+features</li>
+<li>conservative bandit-style analysis in offline and shadow mode
+only</li>
+</ul>
+<h3 data-number="5.5.3" id="deployment-rule"><span class="header-section-number">5.5.3</span> Deployment rule</h3>
+<p>This layer begins in shadow mode. It does not control live
+execution.</p>
+<h3 data-number="5.5.4" id="deliverables-4"><span class="header-section-number">5.5.4</span> Deliverables</h3>
+<ul>
+<li>recommendation score</li>
+<li>confidence estimate</li>
+<li>explanatory driver summary</li>
+<li>shadow comparison against static baseline selection</li>
+</ul>
+<h2 data-number="5.6" id="phase-6-neural-meta-models"><span class="header-section-number">5.6</span> Phase 6: Neural
+Meta-Models</h2>
+<h3 data-number="5.6.1" id="purpose-5"><span class="header-section-number">5.6.1</span> Purpose</h3>
+<p>Capture higher-order interactions only after the experiment ledger is
+rich enough that simpler methods have saturated.</p>
+<h3 data-number="5.6.2" id="candidate-methods"><span class="header-section-number">5.6.2</span> Candidate methods</h3>
+<ul>
+<li>deep surrogate models for large experiment spaces</li>
+<li>tabular neural networks for pack-to-outcome mapping</li>
+<li>neural density models for promising parameter regions</li>
+<li>constrained meta-learning over split and regime tasks</li>
+</ul>
+<h3 data-number="5.6.3" id="preconditions"><span class="header-section-number">5.6.3</span> Preconditions</h3>
+<ul>
+<li>sufficiently large experiment ledger</li>
+<li>robust out-of-sample and regime-aware validation</li>
+<li>clear evidence that simpler methods plateau</li>
+<li>maintained auditability through explicit candidate-pack
+generation</li>
+</ul>
+<h1 data-number="6" id="recommended-file-and-module-design"><span class="header-section-number">6</span> Recommended File and Module
+Design</h1>
+<h2 data-number="6.1" id="phase-1-and-2-modules"><span class="header-section-number">6.1</span> Phase 1 and 2 Modules</h2>
+<ul>
+<li><code>tuning/sensitivity.py</code>
+<ul>
+<li>parameter-group sensitivity reports</li>
+<li>ablation studies</li>
+<li>local response analysis</li>
+</ul></li>
+<li><code>tuning/meta_dataset.py</code>
+<ul>
+<li>converts experiment ledger rows into model-ready experiment-level
+datasets</li>
+</ul></li>
+<li><code>tuning/effects.py</code>
+<ul>
+<li>regression, GAM, and uncertainty analysis over experiments</li>
+</ul></li>
+</ul>
+<h2 data-number="6.2" id="phase-3-modules"><span class="header-section-number">6.2</span> Phase 3 Modules</h2>
+<ul>
+<li><code>tuning/surrogates.py</code>
+<ul>
+<li>surrogate model interfaces</li>
+</ul></li>
+<li><code>tuning/bayes_search.py</code>
+<ul>
+<li>Bayesian optimization orchestration</li>
+</ul></li>
+<li><code>tuning/multi_objective.py</code>
+<ul>
+<li>constrained objective composition and Pareto filtering</li>
+</ul></li>
+</ul>
+<h2 data-number="6.3" id="phase-4-modules"><span class="header-section-number">6.3</span> Phase 4 Modules</h2>
+<ul>
+<li><code>tuning/regime_models.py</code>
+<ul>
+<li>regime-conditioned response models</li>
+</ul></li>
+<li><code>tuning/regime_search.py</code>
+<ul>
+<li>regime-aware campaign execution</li>
+</ul></li>
+</ul>
+<h2 data-number="6.4" id="phase-5-modules"><span class="header-section-number">6.4</span> Phase 5 Modules</h2>
+<ul>
+<li><code>tuning/pack_recommender.py</code>
+<ul>
+<li>pack recommendation model</li>
+</ul></li>
+<li><code>tuning/shadow_analysis.py</code>
+<ul>
+<li>shadow-mode evaluation of recommendation quality</li>
+</ul></li>
+</ul>
+<h2 data-number="6.5" id="phase-6-modules"><span class="header-section-number">6.5</span> Phase 6 Modules</h2>
+<ul>
+<li><code>tuning/neural_surrogates.py</code>
+<ul>
+<li>optional deep surrogate implementations</li>
+</ul></li>
+<li><code>tuning/meta_learning.py</code>
+<ul>
+<li>constrained neural meta-learning research hooks</li>
+</ul></li>
+</ul>
+<h2 data-number="6.6" id="shared-design-requirements"><span class="header-section-number">6.6</span> Shared Design Requirements</h2>
+<ul>
+<li>every module must read from existing parameter packs and
+registries</li>
+<li>all proposals must output explicit candidate packs</li>
+<li>all evaluations must flow through existing validation and promotion
+systems</li>
+<li>every advanced method must log to the experiment ledger with full
+metadata</li>
+</ul>
+<h1 data-number="7" id="risks-and-governance-controls"><span class="header-section-number">7</span> Risks and Governance
+Controls</h1>
+<h2 data-number="7.1" id="core-risks"><span class="header-section-number">7.1</span> Core Risks</h2>
+<h3 data-number="7.1.1" id="overfitting"><span class="header-section-number">7.1.1</span> Overfitting</h3>
+<ul>
+<li>optimization may lock onto one favorable period</li>
+<li>regime-specific tuning may fragment already limited samples</li>
+<li>selection thresholds may be tuned to make the dataset look better
+rather than improve signal quality</li>
+</ul>
+<h3 data-number="7.1.2" id="leakage"><span class="header-section-number">7.1.2</span> Leakage</h3>
+<ul>
+<li>improper walk-forward design can allow future information into
+tuning</li>
+<li>experiment meta-models can accidentally learn from mixed in-sample
+and out-of-sample labels if ledger hygiene is weak</li>
+</ul>
+<h3 data-number="7.1.3" id="research-to-production-drift"><span class="header-section-number">7.1.3</span> Research-to-production
+drift</h3>
+<ul>
+<li>a method that improves research metrics may fail in shadow mode</li>
+<li>a recommender can look strong offline but introduce unstable live
+behavior</li>
+</ul>
+<h3 data-number="7.1.4" id="governance-failure"><span class="header-section-number">7.1.4</span> Governance failure</h3>
+<ul>
+<li>an opaque optimizer can produce packs that are hard to interpret or
+audit</li>
+<li>aggressive automation can outrun human review and rollback
+controls</li>
+</ul>
+<h2 data-number="7.2" id="mandatory-controls"><span class="header-section-number">7.2</span> Mandatory Controls</h2>
+<ul>
+<li>time-based splits only</li>
+<li>out-of-sample metrics weighted more heavily than in-sample
+metrics</li>
+<li>regime-aware reporting before any promotion decision</li>
+<li>minimum sample count and signal-frequency constraints</li>
+<li>explicit robustness-score requirement</li>
+<li>shadow-mode probation before candidate can become live</li>
+<li>manual approval checkpoint for any live promotion</li>
+<li>rollback path and predecessor tracking for every live change</li>
+</ul>
+<h2 data-number="7.3" id="model-specific-controls"><span class="header-section-number">7.3</span> Model-Specific Controls</h2>
+<h3 data-number="7.3.1" id="for-statistical-search"><span class="header-section-number">7.3.1</span> For statistical search</h3>
+<ul>
+<li>bounded search ranges only</li>
+<li>monotonic sanity checks for threshold families</li>
+</ul>
+<h3 data-number="7.3.2" id="for-surrogate-models"><span class="header-section-number">7.3.2</span> For surrogate models</h3>
+<ul>
+<li>require uncertainty estimates where possible</li>
+<li>compare against naive-search baselines</li>
+<li>never use surrogate-predicted score as the final decision
+criterion</li>
+</ul>
+<h3 data-number="7.3.3" id="for-ml-recommendation"><span class="header-section-number">7.3.3</span> For ML recommendation</h3>
+<ul>
+<li>require calibration checks</li>
+<li>deploy only in shadow mode first</li>
+<li>log every recommendation and disagreement with authoritative
+logic</li>
+</ul>
+<h3 data-number="7.3.4" id="for-neural-methods"><span class="header-section-number">7.3.4</span> For neural methods</h3>
+<ul>
+<li>use only after experiment-scale threshold is met</li>
+<li>require explicit candidate-pack generation</li>
+<li>ban direct online parameter mutation</li>
+</ul>
+<h1 data-number="8" id="evaluation-and-decision-framework"><span class="header-section-number">8</span> Evaluation and Decision
+Framework</h1>
+<h2 data-number="8.1" id="core-metrics"><span class="header-section-number">8.1</span> Core Metrics</h2>
+<ul>
+<li>out-of-sample objective score</li>
+<li>walk-forward split stability</li>
+<li>regime-aware stability</li>
+<li>signal count and signal-frequency ratio versus baseline</li>
+<li>direction hit rate</li>
+<li>target reachability quality</li>
+<li>tradeability quality</li>
+<li>drawdown proxy</li>
+<li>regime collapse penalty</li>
+<li>robustness score</li>
+</ul>
+<h2 data-number="8.2" id="decision-layers"><span class="header-section-number">8.2</span> Decision Layers</h2>
+<h3 data-number="8.2.1" id="candidate-generation"><span class="header-section-number">8.2.1</span> Candidate generation</h3>
+<p>Methods may search, rank, or recommend.</p>
+<h3 data-number="8.2.2" id="candidate-validation"><span class="header-section-number">8.2.2</span> Candidate validation</h3>
+<p>All candidates must pass:</p>
+<ul>
+<li>walk-forward validation</li>
+<li>regime-aware validation</li>
+<li>robustness review</li>
+<li>sample sufficiency checks</li>
+</ul>
+<h3 data-number="8.2.3" id="candidate-deployment"><span class="header-section-number">8.2.3</span> Candidate deployment</h3>
+<p>All candidates must pass:</p>
+<ul>
+<li>shadow-mode review</li>
+<li>baseline versus candidate comparison</li>
+<li>explicit approval</li>
+<li>rollback readiness</li>
+</ul>
+<h1 data-number="9" id="practical-milestone-plan"><span class="header-section-number">9</span> Practical Milestone Plan</h1>
+<h2 data-number="9.1" id="milestone-1"><span class="header-section-number">9.1</span> Milestone 1</h2>
+<p>Build:</p>
+<ul>
+<li><code>tuning/sensitivity.py</code></li>
+<li><code>tuning/meta_dataset.py</code></li>
+<li>experiment-level sensitivity and effect reports</li>
+</ul>
+<p>Expected value:</p>
+<ul>
+<li>fastest increase in research clarity with low governance risk</li>
+</ul>
+<h2 data-number="9.2" id="milestone-2"><span class="header-section-number">9.2</span> Milestone 2</h2>
+<p>Build:</p>
+<ul>
+<li><code>tuning/surrogates.py</code></li>
+<li><code>tuning/bayes_search.py</code></li>
+<li>constrained surrogate-guided search campaigns</li>
+</ul>
+<p>Expected value:</p>
+<ul>
+<li>better search efficiency without changing promotion safety</li>
+</ul>
+<h2 data-number="9.3" id="milestone-3"><span class="header-section-number">9.3</span> Milestone 3</h2>
+<p>Build:</p>
+<ul>
+<li><code>tuning/regime_models.py</code></li>
+<li><code>tuning/regime_search.py</code></li>
+</ul>
+<p>Expected value:</p>
+<ul>
+<li>clearer understanding of when certain parameter groups should remain
+global versus regime-conditioned</li>
+</ul>
+<h2 data-number="9.4" id="milestone-4"><span class="header-section-number">9.4</span> Milestone 4</h2>
+<p>Build:</p>
+<ul>
+<li><code>tuning/pack_recommender.py</code></li>
+<li>shadow evaluation of pack recommendation</li>
+</ul>
+<p>Expected value:</p>
+<ul>
+<li>research-grade adaptive selection without live automation risk</li>
+</ul>
+<h2 data-number="9.5" id="milestone-5"><span class="header-section-number">9.5</span> Milestone 5</h2>
+<p>Research only:</p>
+<ul>
+<li>neural surrogates and constrained meta-learning</li>
+</ul>
+<p>Expected value:</p>
+<ul>
+<li>only justified if the experiment ledger becomes large enough</li>
+</ul>
+<h1 data-number="10" id="recommendations"><span class="header-section-number">10</span> Recommendations</h1>
+<h2 data-number="10.1" id="what-to-do-next"><span class="header-section-number">10.1</span> What to do next</h2>
+<ol type="1">
+<li>build experiment meta-analysis and sensitivity reporting first</li>
+<li>add surrogate-guided candidate proposal second</li>
+<li>defer neural methods until the experiment ledger is materially
+larger</li>
+</ol>
+<h2 data-number="10.2" id="what-not-to-do-yet"><span class="header-section-number">10.2</span> What not to do yet</h2>
+<ol type="1">
+<li>do not build online self-tuning</li>
+<li>do not optimize directly on actual trade fills</li>
+<li>do not let ML bypass walk-forward, regime-aware validation, shadow
+mode, or approval</li>
+</ol>
+<h1 data-number="11" id="appendix-a-advanced-methods-and-best-use-cases"><span class="header-section-number">11</span> Appendix A: Advanced Methods and
+Best Use Cases</h1>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Best use</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>grid search</td>
+<td>small discrete threshold families</td>
+<td>maximally interpretable</td>
+</tr>
+<tr>
+<td>Latin hypercube</td>
+<td>bounded medium-dimensional continuous groups</td>
+<td>better coverage than naive random search</td>
+</tr>
+<tr>
+<td>coordinate descent</td>
+<td>ordered threshold families</td>
+<td>efficient local refinement</td>
+</tr>
+<tr>
+<td>elastic-net / ridge</td>
+<td>experiment effect analysis</td>
+<td>stable effect-size estimation</td>
+</tr>
+<tr>
+<td>GAM</td>
+<td>nonlinear but interpretable response modeling</td>
+<td>good intermediate step before opaque ML</td>
+</tr>
+<tr>
+<td>Bayesian optimization</td>
+<td>expensive evaluation surfaces</td>
+<td>sample-efficient candidate proposal</td>
+</tr>
+<tr>
+<td>TPE</td>
+<td>mixed-type larger search spaces</td>
+<td>practical for pack search</td>
+</tr>
+<tr>
+<td>gradient-boosted surrogates</td>
+<td>flexible experiment meta-modeling</td>
+<td>strong baseline surrogate</td>
+</tr>
+<tr>
+<td>hierarchical models</td>
+<td>regime-conditional shrinkage</td>
+<td>reduces fragmentation risk</td>
+</tr>
+<tr>
+<td>ranking models</td>
+<td>pack recommendation</td>
+<td>fits baseline-versus-candidate choice</td>
+</tr>
+<tr>
+<td>neural surrogates</td>
+<td>very large experiment ledgers</td>
+<td>captures higher-order interactions</td>
+</tr>
+</tbody>
+</table>
+<h1 data-number="12" id="appendix-b-governance-rules"><span class="header-section-number">12</span> Appendix B: Governance
+Rules</h1>
+<ol type="1">
+<li>No live parameter mutation without explicit candidate-pack
+creation.</li>
+<li>No promotion based only on in-sample results.</li>
+<li>No promotion without robustness and regime review.</li>
+<li>No promotion without shadow evidence once shadow support exists for
+that workflow.</li>
+<li>No neural method may directly control live behavior.</li>
+</ol>
+</body>
+</html>

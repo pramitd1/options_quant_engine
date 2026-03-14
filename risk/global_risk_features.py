@@ -114,78 +114,86 @@ def _normalize_holding_profile(value) -> str:
 
 
 def _oil_shock_score(change_24h):
+    cfg = get_global_risk_policy_config()
     change_24h = _safe_float(change_24h, 0.0)
-    if change_24h > 7.0:
-        return 1.0
-    if change_24h > 4.0:
-        return 0.7
-    if change_24h < -5.0:
-        return -0.5
+    if change_24h > cfg.oil_shock_extreme_change_pct:
+        return cfg.oil_shock_extreme_score
+    if change_24h > cfg.oil_shock_medium_change_pct:
+        return cfg.oil_shock_medium_score
+    if change_24h < cfg.oil_shock_relief_change_pct:
+        return cfg.oil_shock_relief_score
     return 0.0
 
 
 def _gold_risk_score(change_24h):
+    cfg = get_global_risk_policy_config()
     change_24h = _safe_float(change_24h, 0.0)
-    if change_24h > 3.0:
-        return 0.8
-    if change_24h > 2.0:
-        return 0.5
+    if change_24h > cfg.gold_risk_extreme_change_pct:
+        return cfg.gold_risk_extreme_score
+    if change_24h > cfg.gold_risk_medium_change_pct:
+        return cfg.gold_risk_medium_score
     return 0.0
 
 
 def _copper_growth_signal(change_24h):
+    cfg = get_global_risk_policy_config()
     change_24h = _safe_float(change_24h, 0.0)
-    if change_24h < -5.0:
-        return -1.0
-    if change_24h < -3.0:
-        return -0.6
+    if change_24h < cfg.copper_growth_severe_drop_pct:
+        return cfg.copper_growth_severe_score
+    if change_24h < cfg.copper_growth_moderate_drop_pct:
+        return cfg.copper_growth_moderate_score
     return 0.0
 
 
 def _volatility_shock_score(vix_change_24h):
+    cfg = get_global_risk_policy_config()
     vix_change_24h = _safe_float(vix_change_24h, 0.0)
-    if vix_change_24h > 15.0:
-        return 1.0
-    if vix_change_24h > 10.0:
-        return 0.7
-    if vix_change_24h > 5.0:
-        return 0.4
+    if vix_change_24h > cfg.vix_shock_extreme_change_pct:
+        return cfg.vix_shock_extreme_score
+    if vix_change_24h > cfg.vix_shock_medium_change_pct:
+        return cfg.vix_shock_medium_score
+    if vix_change_24h > cfg.vix_shock_low_change_pct:
+        return cfg.vix_shock_low_score
     return 0.0
 
 
 def _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h):
+    cfg = get_global_risk_policy_config()
     worst_move = min(
         _safe_float(sp500_change_24h, 0.0),
         _safe_float(nasdaq_change_24h, 0.0),
     )
-    if worst_move < -2.0:
-        return 0.7
-    if worst_move < -1.0:
-        return 0.4
+    if worst_move < cfg.us_equity_risk_extreme_move_pct:
+        return cfg.us_equity_risk_extreme_score
+    if worst_move < cfg.us_equity_risk_moderate_move_pct:
+        return cfg.us_equity_risk_moderate_score
     return 0.0
 
 
 def _rates_shock_score(us10y_change_bp):
-    return 0.6 if _safe_float(us10y_change_bp, 0.0) > 10.0 else 0.0
+    cfg = get_global_risk_policy_config()
+    return cfg.rates_shock_score if _safe_float(us10y_change_bp, 0.0) > cfg.rates_shock_threshold_bp else 0.0
 
 
 def _currency_shock_score(usdinr_change_24h):
-    return 0.5 if _safe_float(usdinr_change_24h, 0.0) > 0.7 else 0.0
+    cfg = get_global_risk_policy_config()
+    return cfg.currency_shock_score_base if _safe_float(usdinr_change_24h, 0.0) > cfg.currency_shock_threshold_pct else 0.0
 
 
 def _volatility_compression_score(realized_vol_5d, realized_vol_30d):
+    cfg = get_global_risk_policy_config()
     realized_vol_5d = _safe_float(realized_vol_5d, 0.0)
     realized_vol_30d = _safe_float(realized_vol_30d, 0.0)
     if realized_vol_30d <= 0:
         return 0.0
 
     compression_ratio = realized_vol_5d / realized_vol_30d
-    if compression_ratio < 0.45:
-        return 1.0
-    if compression_ratio < 0.60:
-        return 0.7
-    if compression_ratio < 0.75:
-        return 0.4
+    if compression_ratio < cfg.vol_compression_extreme_ratio:
+        return cfg.vol_compression_extreme_score
+    if compression_ratio < cfg.vol_compression_medium_ratio:
+        return cfg.vol_compression_medium_score
+    if compression_ratio < cfg.vol_compression_low_ratio:
+        return cfg.vol_compression_low_score
     return 0.0
 
 
@@ -240,6 +248,7 @@ def build_global_risk_features(
     holding_profile: str = "AUTO",
     as_of=None,
 ):
+    cfg = get_global_risk_policy_config()
     macro_event_state = macro_event_state if isinstance(macro_event_state, dict) else {}
     macro_news_state = macro_news_state if isinstance(macro_news_state, dict) else {}
     global_market_snapshot, market_inputs, market_data_available, market_data_stale, market_neutral_fallback = (
@@ -280,9 +289,9 @@ def build_global_risk_features(
     gold_risk_score = _gold_risk_score(gold_change_24h)
     copper_growth_signal = _copper_growth_signal(copper_change_24h)
     commodity_risk_score = round(
-        (0.5 * oil_shock_score)
-        + (0.3 * gold_risk_score)
-        + (0.2 * copper_growth_signal),
+        (cfg.commodity_risk_oil_weight * oil_shock_score)
+        + (cfg.commodity_risk_gold_weight * gold_risk_score)
+        + (cfg.commodity_risk_copper_weight * copper_growth_signal),
         4,
     )
     volatility_shock_score = _volatility_shock_score(vix_change_24h)
@@ -293,20 +302,20 @@ def build_global_risk_features(
     macro_event_risk_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     volatility_compression_score = _volatility_compression_score(realized_vol_5d, realized_vol_30d)
     commodity_stress_component = _clip(
-        (0.55 * max(oil_shock_score, 0.0))
-        + (0.20 * gold_risk_score)
-        + (0.25 * max(-copper_growth_signal, 0.0)),
+        (cfg.commodity_stress_oil_weight * max(oil_shock_score, 0.0))
+        + (cfg.commodity_stress_gold_weight * gold_risk_score)
+        + (cfg.commodity_stress_copper_weight * max(-copper_growth_signal, 0.0)),
         0.0,
         1.0,
     )
     risk_off_intensity = round(
         _clip(
-            (0.28 * volatility_shock_score)
-            + (0.20 * us_equity_risk_score)
-            + (0.12 * rates_shock_score)
-            + (0.12 * currency_shock_score)
-            + (0.16 * commodity_stress_component)
-            + (0.12 * macro_event_risk_norm),
+            (cfg.risk_off_intensity_vol_weight * volatility_shock_score)
+            + (cfg.risk_off_intensity_us_equity_weight * us_equity_risk_score)
+            + (cfg.risk_off_intensity_rates_weight * rates_shock_score)
+            + (cfg.risk_off_intensity_currency_weight * currency_shock_score)
+            + (cfg.risk_off_intensity_commodity_weight * commodity_stress_component)
+            + (cfg.risk_off_intensity_macro_event_weight * macro_event_risk_norm),
             0.0,
             1.0,
         ),

@@ -16,24 +16,23 @@ from pathlib import Path
 import pandas as pd
 
 from macro.scope_utils import normalize_scope, symbol_scope_matches
+from config.event_window_policy import get_event_window_policy_config
 from config.settings import (
     BASE_DIR,
     DEFAULT_MACRO_EVENT_SCHEDULE,
-    MACRO_EVENT_EVENT_DURATION_MINUTES,
     MACRO_EVENT_FILTER_ENABLED,
-    MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES,
-    MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES,
-    MACRO_EVENT_PRE_EVENT_WARNING_MINUTES,
     MACRO_EVENT_SCHEDULE_FILE,
 )
 
 
-SEVERITY_TO_BASE_RISK = {
-    "CRITICAL": 95,
-    "MAJOR": 80,
-    "MEDIUM": 55,
-    "MINOR": 30,
-}
+def _severity_to_base_risk():
+    cfg = get_event_window_policy_config()
+    return {
+        "CRITICAL": cfg.severity_risk_critical,
+        "MAJOR": cfg.severity_risk_major,
+        "MEDIUM": cfg.severity_risk_medium,
+        "MINOR": cfg.severity_risk_minor,
+    }
 
 IST_TIMEZONE = "Asia/Kolkata"
 
@@ -78,6 +77,7 @@ def _resolve_schedule_path(path_value: str | None):
 
 
 def load_scheduled_macro_events(schedule_path: str | None = None, default_events=None) -> list[dict]:
+    cfg = get_event_window_policy_config()
     default_events = default_events if default_events is not None else DEFAULT_MACRO_EVENT_SCHEDULE
     resolved_path = _resolve_schedule_path(schedule_path or MACRO_EVENT_SCHEDULE_FILE)
 
@@ -101,7 +101,7 @@ def load_scheduled_macro_events(schedule_path: str | None = None, default_events
             continue
 
         severity = str(raw.get("severity", "MAJOR")).strip().upper()
-        if severity not in SEVERITY_TO_BASE_RISK:
+        if severity not in _severity_to_base_risk():
             severity = "MAJOR"
 
         normalized.append({
@@ -109,10 +109,10 @@ def load_scheduled_macro_events(schedule_path: str | None = None, default_events
             "timestamp": event_time,
             "severity": severity,
             "scope": normalize_scope(raw.get("scope")),
-            "warning_minutes": _coerce_int(raw.get("warning_minutes"), MACRO_EVENT_PRE_EVENT_WARNING_MINUTES),
-            "lockdown_minutes": _coerce_int(raw.get("lockdown_minutes"), MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES),
-            "event_duration_minutes": _coerce_int(raw.get("event_duration_minutes"), MACRO_EVENT_EVENT_DURATION_MINUTES),
-            "cooldown_minutes": _coerce_int(raw.get("cooldown_minutes"), MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES),
+            "warning_minutes": _coerce_int(raw.get("warning_minutes"), cfg.pre_event_warning_minutes),
+            "lockdown_minutes": _coerce_int(raw.get("lockdown_minutes"), cfg.pre_event_lockdown_minutes),
+            "event_duration_minutes": _coerce_int(raw.get("event_duration_minutes"), cfg.event_duration_minutes),
+            "cooldown_minutes": _coerce_int(raw.get("cooldown_minutes"), cfg.post_event_cooldown_minutes),
             "source": str(raw.get("source", "LOCAL_CONFIG")).strip() or "LOCAL_CONFIG",
         })
 
@@ -121,6 +121,7 @@ def load_scheduled_macro_events(schedule_path: str | None = None, default_events
 
 
 def _normalize_event_list(events) -> list[dict]:
+    cfg = get_event_window_policy_config()
     if not events:
         return []
 
@@ -137,7 +138,7 @@ def _normalize_event_list(events) -> list[dict]:
             continue
 
         severity = str(raw.get("severity", "MAJOR")).strip().upper()
-        if severity not in SEVERITY_TO_BASE_RISK:
+        if severity not in _severity_to_base_risk():
             severity = "MAJOR"
 
         normalized.append({
@@ -145,10 +146,10 @@ def _normalize_event_list(events) -> list[dict]:
             "timestamp": event_time,
             "severity": severity,
             "scope": normalize_scope(raw.get("scope")),
-            "warning_minutes": _coerce_int(raw.get("warning_minutes"), MACRO_EVENT_PRE_EVENT_WARNING_MINUTES),
-            "lockdown_minutes": _coerce_int(raw.get("lockdown_minutes"), MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES),
-            "event_duration_minutes": _coerce_int(raw.get("event_duration_minutes"), MACRO_EVENT_EVENT_DURATION_MINUTES),
-            "cooldown_minutes": _coerce_int(raw.get("cooldown_minutes"), MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES),
+            "warning_minutes": _coerce_int(raw.get("warning_minutes"), cfg.pre_event_warning_minutes),
+            "lockdown_minutes": _coerce_int(raw.get("lockdown_minutes"), cfg.pre_event_lockdown_minutes),
+            "event_duration_minutes": _coerce_int(raw.get("event_duration_minutes"), cfg.event_duration_minutes),
+            "cooldown_minutes": _coerce_int(raw.get("cooldown_minutes"), cfg.post_event_cooldown_minutes),
             "source": str(raw.get("source", "LOCAL_CONFIG")).strip() or "LOCAL_CONFIG",
         })
 
@@ -218,7 +219,7 @@ def evaluate_scheduled_event_risk(
         event_time = event["timestamp"]
         minutes_until = (event_time - as_of_ts).total_seconds() / 60.0
         minutes_since = (as_of_ts - event_time).total_seconds() / 60.0
-        base_risk = SEVERITY_TO_BASE_RISK.get(event["severity"], 80)
+        base_risk = _severity_to_base_risk().get(event["severity"], 80)
 
         if minutes_until >= 0 and (next_event is None or event_time < next_event["timestamp"]):
             next_event = event

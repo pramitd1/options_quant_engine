@@ -2,6 +2,7 @@
 Parameter registry and tuning framework for controlled research iteration.
 """
 
+from tuning.campaigns import default_group_tuning_plans, run_group_tuning_campaign
 from tuning.experiments import run_parameter_experiment
 from tuning.packs import load_parameter_pack, list_parameter_packs
 from tuning.promotion import (
@@ -24,11 +25,18 @@ from tuning.runtime import (
     temporary_parameter_pack,
 )
 from tuning.shadow import compare_shadow_trade_outputs, summarize_shadow_log
+from tuning.search import (
+    run_coordinate_descent_search,
+    run_grid_search,
+    run_latin_hypercube_search,
+    run_random_search,
+)
 from tuning.validation import compare_validation_results, run_walk_forward_validation
 from tuning.walk_forward import build_walk_forward_splits
 
 __all__ = [
     "build_walk_forward_splits",
+    "default_group_tuning_plans",
     "compare_validation_results",
     "compare_shadow_trade_outputs",
     "evaluate_promotion",
@@ -44,7 +52,12 @@ __all__ = [
     "promote_candidate",
     "record_manual_approval",
     "rollback_live_pack",
+    "run_coordinate_descent_search",
+    "run_grid_search",
+    "run_group_tuning_campaign",
+    "run_latin_hypercube_search",
     "run_parameter_experiment",
+    "run_random_search",
     "run_walk_forward_validation",
     "set_active_parameter_pack",
     "summarize_promotion_workflow",

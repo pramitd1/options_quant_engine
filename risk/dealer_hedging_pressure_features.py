@@ -4,6 +4,8 @@ Deterministic raw feature model for dealer hedging pressure.
 
 from __future__ import annotations
 
+from config.dealer_hedging_pressure_policy import get_dealer_hedging_pressure_policy_config
+
 
 def _clip(value, lo, hi):
     return max(lo, min(hi, value))
@@ -44,6 +46,7 @@ def _holding_context(global_risk_state, holding_profile):
 
 
 def _gamma_base_scores(gamma_regime, dealer_position):
+    cfg = get_dealer_hedging_pressure_policy_config()
     gamma_regime = str(gamma_regime or "").upper().strip()
     dealer_position = str(dealer_position or "").upper().strip()
 
@@ -51,78 +54,83 @@ def _gamma_base_scores(gamma_regime, dealer_position):
     pinning = 0.0
 
     if gamma_regime in {"SHORT_GAMMA_ZONE", "NEGATIVE_GAMMA"}:
-        acceleration += 0.7
+        acceleration += cfg.gamma_short_acceleration_score
     elif gamma_regime in {"LONG_GAMMA_ZONE", "POSITIVE_GAMMA"}:
-        pinning += 0.65
+        pinning += cfg.gamma_long_pinning_score
 
     if dealer_position == "SHORT GAMMA":
-        acceleration += 0.25
+        acceleration += cfg.dealer_short_gamma_acceleration_bonus
     elif dealer_position == "LONG GAMMA":
-        pinning += 0.25
+        pinning += cfg.dealer_long_gamma_pinning_bonus
 
     return round(_clip(acceleration, 0.0, 1.0), 4), round(_clip(pinning, 0.0, 1.0), 4)
 
 
 def _flip_proximity_score(gamma_flip_distance_pct, spot_vs_flip):
+    cfg = get_dealer_hedging_pressure_policy_config()
     spot_vs_flip = str(spot_vs_flip or "").upper().strip()
     distance = _safe_float(gamma_flip_distance_pct, None)
 
     if spot_vs_flip == "AT_FLIP":
-        return 1.0
+        return cfg.flip_at_score
     if distance is None:
         if spot_vs_flip in {"ABOVE_FLIP", "BELOW_FLIP"}:
-            return 0.22
+            return cfg.flip_unknown_context_score
         return 0.0
-    if distance <= 0.10:
-        return 1.0
-    if distance <= 0.25:
-        return 0.82
-    if distance <= 0.50:
-        return 0.60
-    if distance <= 0.90:
-        return 0.36
-    return 0.10
+    if distance <= cfg.flip_distance_1_pct:
+        return cfg.flip_distance_1_score
+    if distance <= cfg.flip_distance_2_pct:
+        return cfg.flip_distance_2_score
+    if distance <= cfg.flip_distance_3_pct:
+        return cfg.flip_distance_3_score
+    if distance <= cfg.flip_distance_4_pct:
+        return cfg.flip_distance_4_score
+    return cfg.flip_distance_far_score
 
 
 def _bias_scores(dealer_hedging_bias):
+    cfg = get_dealer_hedging_pressure_policy_config()
     bias = str(dealer_hedging_bias or "").upper().strip()
     upside = 0.0
     downside = 0.0
     pinning = 0.0
 
     if bias == "UPSIDE_ACCELERATION":
-        upside = 0.95
+        upside = cfg.bias_acceleration_score
     elif bias == "DOWNSIDE_ACCELERATION":
-        downside = 0.95
+        downside = cfg.bias_acceleration_score
     elif bias in {"UPSIDE_PINNING", "DOWNSIDE_PINNING"}:
-        pinning = 0.65
+        pinning = cfg.bias_partial_pinning_score
     elif bias == "PINNING":
-        pinning = 0.85
+        pinning = cfg.bias_full_pinning_score
 
     return upside, downside, pinning
 
 
 def _hedging_flow_scores(dealer_hedging_flow):
+    cfg = get_dealer_hedging_pressure_policy_config()
     flow = str(dealer_hedging_flow or "").upper().strip()
     if flow == "BUY_FUTURES":
-        return 0.55, 0.0
+        return cfg.hedging_flow_score, 0.0
     if flow == "SELL_FUTURES":
-        return 0.0, 0.55
+        return 0.0, cfg.hedging_flow_score
     return 0.0, 0.0
 
 
 def _intraday_gamma_scores(intraday_gamma_state):
+    cfg = get_dealer_hedging_pressure_policy_config()
     state = str(intraday_gamma_state or "").upper().strip()
     if state == "VOL_EXPANSION":
-        return 0.7, 0.0
+        return cfg.intraday_vol_expansion_score, 0.0
     if state == "GAMMA_DECREASE":
-        return 0.55, 0.0
+        return cfg.intraday_gamma_decrease_score, 0.0
     if state in {"VOL_SUPPRESSION", "GAMMA_INCREASE"}:
-        return 0.0, 0.5
+        return 0.0, cfg.intraday_pinning_score
     return 0.0, 0.0
 
 
 def _flow_confirmation_scores(flow_signal, smart_money_flow):
+    cfg = get_dealer_hedging_pressure_policy_config()
     bullish = 0.0
     bearish = 0.0
 
@@ -130,16 +138,16 @@ def _flow_confirmation_scores(flow_signal, smart_money_flow):
     smart_money_flow = str(smart_money_flow or "").upper().strip()
 
     if flow_signal == "BULLISH_FLOW":
-        bullish += 0.18
+        bullish += cfg.flow_confirmation_hit_score
     elif flow_signal == "BEARISH_FLOW":
-        bearish += 0.18
+        bearish += cfg.flow_confirmation_hit_score
 
     if smart_money_flow == "BULLISH_FLOW":
-        bullish += 0.18
+        bullish += cfg.flow_confirmation_hit_score
     elif smart_money_flow == "BEARISH_FLOW":
-        bearish += 0.18
+        bearish += cfg.flow_confirmation_hit_score
 
-    return round(_clip(bullish, 0.0, 0.4), 4), round(_clip(bearish, 0.0, 0.4), 4)
+    return round(_clip(bullish, 0.0, cfg.flow_confirmation_cap), 4), round(_clip(bearish, 0.0, cfg.flow_confirmation_cap), 4)
 
 
 def _nearest_level_distance_pct(spot, levels):
@@ -159,6 +167,7 @@ def _nearest_level_distance_pct(spot, levels):
 
 
 def _structure_scores(spot, support_wall, resistance_wall, gamma_clusters, liquidity_levels, liquidity_vacuum_state):
+    cfg = get_dealer_hedging_pressure_policy_config()
     levels = []
     for level in [support_wall, resistance_wall]:
         if level is not None:
@@ -169,28 +178,29 @@ def _structure_scores(spot, support_wall, resistance_wall, gamma_clusters, liqui
     nearest_level_distance_pct = _nearest_level_distance_pct(spot, levels)
     concentration_score = 0.0
     if nearest_level_distance_pct is not None:
-        if nearest_level_distance_pct <= 0.12:
-            concentration_score = 0.9
-        elif nearest_level_distance_pct <= 0.25:
-            concentration_score = 0.72
-        elif nearest_level_distance_pct <= 0.50:
-            concentration_score = 0.45
+        if nearest_level_distance_pct <= cfg.level_distance_near_pct:
+            concentration_score = cfg.level_concentration_near_score
+        elif nearest_level_distance_pct <= cfg.level_distance_mid_pct:
+            concentration_score = cfg.level_concentration_mid_score
+        elif nearest_level_distance_pct <= cfg.level_distance_far_pct:
+            concentration_score = cfg.level_concentration_far_score
         else:
-            concentration_score = 0.15
+            concentration_score = cfg.level_concentration_loose_score
 
     vacuum_state = str(liquidity_vacuum_state or "").upper().strip()
     vacuum_score = {
-        "BREAKOUT_ZONE": 0.9,
-        "NEAR_VACUUM": 0.7,
-        "VACUUM_WATCH": 0.45,
+        "BREAKOUT_ZONE": cfg.vacuum_breakout_score,
+        "NEAR_VACUUM": cfg.vacuum_near_score,
+        "VACUUM_WATCH": cfg.vacuum_watch_score,
     }.get(vacuum_state, 0.0)
 
-    acceleration_structure = _clip(vacuum_score * (1.0 - (concentration_score * 0.55)), 0.0, 1.0)
-    pinning_structure = _clip((0.65 * concentration_score) + (0.15 if len(levels) >= 4 else 0.0), 0.0, 1.0)
+    acceleration_structure = _clip(vacuum_score * (1.0 - (concentration_score * cfg.acceleration_structure_pinning_dampener)), 0.0, 1.0)
+    pinning_structure = _clip((cfg.pinning_structure_concentration_weight * concentration_score) + (cfg.pinning_structure_cluster_bonus if len(levels) >= 4 else 0.0), 0.0, 1.0)
     return round(acceleration_structure, 4), round(pinning_structure, 4), nearest_level_distance_pct
 
 
 def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_explosion_probability, gamma_vol_acceleration_score):
+    cfg = get_dealer_hedging_pressure_policy_config()
     macro_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     state = (
         global_risk_state.get("global_risk_state")
@@ -199,19 +209,19 @@ def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_ex
     )
     state = str(state or "").upper().strip()
     global_boost = {
-        "VOL_SHOCK": 1.0,
-        "EVENT_LOCKDOWN": 0.9,
-        "RISK_OFF": 0.55,
-        "GLOBAL_NEUTRAL": 0.12,
+        "VOL_SHOCK": cfg.macro_global_state_vol_shock,
+        "EVENT_LOCKDOWN": cfg.macro_global_state_event_lockdown,
+        "RISK_OFF": cfg.macro_global_state_risk_off,
+        "GLOBAL_NEUTRAL": cfg.macro_global_state_neutral,
         "RISK_ON": 0.0,
-    }.get(state, 0.08)
+    }.get(state, cfg.macro_global_state_unknown)
     volatility_boost = _clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0)
     gamma_vol_boost = _clip(_safe_float(gamma_vol_acceleration_score, 0.0) / 100.0, 0.0, 1.0)
     return round(_clip(
-        (0.40 * macro_norm)
-        + (0.25 * global_boost)
-        + (0.20 * volatility_boost)
-        + (0.15 * gamma_vol_boost),
+        (cfg.macro_global_event_weight * macro_norm)
+        + (cfg.macro_global_state_weight * global_boost)
+        + (cfg.macro_global_explosion_weight * volatility_boost)
+        + (cfg.macro_global_gamma_vol_weight * gamma_vol_boost),
         0.0,
         1.0,
     ), 4)
@@ -242,6 +252,7 @@ def build_dealer_hedging_pressure_features(
     gamma_vol_acceleration_score=None,
     holding_profile="AUTO",
 ):
+    cfg = get_dealer_hedging_pressure_policy_config()
     holding_context = _holding_context(global_risk_state, holding_profile)
 
     feature_inputs = {
@@ -285,95 +296,95 @@ def build_dealer_hedging_pressure_features(
     )
     far_level_dampener = 0.0
     if nearest_level_distance_pct is not None:
-        if nearest_level_distance_pct > 0.60:
-            far_level_dampener = 0.35
-        elif nearest_level_distance_pct > 0.35:
-            far_level_dampener = 0.18
+        if nearest_level_distance_pct > cfg.far_level_high_pct:
+            far_level_dampener = cfg.far_level_high_dampener
+        elif nearest_level_distance_pct > cfg.far_level_watch_pct:
+            far_level_dampener = cfg.far_level_watch_dampener
     macro_global_boost = _macro_global_boost(
         macro_event_risk_score,
         global_risk_state,
         volatility_explosion_probability,
         gamma_vol_acceleration_score,
     )
-    intraday_range_score = _clip(_safe_float(intraday_range_pct, 0.0) / 1.2, 0.0, 1.0)
+    intraday_range_score = _clip(_safe_float(intraday_range_pct, 0.0) / cfg.intraday_range_norm_divisor, 0.0, 1.0)
     gamma_vol_overlay = _clip(_safe_float(gamma_vol_acceleration_score, 0.0) / 100.0, 0.0, 1.0)
 
     acceleration_base = _clip(
-        (0.42 * gamma_acceleration_base)
-        + (0.24 * flip_proximity_score)
-        + (0.18 * acceleration_structure_score)
-        + (0.10 * intraday_instability_score)
-        + (0.06 * intraday_range_score),
+        (cfg.acceleration_base_gamma_weight * gamma_acceleration_base)
+        + (cfg.acceleration_base_flip_weight * flip_proximity_score)
+        + (cfg.acceleration_base_structure_weight * acceleration_structure_score)
+        + (cfg.acceleration_base_intraday_weight * intraday_instability_score)
+        + (cfg.acceleration_base_range_weight * intraday_range_score),
         0.0,
         1.0,
     )
     pinning_base = _clip(
-        (0.48 * gamma_pinning_base)
-        + (0.22 * bias_pinning)
-        + (0.22 * pinning_structure_score)
-        + (0.08 * intraday_pinning_score),
+        (cfg.pinning_base_gamma_weight * gamma_pinning_base)
+        + (cfg.pinning_base_bias_weight * bias_pinning)
+        + (cfg.pinning_base_structure_weight * pinning_structure_score)
+        + (cfg.pinning_base_intraday_weight * intraday_pinning_score),
         0.0,
         1.0,
     )
 
     upside_hedging_pressure = round(_clip(
-        (0.38 * acceleration_base)
-        + (0.20 * bias_up)
-        + (0.10 * flow_up)
-        + (0.10 * bullish_flow_confirmation)
-        + (0.08 * macro_global_boost)
-        + (0.08 * gamma_vol_overlay)
-        + (0.06 * intraday_instability_score)
-        - (0.24 * pinning_base),
+        (cfg.directional_acceleration_weight * acceleration_base)
+        + (cfg.directional_bias_weight * bias_up)
+        + (cfg.directional_flow_weight * flow_up)
+        + (cfg.directional_confirmation_weight * bullish_flow_confirmation)
+        + (cfg.directional_macro_weight * macro_global_boost)
+        + (cfg.directional_gamma_vol_weight * gamma_vol_overlay)
+        + (cfg.directional_intraday_weight * intraday_instability_score)
+        - (cfg.directional_pinning_penalty_weight * pinning_base),
         0.0,
         1.0,
     ) * feature_confidence, 4)
     downside_hedging_pressure = round(_clip(
-        (0.38 * acceleration_base)
-        + (0.20 * bias_down)
-        + (0.10 * flow_down)
-        + (0.10 * bearish_flow_confirmation)
-        + (0.08 * macro_global_boost)
-        + (0.08 * gamma_vol_overlay)
-        + (0.06 * intraday_instability_score)
-        - (0.24 * pinning_base),
+        (cfg.directional_acceleration_weight * acceleration_base)
+        + (cfg.directional_bias_weight * bias_down)
+        + (cfg.directional_flow_weight * flow_down)
+        + (cfg.directional_confirmation_weight * bearish_flow_confirmation)
+        + (cfg.directional_macro_weight * macro_global_boost)
+        + (cfg.directional_gamma_vol_weight * gamma_vol_overlay)
+        + (cfg.directional_intraday_weight * intraday_instability_score)
+        - (cfg.directional_pinning_penalty_weight * pinning_base),
         0.0,
         1.0,
     ) * feature_confidence, 4)
     pinning_pressure_score = round(_clip(
-        (0.52 * pinning_base)
-        + (0.12 * bias_pinning)
-        + (0.12 * pinning_structure_score)
-        + (0.10 * max(0.0, 1.0 - flip_proximity_score))
-        + (0.08 * max(0.0, 1.0 - gamma_vol_overlay))
-        + (0.06 * intraday_pinning_score)
-        - (0.24 * acceleration_base)
-        - (0.25 * far_level_dampener),
+        (cfg.pinning_score_base_weight * pinning_base)
+        + (cfg.pinning_score_bias_weight * bias_pinning)
+        + (cfg.pinning_score_structure_weight * pinning_structure_score)
+        + (cfg.pinning_score_flip_inverse_weight * max(0.0, 1.0 - flip_proximity_score))
+        + (cfg.pinning_score_gamma_vol_inverse_weight * max(0.0, 1.0 - gamma_vol_overlay))
+        + (cfg.pinning_score_intraday_weight * intraday_pinning_score)
+        - (cfg.pinning_score_acceleration_penalty_weight * acceleration_base)
+        - (cfg.pinning_score_far_level_penalty_weight * far_level_dampener),
         0.0,
         1.0,
     ) * feature_confidence, 4)
     two_sided_instability = round(min(upside_hedging_pressure, downside_hedging_pressure), 4)
     normalized_pressure = round(_clip(
-        (0.48 * max(upside_hedging_pressure, downside_hedging_pressure))
-        + (0.20 * two_sided_instability)
-        + (0.14 * pinning_pressure_score)
-        + (0.18 * acceleration_base),
+        (cfg.normalized_pressure_directional_weight * max(upside_hedging_pressure, downside_hedging_pressure))
+        + (cfg.normalized_pressure_two_sided_weight * two_sided_instability)
+        + (cfg.normalized_pressure_pinning_weight * pinning_pressure_score)
+        + (cfg.normalized_pressure_acceleration_weight * acceleration_base),
         0.0,
         1.0,
     ), 4)
     overnight_hedging_risk = round(_clip(
-        (0.34 * max(upside_hedging_pressure, downside_hedging_pressure))
-        + (0.20 * two_sided_instability)
-        + (0.16 * macro_global_boost)
-        + (0.15 * gamma_vol_overlay)
-        + (0.10 * _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0))
-        + (0.05 * (1.0 if holding_context["overnight_relevant"] else 0.0)),
+        (cfg.overnight_directional_weight * max(upside_hedging_pressure, downside_hedging_pressure))
+        + (cfg.overnight_two_sided_weight * two_sided_instability)
+        + (cfg.overnight_macro_weight * macro_global_boost)
+        + (cfg.overnight_gamma_vol_weight * gamma_vol_overlay)
+        + (cfg.overnight_event_weight * _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0))
+        + (cfg.overnight_context_weight * (1.0 if holding_context["overnight_relevant"] else 0.0)),
         0.0,
         1.0,
     ), 4)
 
     warnings = []
-    if feature_confidence < 0.55:
+    if feature_confidence < cfg.partial_coverage_warning_threshold:
         warnings.append("dealer_pressure_partial_input_coverage")
     if gamma_regime is None:
         warnings.append("gamma_regime_missing")

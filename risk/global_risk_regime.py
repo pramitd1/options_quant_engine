@@ -51,6 +51,7 @@ def _evaluate_overnight_risk(
     us_equity_risk_score,
     overnight_relevant,
 ):
+    cfg = get_global_risk_policy_config()
     penalty = 0
     reasons = []
 
@@ -60,33 +61,33 @@ def _evaluate_overnight_risk(
     if global_risk_state == "EVENT_LOCKDOWN":
         return False, "event_lockdown_block", 10
 
-    if _safe_float(volatility_explosion_probability, 0.0) > 0.7:
-        penalty += 6
+    if _safe_float(volatility_explosion_probability, 0.0) > cfg.overnight_vol_explosion_high_threshold:
+        penalty += cfg.overnight_vol_explosion_high_penalty
         reasons.append("volatility_explosion_risk")
-    elif _safe_float(volatility_explosion_probability, 0.0) > 0.4:
-        penalty += 3
+    elif _safe_float(volatility_explosion_probability, 0.0) > cfg.overnight_vol_explosion_watch_threshold:
+        penalty += cfg.overnight_vol_explosion_watch_penalty
         reasons.append("volatility_explosion_watch")
 
-    if _safe_float(macro_event_risk_score, 0.0) >= 70.0:
-        penalty += 4
+    if _safe_float(macro_event_risk_score, 0.0) >= cfg.overnight_macro_event_high_threshold:
+        penalty += cfg.overnight_macro_event_high_penalty
         reasons.append("macro_event_risk_high")
-    elif _safe_float(macro_event_risk_score, 0.0) >= 45.0:
-        penalty += 2
+    elif _safe_float(macro_event_risk_score, 0.0) >= cfg.overnight_macro_event_watch_threshold:
+        penalty += cfg.overnight_macro_event_watch_penalty
         reasons.append("macro_event_risk_elevated")
 
-    if _safe_float(oil_shock_score, 0.0) >= 0.7:
-        penalty += 3
+    if _safe_float(oil_shock_score, 0.0) >= cfg.overnight_oil_shock_threshold:
+        penalty += cfg.overnight_oil_shock_penalty
         reasons.append("oil_shock_elevated")
 
-    if _safe_float(us_equity_risk_score, 0.0) >= 0.7:
-        penalty += 3
+    if _safe_float(us_equity_risk_score, 0.0) >= cfg.overnight_us_equity_high_threshold:
+        penalty += cfg.overnight_us_equity_high_penalty
         reasons.append("us_equity_risk_elevated")
-    elif _safe_float(us_equity_risk_score, 0.0) >= 0.4:
-        penalty += 2
+    elif _safe_float(us_equity_risk_score, 0.0) >= cfg.overnight_us_equity_watch_threshold:
+        penalty += cfg.overnight_us_equity_watch_penalty
         reasons.append("us_equity_risk_watch")
 
     if global_risk_state == "RISK_OFF":
-        penalty += 2
+        penalty += cfg.overnight_risk_off_regime_penalty
         reasons.append("global_risk_off_regime")
 
     penalty = int(_clip(penalty, 0.0, 10.0))
@@ -167,34 +168,34 @@ def classify_global_risk_state(features: dict | None) -> GlobalRiskState:
         1.0,
     )
     positive_macro_sentiment_norm = _clip(
-        max(_safe_float(features.get("macro_sentiment_score"), 0.0), 0.0) / 30.0,
+        max(_safe_float(features.get("macro_sentiment_score"), 0.0), 0.0) / cfg.positive_macro_sentiment_full_scale,
         0.0,
         1.0,
     )
     risk_off_pressure = _clip(
-        (0.24 * volatility_shock_score)
-        + (0.18 * us_equity_risk_score)
-        + (0.10 * rates_shock_score_raw)
-        + (0.10 * currency_shock_score_raw)
-        + (0.14 * macro_event_risk_norm)
-        + (0.12 * volatility_explosion_probability)
-        + (0.12 * max(commodity_risk_score, 0.0)),
+        (cfg.risk_off_pressure_vol_weight * volatility_shock_score)
+        + (cfg.risk_off_pressure_us_equity_weight * us_equity_risk_score)
+        + (cfg.risk_off_pressure_rates_weight * rates_shock_score_raw)
+        + (cfg.risk_off_pressure_currency_weight * currency_shock_score_raw)
+        + (cfg.risk_off_pressure_macro_event_weight * macro_event_risk_norm)
+        + (cfg.risk_off_pressure_vol_explosion_weight * volatility_explosion_probability)
+        + (cfg.risk_off_pressure_commodity_weight * max(commodity_risk_score, 0.0)),
         0.0,
         1.0,
     )
     risk_on_support = _clip(
-        (0.45 * positive_commodity_support)
-        + (0.35 * positive_global_bias_norm)
-        + (0.20 * positive_macro_sentiment_norm),
+        (cfg.risk_on_support_commodity_weight * positive_commodity_support)
+        + (cfg.risk_on_support_global_bias_weight * positive_global_bias_norm)
+        + (cfg.risk_on_support_macro_sentiment_weight * positive_macro_sentiment_norm),
         0.0,
         1.0,
     )
     regime_score = round(_clip(risk_off_pressure - risk_on_support, -1.0, 1.0), 4)
 
     volatility_expansion_risk_score = int(round(_clip(
-        market_volatility_score * 0.50
-        + volatility_explosion_score * 0.30
-        + headline_volatility_score * 0.20,
+        market_volatility_score * cfg.volatility_expansion_market_vol_weight
+        + volatility_explosion_score * cfg.volatility_expansion_explosion_weight
+        + headline_volatility_score * cfg.volatility_expansion_headline_weight,
         0.0,
         100.0,
     )))
@@ -207,26 +208,26 @@ def classify_global_risk_state(features: dict | None) -> GlobalRiskState:
     ) * confidence_multiplier
 
     global_risk_score = int(round(_clip(
-        risk_off_pressure * 100.0 * 0.52
-        + macro_event_risk_score * 0.16
-        + volatility_expansion_risk_score * 0.14
-        + risk_off_intensity_score * 0.08
-        + headline_velocity_score * 0.05
-        + global_bias_risk_score * 0.03
-        + currency_shock_score * 0.02
-        + (10.0 if macro_regime == "RISK_OFF" and not neutral_fallback else 0.0),
+        risk_off_pressure * 100.0 * cfg.global_risk_score_risk_off_pressure_weight
+        + macro_event_risk_score * cfg.global_risk_score_macro_event_weight
+        + volatility_expansion_risk_score * cfg.global_risk_score_volatility_expansion_weight
+        + risk_off_intensity_score * cfg.global_risk_score_risk_off_intensity_weight
+        + headline_velocity_score * cfg.global_risk_score_headline_velocity_weight
+        + global_bias_risk_score * cfg.global_risk_score_global_bias_weight
+        + currency_shock_score * cfg.global_risk_score_currency_weight
+        + (cfg.global_risk_score_macro_regime_risk_off_bonus if macro_regime == "RISK_OFF" and not neutral_fallback else 0.0),
         0.0,
         100.0,
     )))
 
     overnight_gap_risk_score = int(round(_clip(
-        macro_event_risk_score * 0.32
-        + volatility_expansion_risk_score * 0.22
-        + currency_shock_score * 0.14
-        + risk_off_intensity_score * 0.14
-        + headline_velocity_score * 0.08
-        + max(global_risk_score - 45.0, 0.0) * 0.10
-        + (10.0 if overnight_relevant else 0.0),
+        macro_event_risk_score * cfg.overnight_gap_macro_event_weight
+        + volatility_expansion_risk_score * cfg.overnight_gap_volatility_expansion_weight
+        + currency_shock_score * cfg.overnight_gap_currency_weight
+        + risk_off_intensity_score * cfg.overnight_gap_risk_off_intensity_weight
+        + headline_velocity_score * cfg.overnight_gap_headline_velocity_weight
+        + max(global_risk_score - cfg.overnight_gap_global_score_excess_floor, 0.0) * cfg.overnight_gap_global_score_excess_weight
+        + (cfg.overnight_gap_overnight_context_bonus if overnight_relevant else 0.0),
         0.0,
         100.0,
     )))
@@ -261,19 +262,19 @@ def classify_global_risk_state(features: dict | None) -> GlobalRiskState:
     if overnight_relevant:
         reasons.append("overnight_context_active")
 
-    if volatility_explosion_probability > 0.7:
+    if volatility_explosion_probability > cfg.state_vol_shock_probability_threshold:
         state = "VOL_SHOCK"
         adjustment_score = cfg.risk_adjustment_extreme
         size_multiplier = cfg.size_cap_extreme
-    elif event_lockdown_flag or macro_event_risk_norm > 0.7:
+    elif event_lockdown_flag or macro_event_risk_norm > cfg.state_event_lockdown_probability_threshold:
         state = "EVENT_LOCKDOWN"
         adjustment_score = cfg.risk_adjustment_risk_off
         size_multiplier = 0.0 if event_lockdown_flag else cfg.size_cap_risk_off
-    elif regime_score > 0.6 or macro_regime == "RISK_OFF":
+    elif regime_score > cfg.state_risk_off_regime_score_threshold or macro_regime == "RISK_OFF":
         state = "RISK_OFF"
         adjustment_score = cfg.risk_adjustment_risk_off
         size_multiplier = cfg.size_cap_risk_off
-    elif regime_score < -0.3 and not neutral_fallback:
+    elif regime_score < cfg.state_risk_on_regime_score_threshold and not neutral_fallback:
         state = "RISK_ON"
         adjustment_score = 0
         size_multiplier = 1.0
@@ -334,23 +335,23 @@ def classify_global_risk_state(features: dict | None) -> GlobalRiskState:
         "headline_volatility_shock_score": round(headline_volatility_score, 2),
         "currency_shock_score": round(currency_shock_score, 2),
         "component_contributions": {
-            "risk_off_pressure": round(risk_off_pressure * 100.0 * 0.52, 2),
-            "macro_event_risk": round(macro_event_risk_score * 0.16, 2),
-            "volatility_expansion_risk": round(volatility_expansion_risk_score * 0.14, 2),
-            "risk_off_intensity": round(risk_off_intensity_score * 0.08, 2),
-            "headline_velocity": round(headline_velocity_score * 0.05, 2),
-            "global_bias_risk": round(global_bias_risk_score * 0.03, 2),
-            "currency_shock": round(currency_shock_score * 0.02, 2),
+            "risk_off_pressure": round(risk_off_pressure * 100.0 * cfg.global_risk_score_risk_off_pressure_weight, 2),
+            "macro_event_risk": round(macro_event_risk_score * cfg.global_risk_score_macro_event_weight, 2),
+            "volatility_expansion_risk": round(volatility_expansion_risk_score * cfg.global_risk_score_volatility_expansion_weight, 2),
+            "risk_off_intensity": round(risk_off_intensity_score * cfg.global_risk_score_risk_off_intensity_weight, 2),
+            "headline_velocity": round(headline_velocity_score * cfg.global_risk_score_headline_velocity_weight, 2),
+            "global_bias_risk": round(global_bias_risk_score * cfg.global_risk_score_global_bias_weight, 2),
+            "currency_shock": round(currency_shock_score * cfg.global_risk_score_currency_weight, 2),
         },
         "dominant_risk_driver": max(
             {
-                "risk_off_pressure": round(risk_off_pressure * 100.0 * 0.52, 2),
-                "macro_event_risk": round(macro_event_risk_score * 0.16, 2),
-                "volatility_expansion_risk": round(volatility_expansion_risk_score * 0.14, 2),
-                "risk_off_intensity": round(risk_off_intensity_score * 0.08, 2),
-                "headline_velocity": round(headline_velocity_score * 0.05, 2),
-                "global_bias_risk": round(global_bias_risk_score * 0.03, 2),
-                "currency_shock": round(currency_shock_score * 0.02, 2),
+                "risk_off_pressure": round(risk_off_pressure * 100.0 * cfg.global_risk_score_risk_off_pressure_weight, 2),
+                "macro_event_risk": round(macro_event_risk_score * cfg.global_risk_score_macro_event_weight, 2),
+                "volatility_expansion_risk": round(volatility_expansion_risk_score * cfg.global_risk_score_volatility_expansion_weight, 2),
+                "risk_off_intensity": round(risk_off_intensity_score * cfg.global_risk_score_risk_off_intensity_weight, 2),
+                "headline_velocity": round(headline_velocity_score * cfg.global_risk_score_headline_velocity_weight, 2),
+                "global_bias_risk": round(global_bias_risk_score * cfg.global_risk_score_global_bias_weight, 2),
+                "currency_shock": round(currency_shock_score * cfg.global_risk_score_currency_weight, 2),
             }.items(),
             key=lambda item: item[1],
         )[0],

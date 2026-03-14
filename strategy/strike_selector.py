@@ -5,7 +5,7 @@ Ranks candidate option strikes for the engine instead of choosing only the
 nearest strike mechanically.
 """
 
-from config.settings import STRIKE_WINDOW_STEPS
+from config.strike_selection_policy import get_strike_selection_score_config
 
 
 def _safe_float(x, default=0.0):
@@ -38,18 +38,19 @@ def _to_python_number(x):
 
 
 def _score_moneyness(direction, strike, spot):
+    cfg = get_strike_selection_score_config()
     distance_pct = abs(strike - spot) / max(spot, 1e-6) * 100.0
 
     # Prefer near-ATM / slight ITM options for buying.
-    if distance_pct <= 0.20:
-        return 10
-    if distance_pct <= 0.40:
-        return 8
-    if distance_pct <= 0.70:
-        return 5
-    if distance_pct <= 1.20:
-        return 2
-    return -2
+    if distance_pct <= cfg["atm_distance_pct"]:
+        return int(cfg["moneyness_atm_score"])
+    if distance_pct <= cfg["near_distance_pct"]:
+        return int(cfg["moneyness_near_score"])
+    if distance_pct <= cfg["mid_distance_pct"]:
+        return int(cfg["moneyness_mid_score"])
+    if distance_pct <= cfg["far_distance_pct"]:
+        return int(cfg["moneyness_far_score"])
+    return int(cfg["moneyness_deep_penalty"])
 
 
 def _score_directional_side(direction, strike, spot):
@@ -58,71 +59,75 @@ def _score_directional_side(direction, strike, spot):
     - CALL: ATM to slightly OTM/ITM but not too far
     - PUT: ATM to slightly OTM/ITM but not too far
     """
+    cfg = get_strike_selection_score_config()
     if direction == "CALL":
         if strike >= spot:
-            return 2
-        return 1
+            return int(cfg["call_above_spot_score"])
+        return int(cfg["call_below_spot_score"])
 
     if direction == "PUT":
         if strike <= spot:
-            return 2
-        return 1
+            return int(cfg["put_below_spot_score"])
+        return int(cfg["put_above_spot_score"])
 
     return 0
 
 
 def _score_premium(last_price, max_capital=None, lot_size=None):
+    cfg = get_strike_selection_score_config()
     premium = _safe_float(last_price, 0.0)
 
     if premium <= 0:
         return -10
 
     # Raw premium preference band for option buying.
-    if 80 <= premium <= 250:
-        score = 8
-    elif 40 <= premium < 80:
-        score = 6
-    elif 250 < premium <= 400:
-        score = 4
-    elif 20 <= premium < 40:
-        score = 3
+    if cfg["premium_optimal_min"] <= premium <= cfg["premium_optimal_max"]:
+        score = int(cfg["premium_optimal_score"])
+    elif cfg["premium_secondary_min"] <= premium < cfg["premium_optimal_min"]:
+        score = int(cfg["premium_secondary_score"])
+    elif cfg["premium_optimal_max"] < premium <= cfg["premium_secondary_max"]:
+        score = int(cfg["premium_upper_mid_score"])
+    elif cfg["premium_lower_tail_min"] <= premium < cfg["premium_secondary_min"]:
+        score = int(cfg["premium_lower_tail_score"])
     else:
-        score = 1
+        score = int(cfg["premium_default_score"])
 
     if max_capital is not None and lot_size is not None:
         capital_per_lot = premium * lot_size
         if capital_per_lot > max_capital:
-            score -= 5
-        elif capital_per_lot > 0.85 * max_capital:
-            score -= 2
+            score += int(cfg["premium_over_budget_penalty"])
+        elif capital_per_lot > cfg["premium_near_budget_ratio"] * max_capital:
+            score += int(cfg["premium_near_budget_penalty"])
 
     return score
 
 
 def _score_liquidity(volume, open_interest):
+    cfg = get_strike_selection_score_config()
     vol = _safe_float(volume, 0.0)
     oi = _safe_float(open_interest, 0.0)
 
     score = 0
 
-    if vol >= 5000:
-        score += 6
-    elif vol >= 2000:
-        score += 4
-    elif vol >= 500:
-        score += 2
+    if vol >= cfg["volume_high_threshold"]:
+        score += int(cfg["volume_high_score"])
+    elif vol >= cfg["volume_medium_threshold"]:
+        score += int(cfg["volume_medium_score"])
+    elif vol >= cfg["volume_low_threshold"]:
+        score += int(cfg["volume_low_score"])
 
-    if oi >= 100000:
-        score += 6
-    elif oi >= 50000:
-        score += 4
-    elif oi >= 10000:
-        score += 2
+    if oi >= cfg["oi_high_threshold"]:
+        score += int(cfg["oi_high_score"])
+    elif oi >= cfg["oi_medium_threshold"]:
+        score += int(cfg["oi_medium_score"])
+    elif oi >= cfg["oi_low_threshold"]:
+        score += int(cfg["oi_low_score"])
 
     return score
 
 
 def _score_wall_distance(direction, strike, support_wall=None, resistance_wall=None):
+    cfg = get_strike_selection_score_config()
     score = 0
 
     support = _safe_float(support_wall, None)
@@ -130,22 +135,23 @@ def _score_wall_distance(direction, strike, support_wall=None, resistance_wall=N
 
     if direction == "CALL" and resistance is not None:
         dist = abs(strike - resistance)
-        if dist <= 50:
-            score -= 4
-        elif dist <= 100:
-            score -= 2
+        if dist <= cfg["wall_near_distance_points"]:
+            score += int(cfg["wall_near_penalty"])
+        elif dist <= cfg["wall_medium_distance_points"]:
+            score += int(cfg["wall_medium_penalty"])
 
     if direction == "PUT" and support is not None:
         dist = abs(strike - support)
-        if dist <= 50:
-            score -= 4
-        elif dist <= 100:
-            score -= 2
+        if dist <= cfg["wall_near_distance_points"]:
+            score += int(cfg["wall_near_penalty"])
+        elif dist <= cfg["wall_medium_distance_points"]:
+            score += int(cfg["wall_medium_penalty"])
 
     return score
 
 
 def _score_gamma_cluster_distance(strike, gamma_clusters):
+    cfg = get_strike_selection_score_config()
     if not gamma_clusters:
         return 0
 
@@ -161,25 +167,26 @@ def _score_gamma_cluster_distance(strike, gamma_clusters):
 
     nearest = min(abs(strike - g) for g in clean_clusters)
 
-    if nearest <= 50:
-        return -2
-    if nearest <= 100:
-        return -1
-    return 1
+    if nearest <= cfg["gamma_cluster_near_distance_points"]:
+        return int(cfg["gamma_cluster_near_penalty"])
+    if nearest <= cfg["gamma_cluster_medium_distance_points"]:
+        return int(cfg["gamma_cluster_medium_penalty"])
+    return int(cfg["gamma_cluster_far_bonus"])
 
 
 def _score_iv(iv):
+    cfg = get_strike_selection_score_config()
     iv_val = _safe_float(iv, 0.0)
 
     if iv_val <= 0:
         return 0
 
-    if 10 <= iv_val <= 22:
-        return 3
-    if 22 < iv_val <= 30:
-        return 1
-    if iv_val > 40:
-        return -2
+    if cfg["iv_low_min"] <= iv_val <= cfg["iv_low_max"]:
+        return int(cfg["iv_low_score"])
+    if cfg["iv_low_max"] < iv_val <= cfg["iv_mid_max"]:
+        return int(cfg["iv_mid_score"])
+    if iv_val > cfg["iv_high_threshold"]:
+        return int(cfg["iv_high_penalty"])
     return 0
 
 
@@ -307,7 +314,7 @@ def rank_strike_candidates(
     lot_size=None,
     max_capital=None,
     top_n=5,
-    strike_window_steps=STRIKE_WINDOW_STEPS,
+    strike_window_steps=None,
     candidate_score_hook=None,
 ):
     if option_chain is None or len(option_chain) == 0:
@@ -319,7 +326,12 @@ def rank_strike_candidates(
     if rows.empty:
         return []
 
-    rows = _apply_strike_window(rows, spot=spot, window_steps=strike_window_steps)
+    effective_window_steps = (
+        get_strike_selection_score_config()["strike_window_steps"]
+        if strike_window_steps is None
+        else strike_window_steps
+    )
+    rows = _apply_strike_window(rows, spot=spot, window_steps=effective_window_steps)
 
     candidates = []
 
@@ -358,7 +370,7 @@ def select_best_strike(
     gamma_clusters=None,
     lot_size=None,
     max_capital=None,
-    strike_window_steps=STRIKE_WINDOW_STEPS,
+    strike_window_steps=None,
     candidate_score_hook=None,
 ):
     ranked = rank_strike_candidates(

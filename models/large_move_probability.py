@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from config.large_move_policy import get_large_move_probability_config
+
 
 def _clip(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -51,55 +53,56 @@ def large_move_probability(
       Normalized realized/expected range expansion
     """
 
-    prob = 0.22
+    cfg = get_large_move_probability_config()
+    prob = cfg["base_probability"]
 
     # --- Categorical regime effects ---
     if gamma_regime in {"NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"}:
-        prob += 0.14
+        prob += cfg["short_gamma_bonus"]
     elif gamma_regime in {"POSITIVE_GAMMA", "LONG_GAMMA_ZONE"}:
-        prob -= 0.08
+        prob += cfg["long_gamma_penalty"]
     elif gamma_regime == "NEUTRAL_GAMMA":
         prob += 0.0
 
     if vacuum_state == "BREAKOUT_ZONE":
-        prob += 0.16
+        prob += cfg["breakout_zone_bonus"]
     elif vacuum_state in ("NEAR_VACUUM", "VACUUM_WATCH"):
-        prob += 0.07
+        prob += cfg["near_vacuum_bonus"]
 
     if hedging_bias in ("UPSIDE_ACCELERATION", "DOWNSIDE_ACCELERATION"):
-        prob += 0.14
+        prob += cfg["acceleration_bias_bonus"]
     elif hedging_bias in ("UPSIDE_PINNING", "DOWNSIDE_PINNING", "PINNING"):
-        prob -= 0.06
+        prob += cfg["pinning_bias_penalty"]
 
     if smart_money_flow in ("BULLISH_FLOW", "BEARISH_FLOW"):
-        prob += 0.08
+        prob += cfg["directional_flow_bonus"]
     elif smart_money_flow in ("NEUTRAL_FLOW", "MIXED_FLOW"):
-        prob -= 0.02
+        prob += cfg["neutral_flow_penalty"]
 
     # --- Continuous refinements ---
     if gamma_flip_distance_pct is not None:
         d = _clip(_safe_float(gamma_flip_distance_pct), 0.0, 2.0)
-        prob += 0.12 * (1.0 - d / 2.0)
+        prob += cfg["gamma_flip_distance_weight"] * (1.0 - d / 2.0)
 
     if vacuum_strength is not None:
         v = _clip(_safe_float(vacuum_strength), 0.0, 1.0)
-        prob += 0.12 * v
+        prob += cfg["vacuum_strength_weight"] * v
 
     if hedging_flow_ratio is not None:
         h = abs(_clip(_safe_float(hedging_flow_ratio), -1.0, 1.0))
-        prob += 0.10 * h
+        prob += cfg["hedging_flow_ratio_weight"] * h
 
     if smart_money_flow_score is not None:
         s = abs(_clip(_safe_float(smart_money_flow_score), -1.0, 1.0))
-        prob += 0.08 * s
+        prob += cfg["smart_money_flow_weight"] * s
 
     if atm_iv_percentile is not None:
         ivp = _clip(_safe_float(atm_iv_percentile), 0.0, 1.0)
-        prob += 0.07 * ivp
+        prob += cfg["atm_iv_percentile_weight"] * ivp
 
     if intraday_range_pct is not None:
         r = _clip(_safe_float(intraday_range_pct), 0.0, 1.0)
-        prob += 0.08 * r
+        prob += cfg["intraday_range_weight"] * r
 
     # --- Conflict penalties ---
     bullish_flow = smart_money_flow == "BULLISH_FLOW"
@@ -108,11 +111,11 @@ def large_move_probability(
     downside_accel = hedging_bias == "DOWNSIDE_ACCELERATION"
 
     if (bullish_flow and downside_accel) or (bearish_flow and upside_accel):
-        prob -= 0.10
+        prob += cfg["directional_conflict_penalty"]
 
     if gamma_regime == "POSITIVE_GAMMA" and vacuum_state == "BREAKOUT_ZONE":
-        prob -= 0.05
+        prob += cfg["positive_gamma_breakout_penalty"]
     elif gamma_regime == "NEUTRAL_GAMMA" and vacuum_state == "BREAKOUT_ZONE":
-        prob += 0.02
+        prob += cfg["neutral_gamma_breakout_bonus"]
 
-    return round(_clip(prob, 0.05, 0.95), 2)
+    return round(_clip(prob, cfg["probability_floor"], cfg["probability_ceiling"]), 2)
