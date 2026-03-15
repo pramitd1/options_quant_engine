@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -277,6 +278,67 @@ def _display_path(path_value: str) -> str:
     return f"{path.parent.name}/{path.name}"
 
 
+def _normalize_display_value(value):
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, (list, tuple, set, dict)):
+        try:
+            return json.dumps(value, ensure_ascii=True, default=str, sort_keys=isinstance(value, dict))
+        except TypeError:
+            return str(value)
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    return value
+
+
+def _prepare_display_frame(data) -> pd.DataFrame:
+    if isinstance(data, pd.DataFrame):
+        frame = data.copy()
+    else:
+        frame = pd.DataFrame(data)
+
+    if frame.empty:
+        return frame
+
+    frame.columns = [str(column) for column in frame.columns]
+
+    for column in frame.columns:
+        if pd.api.types.is_object_dtype(frame[column]) or pd.api.types.is_string_dtype(frame[column]):
+            normalized = frame[column].map(_normalize_display_value)
+            non_null = normalized.dropna()
+
+            if non_null.empty:
+                frame[column] = normalized.astype("string")
+                continue
+
+            if non_null.map(lambda value: isinstance(value, bool)).all():
+                frame[column] = normalized.astype("boolean")
+                continue
+
+            if non_null.map(lambda value: isinstance(value, (int, float)) and not isinstance(value, bool)).all():
+                frame[column] = pd.to_numeric(normalized, errors="coerce")
+                continue
+
+            frame[column] = normalized.map(lambda value: None if value is None else str(value)).astype("string")
+
+    return frame
+
+
+def _render_dataframe(data, *, hide_index: bool = True):
+    st.dataframe(
+        _prepare_display_frame(data),
+        width="stretch",
+        hide_index=hide_index,
+    )
+
+
 def _badge_class_for_regime(regime: str) -> str:
     regime = (regime or "").upper()
     if regime == "RISK_ON":
@@ -353,7 +415,7 @@ def _render_key_value_table(title: str, values: dict):
     st.markdown(f'<div class="oqe-panel">', unsafe_allow_html=True)
     st.subheader(title)
     frame = pd.DataFrame([{"field": key, "value": value} for key, value in values.items()])
-    st.dataframe(frame, use_container_width=True, hide_index=True)
+    _render_dataframe(frame)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -463,8 +525,8 @@ def _render_macro_news_section(macro_news_state: dict, headline_state: dict):
         "neutral_fallback": macro_news_state.get("neutral_fallback"),
     }
     st.dataframe(
-        pd.DataFrame([{"field": key, "value": value} for key, value in summary.items()]),
-        use_container_width=True,
+        _prepare_display_frame([{"field": key, "value": value} for key, value in summary.items()]),
+        width="stretch",
         hide_index=True,
     )
 
@@ -516,7 +578,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         )
         with chart_cols[0]:
             st.markdown("**Open Interest by Strike**")
-            st.bar_chart(oi_view, use_container_width=True)
+            st.bar_chart(oi_view, width="stretch")
 
     if {"strikePrice", "OPTION_TYP", "impliedVolatility"}.issubset(df.columns):
         iv_view = (
@@ -527,7 +589,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         with chart_cols[1]:
             st.markdown("**IV Smile**")
             if not iv_view.empty:
-                st.line_chart(iv_view, use_container_width=True)
+                st.line_chart(iv_view, width="stretch")
             else:
                 st.caption("No positive IV values available.")
 
@@ -543,7 +605,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         with greek_cols[0]:
             st.markdown("**Signed Gamma by Strike**")
             if not gamma_view.empty:
-                st.line_chart(gamma_view, use_container_width=True)
+                st.line_chart(gamma_view, width="stretch")
             else:
                 st.caption("Gamma data unavailable.")
 
@@ -555,7 +617,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         )
         with greek_cols[1]:
             st.markdown("**Option Premium Curve**")
-            st.line_chart(ltp_view, use_container_width=True)
+            st.line_chart(ltp_view, width="stretch")
 
     if {"strikePrice", "changeinOI", "OPTION_TYP"}.issubset(df.columns):
         coi_view = (
@@ -566,7 +628,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         )
         st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
         st.markdown("**Change in OI by Strike**")
-        st.bar_chart(coi_view, use_container_width=True)
+        st.bar_chart(coi_view, width="stretch")
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -588,7 +650,7 @@ def _render_macro_lab(macro_news_state: dict, headline_records: pd.DataFrame, ma
     st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
     st.subheader("Headline Records")
     if headline_records is not None and not headline_records.empty:
-        st.dataframe(headline_records, use_container_width=True, hide_index=True)
+        _render_dataframe(headline_records)
         if {"timestamp", "headline"}.issubset(headline_records.columns):
             st.caption(f"Loaded {len(headline_records)} normalized headlines.")
     else:
@@ -620,7 +682,7 @@ def _render_workstation(result: dict):
 
         if trade:
             with st.expander("Full Trader View", expanded=False):
-                st.dataframe(result.get("trader_view_rows"), use_container_width=True, hide_index=True)
+                _render_dataframe(result.get("trader_view_rows"))
 
     with structure_tab:
         _render_option_chain_charts(result.get("option_chain_frame"))
@@ -628,7 +690,7 @@ def _render_workstation(result: dict):
         if isinstance(ranked, pd.DataFrame) and not ranked.empty:
             st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
             st.subheader(f"Ranked Strikes ({trade.get('selected_expiry') or '-'})")
-            st.dataframe(ranked, use_container_width=True, hide_index=True)
+            _render_dataframe(ranked)
             st.markdown("</div>", unsafe_allow_html=True)
 
     with diagnostics_tab:
@@ -662,7 +724,7 @@ def _render_workstation(result: dict):
 
         st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
         st.subheader("Option Chain Preview")
-        st.dataframe(pd.DataFrame(result.get("option_chain_preview", [])), use_container_width=True, hide_index=True)
+        _render_dataframe(pd.DataFrame(result.get("option_chain_preview", [])))
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -735,7 +797,7 @@ def _render_research_table(title: str, frame: pd.DataFrame, *, caption: str | No
     if frame is None or frame.empty:
         st.info("No research data is available for this view yet.")
     else:
-        st.dataframe(frame, use_container_width=True, hide_index=True)
+        _render_dataframe(frame)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -923,7 +985,7 @@ def main():
                 if replay_chain:
                     st.caption(f"Selected chain: {replay_chain}")
 
-        run_button = st.button("Run Snapshot", type="primary", use_container_width=True)
+        run_button = st.button("Run Snapshot", type="primary", width="stretch")
 
     if not run_button and "last_result" not in st.session_state:
         st.info("Choose settings in the sidebar, then click `Run Snapshot`.")
