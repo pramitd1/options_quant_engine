@@ -61,8 +61,7 @@ def _coerce_timestamp(value):
         return None
 
 
-def _market_session_context(as_of=None):
-    cfg = get_global_risk_policy_config()
+def _market_session_context(*, cfg, as_of=None):
     ts = _coerce_timestamp(as_of)
     if ts is None:
         ts = pd.Timestamp.now(tz=IST_TIMEZONE)
@@ -113,8 +112,7 @@ def _normalize_holding_profile(value) -> str:
     return normalized or "AUTO"
 
 
-def _oil_shock_score(change_24h):
-    cfg = get_global_risk_policy_config()
+def _oil_shock_score(change_24h, *, cfg):
     change_24h = _safe_float(change_24h, 0.0)
     if change_24h > cfg.oil_shock_extreme_change_pct:
         return cfg.oil_shock_extreme_score
@@ -125,8 +123,7 @@ def _oil_shock_score(change_24h):
     return 0.0
 
 
-def _gold_risk_score(change_24h):
-    cfg = get_global_risk_policy_config()
+def _gold_risk_score(change_24h, *, cfg):
     change_24h = _safe_float(change_24h, 0.0)
     if change_24h > cfg.gold_risk_extreme_change_pct:
         return cfg.gold_risk_extreme_score
@@ -135,8 +132,7 @@ def _gold_risk_score(change_24h):
     return 0.0
 
 
-def _copper_growth_signal(change_24h):
-    cfg = get_global_risk_policy_config()
+def _copper_growth_signal(change_24h, *, cfg):
     change_24h = _safe_float(change_24h, 0.0)
     if change_24h < cfg.copper_growth_severe_drop_pct:
         return cfg.copper_growth_severe_score
@@ -145,8 +141,7 @@ def _copper_growth_signal(change_24h):
     return 0.0
 
 
-def _volatility_shock_score(vix_change_24h):
-    cfg = get_global_risk_policy_config()
+def _volatility_shock_score(vix_change_24h, *, cfg):
     vix_change_24h = _safe_float(vix_change_24h, 0.0)
     if vix_change_24h > cfg.vix_shock_extreme_change_pct:
         return cfg.vix_shock_extreme_score
@@ -157,8 +152,7 @@ def _volatility_shock_score(vix_change_24h):
     return 0.0
 
 
-def _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h):
-    cfg = get_global_risk_policy_config()
+def _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h, *, cfg):
     worst_move = min(
         _safe_float(sp500_change_24h, 0.0),
         _safe_float(nasdaq_change_24h, 0.0),
@@ -170,18 +164,15 @@ def _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h):
     return 0.0
 
 
-def _rates_shock_score(us10y_change_bp):
-    cfg = get_global_risk_policy_config()
+def _rates_shock_score(us10y_change_bp, *, cfg):
     return cfg.rates_shock_score if _safe_float(us10y_change_bp, 0.0) > cfg.rates_shock_threshold_bp else 0.0
 
 
-def _currency_shock_score(usdinr_change_24h):
-    cfg = get_global_risk_policy_config()
+def _currency_shock_score(usdinr_change_24h, *, cfg):
     return cfg.currency_shock_score_base if _safe_float(usdinr_change_24h, 0.0) > cfg.currency_shock_threshold_pct else 0.0
 
 
-def _volatility_compression_score(realized_vol_5d, realized_vol_30d):
-    cfg = get_global_risk_policy_config()
+def _volatility_compression_score(realized_vol_5d, realized_vol_30d, *, cfg):
     realized_vol_5d = _safe_float(realized_vol_5d, 0.0)
     realized_vol_30d = _safe_float(realized_vol_30d, 0.0)
     if realized_vol_30d <= 0:
@@ -261,7 +252,7 @@ def build_global_risk_features(
     )
 
     holding_profile = _normalize_holding_profile(holding_profile)
-    session_context = _market_session_context(as_of=as_of)
+    session_context = _market_session_context(cfg=cfg, as_of=as_of)
     overnight_relevant = (
         holding_profile in OVERNIGHT_HOLDING_PROFILES
         or session_context["overnight_session"]
@@ -285,22 +276,22 @@ def build_global_risk_features(
     realized_vol_5d = _safe_float(effective_market_inputs.get("realized_vol_5d"), None)
     realized_vol_30d = _safe_float(effective_market_inputs.get("realized_vol_30d"), None)
 
-    oil_shock_score = _oil_shock_score(oil_change_24h)
-    gold_risk_score = _gold_risk_score(gold_change_24h)
-    copper_growth_signal = _copper_growth_signal(copper_change_24h)
+    oil_shock_score = _oil_shock_score(oil_change_24h, cfg=cfg)
+    gold_risk_score = _gold_risk_score(gold_change_24h, cfg=cfg)
+    copper_growth_signal = _copper_growth_signal(copper_change_24h, cfg=cfg)
     commodity_risk_score = round(
         (cfg.commodity_risk_oil_weight * oil_shock_score)
         + (cfg.commodity_risk_gold_weight * gold_risk_score)
         + (cfg.commodity_risk_copper_weight * copper_growth_signal),
         4,
     )
-    volatility_shock_score = _volatility_shock_score(vix_change_24h)
-    us_equity_risk_score = _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h)
-    rates_shock_score = _rates_shock_score(us10y_change_bp)
-    currency_shock_score = _currency_shock_score(usdinr_change_24h)
+    volatility_shock_score = _volatility_shock_score(vix_change_24h, cfg=cfg)
+    us_equity_risk_score = _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h, cfg=cfg)
+    rates_shock_score = _rates_shock_score(us10y_change_bp, cfg=cfg)
+    currency_shock_score = _currency_shock_score(usdinr_change_24h, cfg=cfg)
     macro_event_risk_score = _safe_int(macro_event_state.get("macro_event_risk_score"), 0)
     macro_event_risk_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
-    volatility_compression_score = _volatility_compression_score(realized_vol_5d, realized_vol_30d)
+    volatility_compression_score = _volatility_compression_score(realized_vol_5d, realized_vol_30d, cfg=cfg)
     commodity_stress_component = _clip(
         (cfg.commodity_stress_oil_weight * max(oil_shock_score, 0.0))
         + (cfg.commodity_stress_gold_weight * gold_risk_score)

@@ -29,6 +29,7 @@ STRIKE_SELECTION_SCORE_CONFIG = {
     "premium_upper_mid_score": 4,
     "premium_lower_tail_score": 3,
     "premium_default_score": 1,
+    "premium_invalid_penalty": -10,
     "premium_over_budget_penalty": -5,
     "premium_near_budget_penalty": -2,
     "premium_near_budget_ratio": 0.85,

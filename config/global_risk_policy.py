@@ -131,6 +131,27 @@ class GlobalRiskPolicyConfig:
     market_open_minute: int = 15
     market_close_hour: int = 15
     market_close_minute: int = 30
+    layer_data_quality_weight: float = 0.35
+    layer_macro_event_weight: float = 0.20
+    layer_global_risk_weight: float = 0.45
+    layer_size_cap_penalty_scale: float = 20.0
+    layer_veto_block_score_floor: int = 82
+    layer_overnight_watch_score_floor: int = 70
+    layer_confirmation_watch_score_floor: int = 72
+    layer_low_strength_watch_score_floor: int = 58
+    layer_weak_data_quality_score_threshold: float = 55.0
+    layer_weak_data_quality_watch_score_floor: int = 66
+    layer_caution_strength_buffer: int = 8
+    layer_caution_watch_score_floor: int = 54
+    layer_confirmation_conflict_strength_buffer: int = 10
+    layer_confirmation_conflict_watch_score_floor: int = 57
+    layer_size_reduction_strength_buffer: int = 12
+    layer_size_reduction_watch_score_floor: int = 60
+    layer_medium_level_threshold: int = 35
+    layer_high_level_threshold: int = 60
+    layer_caution_watch_size_cap: float = 0.75
+    layer_weak_data_quality_size_cap: float = 0.50
+    layer_overnight_watch_size_cap: float = 0.50
 
 
 GLOBAL_RISK_POLICY_CONFIG = GlobalRiskPolicyConfig()

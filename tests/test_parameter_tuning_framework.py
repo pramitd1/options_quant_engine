@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pandas as pd
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
 from config.signal_policy import get_trade_runtime_thresholds
 from research.signal_evaluation.dataset import write_signals_dataset
@@ -98,6 +91,10 @@ def test_parameter_registry_exposes_key_groups():
 
     assert "trade_strength.scoring.flow_call_bullish" in registry.keys()
     assert "confirmation_filter.core.flow_support" in registry.keys()
+    assert "signal_engine.data_quality.invalid_spot_penalty" in registry.keys()
+    assert "signal_engine.probability.vacuum_breakout_strength" in registry.keys()
+    assert "analytics.flow_imbalance.bullish_threshold" in registry.keys()
+    assert "headline_rules.geopolitics.vol_weight" in registry.keys()
     assert "macro_news.adjustment.lockdown_adjustment_score" in registry.keys()
     assert "global_risk.core.risk_adjustment_extreme" in registry.keys()
     assert "strike_selection.core.strike_window_steps" in registry.keys()
@@ -127,6 +124,23 @@ def test_runtime_pack_temporarily_overrides_thresholds():
 
     restored = get_trade_runtime_thresholds()
     assert restored["min_trade_strength"] == 45
+
+
+def test_runtime_pack_context_restores_nested_overrides():
+    baseline_pack = get_trade_runtime_thresholds()["min_trade_strength"]
+
+    with temporary_parameter_pack("experimental_v1"):
+        assert get_trade_runtime_thresholds()["min_trade_strength"] == 42
+
+        with temporary_parameter_pack(
+            "baseline_v1",
+            overrides={"trade_strength.runtime_thresholds.min_trade_strength": 41},
+        ):
+            assert get_trade_runtime_thresholds()["min_trade_strength"] == 41
+
+        assert get_trade_runtime_thresholds()["min_trade_strength"] == 42
+
+    assert get_trade_runtime_thresholds()["min_trade_strength"] == baseline_pack
 
 
 def test_objective_framework_uses_selection_thresholds():

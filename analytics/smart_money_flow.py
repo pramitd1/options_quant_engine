@@ -1,12 +1,14 @@
 import pandas as pd
 
 from analytics.flow_utils import front_expiry_atm_slice
+from config.analytics_feature_policy import get_smart_money_flow_policy_config
 
 
 def detect_unusual_volume(option_chain, spot=None):
     """
     Detect unusual near-ATM front-expiry activity using both volume/OI and OI change.
     """
+    cfg = get_smart_money_flow_policy_config()
 
     df = front_expiry_atm_slice(option_chain, spot=spot, strike_window_steps=4)
     if df is None or df.empty:
@@ -36,8 +38,8 @@ def detect_unusual_volume(option_chain, spot=None):
     working["FLOW_NOTIONAL"] = working["VOLUME"] * working["LAST_PRICE"]
 
     spikes = working[
-        (working["VOL_OI_RATIO"] >= 1.0) |
-        (working["OPENING_ACTIVITY"] > 0)
+        (working["VOL_OI_RATIO"] >= cfg.unusual_volume_ratio_threshold) |
+        (working["OPENING_ACTIVITY"] > cfg.opening_activity_threshold)
     ].copy()
 
     return spikes
@@ -47,6 +49,7 @@ def classify_flow(spikes):
     """
     Classify directional flow using notional activity, not just contract counts.
     """
+    cfg = get_smart_money_flow_policy_config()
 
     if spikes is None or len(spikes) == 0:
         return "NO_FLOW"
@@ -65,10 +68,10 @@ def classify_flow(spikes):
 
     ratio = float(call_score / put_score)
 
-    if ratio >= 1.15:
+    if ratio >= cfg.bullish_ratio_threshold:
         return "BULLISH_FLOW"
 
-    if ratio <= 0.87:
+    if ratio <= cfg.bearish_ratio_threshold:
         return "BEARISH_FLOW"
 
     return "MIXED_FLOW"

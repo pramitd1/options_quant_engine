@@ -12,6 +12,7 @@ import pandas as pd
 
 from research.signal_evaluation.dataset import SIGNAL_DATASET_PATH, load_signals_dataset
 from config.signal_evaluation_scoring import get_signal_evaluation_selection_policy
+from tuning.artifacts import append_jsonl_record
 from tuning.models import ExperimentResult
 from tuning.objectives import compute_objective
 from tuning.packs import resolve_parameter_pack
@@ -38,12 +39,7 @@ def _evaluation_date_range(frame: pd.DataFrame) -> dict[str, str | None]:
 
 
 def append_experiment_result(result: ExperimentResult, path: str | Path = EXPERIMENT_LEDGER_PATH) -> Path:
-    ledger_path = Path(path)
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(result.to_dict(), sort_keys=True))
-        handle.write("\n")
-    return ledger_path
+    return append_jsonl_record(result.to_dict(), path)
 
 
 def run_parameter_experiment(

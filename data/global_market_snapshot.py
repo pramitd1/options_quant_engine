@@ -9,30 +9,16 @@ import math
 import pandas as pd
 import yfinance as yf
 
+from config.market_data_policy import (
+    GLOBAL_MARKET_TICKERS,
+    IST_TIMEZONE,
+    normalize_symbol_to_yfinance,
+)
 from config.settings import (
     GLOBAL_MARKET_DATA_ENABLED,
     GLOBAL_MARKET_LOOKBACK_DAYS,
     GLOBAL_MARKET_STALE_DAYS,
 )
-
-
-IST_TIMEZONE = "Asia/Kolkata"
-MARKET_TICKERS = {
-    "oil": "CL=F",
-    "gold": "GC=F",
-    "copper": "HG=F",
-    "vix": "^VIX",
-    "sp500": "^GSPC",
-    "nasdaq": "^IXIC",
-    "us10y": "^TNX",
-    "usdinr": "INR=X",
-}
-UNDERLYING_SYMBOL_MAP = {
-    "NIFTY": "^NSEI",
-    "NIFTY50": "^NSEI",
-    "BANKNIFTY": "^NSEBANK",
-    "FINNIFTY": "^NSEFIN",
-}
 
 
 def _coerce_timestamp(value):
@@ -61,12 +47,7 @@ def _safe_float(value, default=None):
 
 
 def _symbol_to_yfinance(symbol: str) -> str:
-    normalized = str(symbol or "").upper().strip()
-    if normalized in UNDERLYING_SYMBOL_MAP:
-        return UNDERLYING_SYMBOL_MAP[normalized]
-    if normalized.startswith("^") or "." in normalized:
-        return normalized
-    return f"{normalized}.NS"
+    return normalize_symbol_to_yfinance(symbol)
 
 
 def _download_history(ticker: str, *, lookback_days: int) -> pd.DataFrame:
@@ -76,7 +57,12 @@ def _download_history(ticker: str, *, lookback_days: int) -> pd.DataFrame:
         interval="1d",
         auto_adjust=False,
         progress=False,
+        threads=False,
     )
+    return _normalize_download_history(history)
+
+
+def _normalize_download_history(history: pd.DataFrame) -> pd.DataFrame:
     if history is None or history.empty:
         return pd.DataFrame()
 
@@ -99,6 +85,49 @@ def _download_history(ticker: str, *, lookback_days: int) -> pd.DataFrame:
 
     history["timestamp"] = history["timestamp"].dt.tz_convert(IST_TIMEZONE)
     return history[["timestamp", "close"]].reset_index(drop=True)
+
+
+def _extract_batch_history(batch_history: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    if batch_history is None or batch_history.empty:
+        return pd.DataFrame()
+
+    if isinstance(batch_history.columns, pd.MultiIndex):
+        level_zero = batch_history.columns.get_level_values(0)
+        if ticker in level_zero:
+            return _normalize_download_history(batch_history[ticker].copy())
+    return _normalize_download_history(batch_history.copy())
+
+
+def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[str, pd.DataFrame]:
+    if not tickers:
+        return {}
+
+    unique_tickers = list(dict.fromkeys(tickers.values()))
+    batch_history = pd.DataFrame()
+    try:
+        batch_history = yf.download(
+            unique_tickers,
+            period=f"{lookback_days}d",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+            group_by="ticker",
+        )
+    except Exception:
+        batch_history = pd.DataFrame()
+
+    ticker_cache: dict[str, pd.DataFrame] = {}
+    histories: dict[str, pd.DataFrame] = {}
+    for name, ticker in tickers.items():
+        history = ticker_cache.get(ticker)
+        if history is None:
+            history = _extract_batch_history(batch_history, ticker)
+            if history.empty:
+                history = _download_history(ticker, lookback_days=lookback_days)
+            ticker_cache[ticker] = history
+        histories[name] = history
+    return histories
 
 
 def _daily_change_pct(history: pd.DataFrame):
@@ -173,20 +202,10 @@ def build_global_market_snapshot(symbol: str, *, as_of=None) -> dict:
     warnings = []
     market_inputs = {}
 
-    histories = {}
-    for name, ticker in MARKET_TICKERS.items():
-        try:
-            histories[name] = _download_history(ticker, lookback_days=GLOBAL_MARKET_LOOKBACK_DAYS)
-        except Exception as exc:
-            histories[name] = pd.DataFrame()
-            warnings.append(f"{name}_history_error:{type(exc).__name__}")
-
     underlying_ticker = _symbol_to_yfinance(symbol)
-    try:
-        histories["underlying"] = _download_history(underlying_ticker, lookback_days=GLOBAL_MARKET_LOOKBACK_DAYS)
-    except Exception as exc:
-        histories["underlying"] = pd.DataFrame()
-        warnings.append(f"underlying_history_error:{type(exc).__name__}")
+    tickers = dict(GLOBAL_MARKET_TICKERS)
+    tickers["underlying"] = underlying_ticker
+    histories = _download_histories(tickers, lookback_days=GLOBAL_MARKET_LOOKBACK_DAYS)
 
     latest_timestamps = []
     for name, history in histories.items():

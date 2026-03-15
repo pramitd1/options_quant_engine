@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 import json
-import sys
 import unittest
 from pathlib import Path
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
 from backtest.option_efficiency_scenario_runner import run_option_efficiency_scenario
 from config.settings import BASE_DIR

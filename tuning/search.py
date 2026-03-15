@@ -137,6 +137,7 @@ def run_grid_search(
     selection_thresholds: dict | None = None,
     objective_weights: dict | None = None,
     walk_forward_config: dict | None = None,
+    comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
     valid_grid = {
@@ -158,6 +159,7 @@ def run_grid_search(
             selection_thresholds=selection_thresholds,
             objective_weights=objective_weights,
             walk_forward_config=walk_forward_config,
+            comparison_baseline_pack=comparison_baseline_pack,
             search_metadata={"strategy": "grid_search"},
             persist=persist,
         )
@@ -176,6 +178,7 @@ def run_random_search(
     selection_thresholds: dict | None = None,
     objective_weights: dict | None = None,
     walk_forward_config: dict | None = None,
+    comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
     rng = random.Random(seed)
@@ -199,6 +202,7 @@ def run_random_search(
             selection_thresholds=selection_thresholds,
             objective_weights=objective_weights,
             walk_forward_config=walk_forward_config,
+            comparison_baseline_pack=comparison_baseline_pack,
             search_metadata={"strategy": "random_search", "seed": seed},
             persist=persist,
         )
@@ -218,6 +222,7 @@ def run_latin_hypercube_search(
     objective_weights: dict | None = None,
     walk_forward_config: dict | None = None,
     base_overrides: dict[str, Any] | None = None,
+    comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
     rng = random.Random(seed)
@@ -253,6 +258,7 @@ def run_latin_hypercube_search(
             selection_thresholds=selection_thresholds,
             objective_weights=objective_weights,
             walk_forward_config=walk_forward_config,
+            comparison_baseline_pack=comparison_baseline_pack,
             search_metadata={"strategy": "latin_hypercube_search", "seed": seed},
             persist=persist,
         )
@@ -271,6 +277,7 @@ def run_coordinate_descent_search(
     selection_thresholds: dict | None = None,
     objective_weights: dict | None = None,
     walk_forward_config: dict | None = None,
+    comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
     registry = get_parameter_registry()
@@ -290,6 +297,7 @@ def run_coordinate_descent_search(
         selection_thresholds=selection_thresholds,
         objective_weights=objective_weights,
         walk_forward_config=walk_forward_config,
+        comparison_baseline_pack=comparison_baseline_pack,
         search_metadata={"strategy": "coordinate_descent", "phase": "baseline"},
         persist=persist,
     ).to_dict()
@@ -309,6 +317,7 @@ def run_coordinate_descent_search(
                     selection_thresholds=selection_thresholds,
                     objective_weights=objective_weights,
                     walk_forward_config=walk_forward_config,
+                    comparison_baseline_pack=comparison_baseline_pack,
                     search_metadata={
                         "strategy": "coordinate_descent",
                         "phase": "neighbor",

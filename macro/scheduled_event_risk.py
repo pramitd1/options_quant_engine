@@ -172,22 +172,25 @@ def _neutral_event_state(status="NO_EVENT_DATA"):
 
 
 def _risk_from_pre_watch(base_risk: int, minutes_until: float, warning_minutes: int, lockdown_minutes: int) -> int:
+    cfg = get_event_window_policy_config()
     span = max(warning_minutes - lockdown_minutes, 1)
     proximity = 1.0 - max(minutes_until - lockdown_minutes, 0.0) / span
-    return int(round(base_risk * (0.35 + 0.25 * proximity)))
+    return int(round(base_risk * (cfg.pre_watch_base_multiplier + (cfg.pre_watch_proximity_multiplier * proximity))))
 
 
 def _risk_from_pre_lockdown(base_risk: int, minutes_until: float, lockdown_minutes: int) -> int:
+    cfg = get_event_window_policy_config()
     span = max(lockdown_minutes, 1)
     proximity = 1.0 - max(minutes_until, 0.0) / span
-    return int(round(base_risk * (0.75 + 0.25 * proximity)))
+    return int(round(base_risk * (cfg.pre_lockdown_base_multiplier + (cfg.pre_lockdown_proximity_multiplier * proximity))))
 
 
 def _risk_from_post_cooldown(base_risk: int, minutes_since: float, cooldown_minutes: int) -> int:
+    cfg = get_event_window_policy_config()
     span = max(cooldown_minutes, 1)
     decay = 1.0 - max(minutes_since, 0.0) / span
     decay = max(0.0, min(1.0, decay))
-    return int(round(base_risk * (0.35 + 0.35 * decay)))
+    return int(round(base_risk * (cfg.post_cooldown_base_multiplier + (cfg.post_cooldown_decay_multiplier * decay))))
 
 
 def evaluate_scheduled_event_risk(
@@ -196,6 +199,7 @@ def evaluate_scheduled_event_risk(
     events: list[dict] | None = None,
     enabled: bool = MACRO_EVENT_FILTER_ENABLED,
 ):
+    cfg = get_event_window_policy_config()
     if not enabled:
         return _neutral_event_state(status="EVENT_FILTER_DISABLED")
 
@@ -243,7 +247,7 @@ def evaluate_scheduled_event_risk(
         elif 0 <= minutes_since <= event["event_duration_minutes"]:
             candidate = {
                 "status": "LIVE_EVENT",
-                "risk": min(100, base_risk + 10),
+                "risk": min(100, base_risk + cfg.live_event_risk_bonus),
                 "lockdown": True,
                 "event": event,
             }

@@ -9,7 +9,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -17,13 +16,14 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from backtest.scenario_utils import load_scenarios
 from config.settings import BASE_DIR
 from risk import build_global_risk_state
 
 
 def _load_scenarios(path: str | None = None):
     path = Path(path or (Path(BASE_DIR) / "config/global_risk_scenarios.json"))
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_scenarios(path, list_key="scenarios")
 
 
 def run_scenario(scenario: dict):

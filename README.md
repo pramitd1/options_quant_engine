@@ -108,40 +108,47 @@ These layers are intentionally modifiers and filters. They do not replace the co
 
 ### 1. Live Signal Generation
 
-- terminal loop in [main.py](/Users/pramitdutta/Desktop/options_quant_engine/main.py)
-- Streamlit app in [streamlit_app.py](/Users/pramitdutta/Desktop/options_quant_engine/app/streamlit_app.py)
-- shared orchestration in [engine_runner.py](/Users/pramitdutta/Desktop/options_quant_engine/app/engine_runner.py)
+- terminal loop in [main.py](main.py)
+- Streamlit app in [streamlit_app.py](app/streamlit_app.py)
+- shared orchestration in [engine_runner.py](app/engine_runner.py)
 
 ### 2. Replay and Validation
 
 - replay through `main.py --replay`
-- snapshot-based validation under [backtest/](/Users/pramitdutta/Desktop/options_quant_engine/backtest)
+- snapshot-based validation under [backtest/](backtest)
 - deterministic scenario runners for global risk, gamma-vol, dealer pressure, and option efficiency
 
 ### 3. Historical Backtesting
 
-- runner in [backtest_runner.py](/Users/pramitdutta/Desktop/options_quant_engine/backtest/backtest_runner.py)
+- runner in [backtest_runner.py](backtest/backtest_runner.py)
 - default historical builder is bar-based and uses synthetic option-chain reconstruction unless richer data is provided
 - performance conclusions should be interpreted in the context of the available bar granularity
 
 ### 4. Research Dataset and Evaluation
 
-- canonical dataset in [signals_dataset.csv](/Users/pramitdutta/Desktop/options_quant_engine/research/signal_evaluation/signals_dataset.csv)
-- schema and upsert rules in [dataset.py](/Users/pramitdutta/Desktop/options_quant_engine/research/signal_evaluation/dataset.py)
-- live capture appends new signal rows in constant time and only rewrites the CSV when an existing `signal_id` needs an update
-- row-building and outcome enrichment in [evaluator.py](/Users/pramitdutta/Desktop/options_quant_engine/research/signal_evaluation/evaluator.py)
+- canonical dataset in [signals_dataset.csv](research/signal_evaluation/signals_dataset.csv)
+- schema and upsert rules in [dataset.py](research/signal_evaluation/dataset.py)
+- the canonical CSV now has a durable SQLite sidecar for faster, safer local research reads and updates
+- live capture appends new signal rows in constant time and only rewrites the canonical store when an existing `signal_id` needs an update
+- row-building and outcome enrichment in [evaluator.py](research/signal_evaluation/evaluator.py) and [market_data.py](research/signal_evaluation/market_data.py)
 - this dataset is the primary calibration and validation source for tuning, walk-forward analysis, and promotion decisions
 
 ### 5. Parameter Research and Governance
 
-- central parameter registry in [registry.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/registry.py)
-- named packs in [parameter_packs](/Users/pramitdutta/Desktop/options_quant_engine/config/parameter_packs)
-- runtime pack activation in [runtime.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/runtime.py)
-- objective evaluation and experiments in [objectives.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/objectives.py) and [experiments.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/experiments.py)
-- search, promotion, and ledger inspection in [search.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/search.py), [promotion.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/promotion.py), and [reporting.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/reporting.py)
-- automated group tuning campaigns in [campaigns.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/campaigns.py)
-- walk-forward split engine and regime-aware validation in [walk_forward.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/walk_forward.py), [regimes.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/regimes.py), and [validation.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/validation.py)
-- live shadow comparison and rollout logging in [shadow.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/shadow.py)
+- central parameter registry in [registry.py](tuning/registry.py)
+- named packs in [parameter_packs](config/parameter_packs)
+- research-generated candidate packs in `research/parameter_tuning/candidate_packs/`
+- runtime pack activation in [runtime.py](tuning/runtime.py)
+- objective evaluation and experiments in [objectives.py](tuning/objectives.py) and [experiments.py](tuning/experiments.py)
+- search, promotion, and ledger inspection in [search.py](tuning/search.py), [promotion.py](tuning/promotion.py), and [reporting.py](tuning/reporting.py)
+- automated group tuning campaigns in [campaigns.py](tuning/campaigns.py)
+- walk-forward split engine and regime-aware validation in [walk_forward.py](tuning/walk_forward.py), [regimes.py](tuning/regimes.py), and [validation.py](tuning/validation.py)
+- live shadow comparison and rollout logging in [shadow.py](tuning/shadow.py)
+
+Important distinction:
+
+- `tuning/` contains the parameter-tuning and promotion code
+- `research/parameter_tuning/` stores runtime-generated research artifacts, ledgers, reports, state, and candidate packs
 
 ## Architecture
 
@@ -151,15 +158,17 @@ These layers are intentionally modifiers and filters. They do not replace the co
 2. option-chain data is routed through broker/public adapters in `data/`
 3. provider output is normalized and validated
 4. expiry selection is resolved before trade generation
-5. [trading_engine.py](/Users/pramitdutta/Desktop/options_quant_engine/engine/trading_engine.py) builds:
+5. [signal_engine.py](engine/signal_engine.py) assembles:
    - market state
    - probability state
    - directional vote
    - trade strength
    - strike selection
    - trade payload
-6. overlay layers modify risk, ranking, confirmation, and overnight handling
-7. the result is rendered in the terminal or Streamlit and optionally written into the research dataset
+6. [trading_engine.py](engine/trading_engine.py) remains as a backward-compatible facade over the canonical signal engine
+7. helper domains are separated under `engine/trading_support/`
+8. overlay layers modify risk, ranking, confirmation, and overnight handling
+9. the result is rendered in the terminal or Streamlit and optionally written into the research dataset
 
 ### Overlay Stack
 
@@ -197,34 +206,35 @@ options_quant_engine/
 ├── config/             # runtime, scoring, and overlay policies
 │   └── parameter_packs/# versioned parameter pack overrides
 ├── data/               # provider adapters, validation, historical loaders
-├── engine/             # orchestration and runtime metadata
+├── engine/             # signal engine, compat facades, and trading support domains
 ├── macro/              # scheduled-event and macro/news logic
 ├── models/             # move probability and ML support
 ├── news/               # deterministic news classification
-├── research/           # research note + signal evaluation dataset
+├── research/           # signal evaluation + parameter-tuning artifacts
 ├── risk/               # overlay layers and regime models
 ├── scripts/            # operational helpers
 ├── strategy/           # confirmation, strike selection, exits, sizing
 ├── tests/              # regression and scenario coverage
-├── tuning/             # registry, packs, experiments, search, promotion
+├── tuning/             # registry, packs, experiments, search, validation, promotion code
 ├── main.py
 └── README.md
 ```
 
 ## Key Files
 
-- [trading_engine.py](/Users/pramitdutta/Desktop/options_quant_engine/engine/trading_engine.py): live trade orchestration
-- [trading_engine_support.py](/Users/pramitdutta/Desktop/options_quant_engine/engine/trading_engine_support.py): internal helpers and modifier extraction
-- [strike_selector.py](/Users/pramitdutta/Desktop/options_quant_engine/strategy/strike_selector.py): strike ranking and optional candidate hooks
-- [global_risk_layer.py](/Users/pramitdutta/Desktop/options_quant_engine/risk/global_risk_layer.py): global risk facade
-- [gamma_vol_acceleration_layer.py](/Users/pramitdutta/Desktop/options_quant_engine/risk/gamma_vol_acceleration_layer.py): convexity acceleration overlay
-- [dealer_hedging_pressure_layer.py](/Users/pramitdutta/Desktop/options_quant_engine/risk/dealer_hedging_pressure_layer.py): dealer pressure overlay
-- [option_efficiency_layer.py](/Users/pramitdutta/Desktop/options_quant_engine/risk/option_efficiency_layer.py): expected move / option efficiency overlay
-- [dataset.py](/Users/pramitdutta/Desktop/options_quant_engine/research/signal_evaluation/dataset.py): canonical schema
-- [evaluator.py](/Users/pramitdutta/Desktop/options_quant_engine/research/signal_evaluation/evaluator.py): research row builder and outcome enrichment
-- [registry.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/registry.py): parameter registry and metadata
-- [experiments.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/experiments.py): experiment runner and ledger
-- [promotion.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/promotion.py): baseline/candidate/live workflow
+- [signal_engine.py](engine/signal_engine.py): canonical signal assembly
+- [trading_engine.py](engine/trading_engine.py): backward-compatible facade for signal generation imports
+- [trading_engine_support.py](engine/trading_engine_support.py): backward-compatible facade over `engine/trading_support/`
+- [strike_selector.py](strategy/strike_selector.py): strike ranking and optional candidate hooks
+- [global_risk_layer.py](risk/global_risk_layer.py): global risk facade
+- [gamma_vol_acceleration_layer.py](risk/gamma_vol_acceleration_layer.py): convexity acceleration overlay
+- [dealer_hedging_pressure_layer.py](risk/dealer_hedging_pressure_layer.py): dealer pressure overlay
+- [option_efficiency_layer.py](risk/option_efficiency_layer.py): expected move / option efficiency overlay
+- [dataset.py](research/signal_evaluation/dataset.py): canonical schema
+- [evaluator.py](research/signal_evaluation/evaluator.py): research row builder and outcome enrichment
+- [registry.py](tuning/registry.py): parameter registry and metadata
+- [experiments.py](tuning/experiments.py): experiment runner and ledger
+- [promotion.py](tuning/promotion.py): baseline/candidate/live workflow
 
 ## Configuration
 
@@ -268,7 +278,7 @@ GLOBAL_MARKET_STALE_DAYS=2
 
 ## Parameter Packs
 
-Named packs currently live under [parameter_packs](/Users/pramitdutta/Desktop/options_quant_engine/config/parameter_packs):
+Named packs currently live under [parameter_packs](config/parameter_packs):
 
 - `baseline_v1`: registry-default pack, intended to preserve current behavior
 - `macro_overlay_v1`: stronger macro/global caution candidate
@@ -280,10 +290,13 @@ Pack format is JSON and supports inheritance through `parent` plus a flat `overr
 
 The governed tuning surface now extends well beyond the original threshold packs and includes:
 
+- signal-engine data-quality, execution, probability, and trade-modifier policies
+- analytics feature thresholds for flow imbalance, smart-money flow, and volatility regime
 - strike-selection heuristics
 - large-move probability coefficients
 - event-window risk policy
 - category-level headline rule multipliers
+- scalar headline rule weights
 - raw overlay feature coefficients for global risk, gamma-vol acceleration, dealer hedging pressure, and option efficiency
 
 The parameter registry now covers the main engine and research groups end to end, so tuning campaigns can act on a materially broader but still auditable surface instead of leaving the overlay math buried in code.
@@ -305,6 +318,10 @@ Promotion state and audit files live under `research/parameter_tuning/`:
 
 These are generated runtime artifacts and are intentionally excluded from source control.
 
+Candidate parameter packs created during governed tuning are also stored under:
+
+- `research/parameter_tuning/candidate_packs/`
+
 Shadow mode is conservative:
 
 - the authoritative/live pack remains the only pack allowed to control the returned trade decision
@@ -322,7 +339,8 @@ The tuning subsystem is designed for controlled research, not naive profit chasi
 4. objective scores combine hit rate, composite quality, tradeability, target reachability, drawdown proxy, stability, and frequency sanity checks
 5. walk-forward validation adds explicit out-of-sample split metrics, regime summaries, and robustness scoring
 6. search supports bounded random search, Latin hypercube exploration, coordinate-descent refinement, and registry-driven group campaigns
-7. promotion from `baseline` to `candidate` to `live` can now consume out-of-sample and robustness hooks in addition to sample-count, stability, and signal-frequency checks
+7. tuning writes a reviewable candidate pack and comparison report without modifying production
+8. promotion from `baseline` to `candidate` to `live` can now consume out-of-sample and robustness hooks in addition to sample-count, stability, signal-frequency checks, and explicit manual approval
 
 The practical implication is that the system is now much closer to a governed quantitative research stack:
 
@@ -331,6 +349,7 @@ The practical implication is that the system is now much closer to a governed qu
 - the tuning framework searches registry-governed parameter groups
 - walk-forward and regime-aware validation decide whether changes generalize
 - promotion and shadow mode handle rollout conservatively
+- production packs are not overwritten automatically by tuning
 
 Structured research outputs are written under `research/parameter_tuning/` when experiment persistence is enabled.
 
@@ -351,7 +370,7 @@ That means:
 
 The maintained research note source is:
 
-- [quant_note_trade_signal_logic.md](/Users/pramitdutta/Desktop/options_quant_engine/research/quant_note_trade_signal_logic.md)
+- [quant_note_trade_signal_logic.md](research/quant_note_trade_signal_logic.md)
 
 Local rendered research-note artifacts are generated under `documentation/`, but
 that folder is intentionally excluded from git for now.
@@ -377,6 +396,15 @@ Parameter tuning framework:
 
 ```bash
 pytest -q tests/test_parameter_tuning_framework.py
+```
+
+Governed parameter workflow:
+
+```bash
+python scripts/parameter_governance.py evaluate-current
+python scripts/parameter_governance.py tune --group trade_strength --group option_efficiency
+python scripts/parameter_governance.py approve-candidate --reviewer your_name
+python scripts/parameter_governance.py promote-candidate --approved-by your_name
 ```
 
 Automated group tuning campaign:

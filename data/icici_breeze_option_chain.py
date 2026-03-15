@@ -27,6 +27,7 @@ from config.settings import (
     ICICI_DEBUG,
     get_icici_runtime_config,
 )
+from data.icici_market_metadata import ICICIMarketMetadataResolver
 
 
 def _load_breeze_connect_class():
@@ -70,6 +71,16 @@ class ICICIBreezeOptionChain:
     def __init__(self, debug=None):
         self.debug = ICICI_DEBUG if debug is None else debug
         self.breeze = None
+        self._market_metadata_resolver = ICICIMarketMetadataResolver(
+            load_security_master=self._load_security_master,
+            normalize_master_columns=self._normalize_master_columns,
+            match_symbol_in_master=self._match_symbol_in_master,
+            filter_option_rows_from_master=self._filter_option_rows_from_master,
+            extract_expiry_from_master=self._extract_expiry_from_master,
+            extract_request_symbols_from_master=self._extract_request_symbols_from_master,
+            normalize_symbol=self._normalize_symbol,
+            logger=self._log,
+        )
         self._init_client()
 
     def _log(self, *args):
@@ -411,31 +422,12 @@ class ICICIBreezeOptionChain:
         return candidates
 
     def _fetch_market_metadata(self, symbol: str):
-        master_df = self._load_security_master()
-        if master_df.empty:
-            return {
-                "expiries": [],
-                "request_symbols": self._symbol_aliases(symbol),
-            }
-
-        normalized = self._normalize_master_columns(master_df)
-        symbol_rows = self._match_symbol_in_master(normalized, symbol)
-        option_rows = self._filter_option_rows_from_master(symbol_rows)
-
-        expiries = []
-        for _, row in option_rows.iterrows():
-            expiry = self._extract_expiry_from_master(row)
-            if expiry and expiry not in expiries:
-                expiries.append(expiry)
-
-        expiries.sort(key=lambda value: datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.000Z"))
-        request_symbols = self._extract_request_symbols_from_master(option_rows, symbol)
-
-        self._log("icici_master_expiry_candidates", f"symbol={symbol}", f"candidates={expiries[:10]}")
-        self._log("icici_master_request_symbols", f"symbol={symbol}", f"candidates={request_symbols[:10]}")
+        metadata = self._market_metadata_resolver.resolve(symbol)
+        if metadata.get("request_symbols"):
+            return metadata
         return {
-            "expiries": expiries,
-            "request_symbols": request_symbols,
+            "expiries": list(metadata.get("expiries", [])),
+            "request_symbols": self._symbol_aliases(symbol),
         }
 
     def _init_client(self):

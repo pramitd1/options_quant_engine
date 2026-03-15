@@ -1,14 +1,8 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 import pandas as pd
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
 from data.provider_normalization import normalize_live_option_chain
 from data.option_chain_validation import validate_option_chain

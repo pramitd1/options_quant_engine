@@ -13,4 +13,7 @@ data_store/icici_cache/
 debug_samples/
 research/parameter_tuning/promotion_state.json
 research/parameter_tuning/*.jsonl
+research/parameter_tuning/candidate_packs/
+research/parameter_tuning/reports/
+research/signal_evaluation/reports/
 documentation/

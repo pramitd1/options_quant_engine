@@ -1,6 +1,6 @@
 # India Macro Schedule Notes
 
-This file documents the assumptions behind [india_macro_schedule.json](/Users/pramitdutta/Desktop/options_quant_engine/config/india_macro_schedule.json).
+This file documents the assumptions behind [india_macro_schedule.json](india_macro_schedule.json).
 
 ## Scope
 
@@ -29,7 +29,7 @@ RBI policy dates were not added because no later official RBI MPC schedule was a
 
 MoSPI release calendars provide official release dates, but they do not consistently provide machine-friendly intraday timestamps suitable for the engine.
 
-For Stage 1, macro releases in [india_macro_schedule.json](/Users/pramitdutta/Desktop/options_quant_engine/config/india_macro_schedule.json) use a conservative normalized timestamp:
+For Stage 1, macro releases in [india_macro_schedule.json](india_macro_schedule.json) use a conservative normalized timestamp:
 
 - `16:00 Asia/Kolkata`
 

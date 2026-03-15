@@ -8,8 +8,15 @@ import hashlib
 from pathlib import Path
 
 import pandas as pd
-import yfinance as yf
 
+from config.market_data_policy import IST_TIMEZONE
+from config.signal_evaluation_policy import (
+    MOVE_PROBABILITY_BUCKETS,
+    SIGNAL_EVALUATION_HORIZON_MINUTES,
+    SIGNAL_EVALUATION_WINDOW_MINUTES,
+    TRADE_STRENGTH_BUCKETS,
+    bucket_from_thresholds,
+)
 from config.signal_evaluation_scoring import (
     get_signal_evaluation_direction_weights,
     get_signal_evaluation_score_weights,
@@ -18,12 +25,14 @@ from config.signal_evaluation_scoring import (
 )
 from config.settings import BASE_DIR
 from data.spot_downloader import normalize_underlying_symbol
-from research.signal_evaluation.dataset import SIGNAL_DATASET_PATH, upsert_signal_rows
-
-
-IST_TIMEZONE = "Asia/Kolkata"
-EVALUATION_WINDOW_MINUTES = 120
-HORIZON_MINUTES = [5, 15, 30, 60]
+from research.signal_evaluation.dataset import SIGNAL_DATASET_PATH, load_signals_dataset, upsert_signal_rows
+from research.signal_evaluation.market_data import (
+    build_realized_spot_path_cache,
+    coerce_market_timestamp,
+    fetch_realized_spot_history,
+    fetch_realized_spot_path,
+    resolve_research_as_of,
+)
 
 
 def _safe_float(value, default=None):
@@ -36,10 +45,7 @@ def _safe_float(value, default=None):
 
 
 def _coerce_ts(value) -> pd.Timestamp:
-    ts = pd.Timestamp(value)
-    if ts.tzinfo is None:
-        return ts.tz_localize(IST_TIMEZONE)
-    return ts.tz_convert(IST_TIMEZONE)
+    return coerce_market_timestamp(value)
 
 
 def _signal_direction_multiplier(direction: str | None) -> int:
@@ -53,32 +59,12 @@ def _signal_direction_multiplier(direction: str | None) -> int:
 
 def _bucket_trade_strength(value) -> str | None:
     value = _safe_float(value, None)
-    if value is None:
-        return None
-    if value >= 80:
-        return "80_100"
-    if value >= 65:
-        return "65_79"
-    if value >= 50:
-        return "50_64"
-    if value >= 35:
-        return "35_49"
-    return "0_34"
+    return bucket_from_thresholds(value, TRADE_STRENGTH_BUCKETS, "0_34")
 
 
 def _bucket_probability(value) -> str | None:
     value = _safe_float(value, None)
-    if value is None:
-        return None
-    if value >= 0.80:
-        return "0.80_1.00"
-    if value >= 0.65:
-        return "0.65_0.79"
-    if value >= 0.50:
-        return "0.50_0.64"
-    if value >= 0.35:
-        return "0.35_0.49"
-    return "0.00_0.34"
+    return bucket_from_thresholds(value, MOVE_PROBABILITY_BUCKETS, "0.00_0.34")
 
 
 def build_signal_id(
@@ -127,7 +113,12 @@ def build_regime_fingerprint(trade: dict, provider_health: dict | None = None) -
     return fingerprint, fingerprint_id
 
 
-def build_signal_evaluation_row(result: dict, *, notes: str | None = None) -> dict:
+def build_signal_evaluation_row(
+    result: dict,
+    *,
+    notes: str | None = None,
+    captured_at=None,
+) -> dict:
     if not result or not result.get("trade"):
         raise ValueError("Result payload must include a trade object")
 
@@ -151,7 +142,7 @@ def build_signal_evaluation_row(result: dict, *, notes: str | None = None) -> di
     provider_health = trade.get("provider_health") or result.get("option_chain_validation", {}).get("provider_health", {}) or {}
     regime_fingerprint, regime_fingerprint_id = build_regime_fingerprint(trade, provider_health)
     saved_paths = result.get("saved_paths") or {}
-    now_ts = pd.Timestamp.now(tz=IST_TIMEZONE).isoformat()
+    captured_ts = resolve_research_as_of(captured_at, default=signal_timestamp).isoformat()
 
     row = {
         "signal_id": signal_id,
@@ -238,19 +229,19 @@ def build_signal_evaluation_row(result: dict, *, notes: str | None = None) -> di
         "large_move_probability": trade.get("large_move_probability"),
         "saved_spot_snapshot_path": saved_paths.get("spot"),
         "saved_chain_snapshot_path": saved_paths.get("chain"),
-        "created_at": now_ts,
-        "updated_at": now_ts,
+        "created_at": captured_ts,
+        "updated_at": captured_ts,
         "outcome_last_updated_at": pd.NA,
         "outcome_status": "PENDING",
         "observed_minutes": 0.0,
-        "evaluation_window_minutes": EVALUATION_WINDOW_MINUTES,
+        "evaluation_window_minutes": SIGNAL_EVALUATION_WINDOW_MINUTES,
         "directional_consistency_score": pd.NA,
         "signal_calibration_bucket": _bucket_trade_strength(trade.get("trade_strength")),
         "probability_calibration_bucket": _bucket_probability(trade.get("hybrid_move_probability")),
         "notes": notes,
     }
 
-    for horizon in HORIZON_MINUTES:
+    for horizon in SIGNAL_EVALUATION_HORIZON_MINUTES:
         row[f"spot_{horizon}m"] = pd.NA
         row[f"signed_return_{horizon}m_bps"] = pd.NA
         row[f"correct_{horizon}m"] = pd.NA
@@ -475,7 +466,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
     has_direction = direction_mult != 0
 
     completed_checkpoints = 0
-    for horizon in HORIZON_MINUTES:
+    for horizon in SIGNAL_EVALUATION_HORIZON_MINUTES:
         target_ts = signal_ts + pd.Timedelta(minutes=horizon)
         horizon_spot = _nearest_spot_at_or_after(path, target_ts)
         if horizon_spot is None:
@@ -531,7 +522,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
         completed_checkpoints += 1
 
     if has_direction:
-        correctness_fields = [updated.get(f"correct_{horizon}m") for horizon in HORIZON_MINUTES]
+        correctness_fields = [updated.get(f"correct_{horizon}m") for horizon in SIGNAL_EVALUATION_HORIZON_MINUTES]
         correctness_fields.append(updated.get("correct_session_close"))
         correctness_values = []
         for value in correctness_fields:
@@ -544,7 +535,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
 
     updated = compute_signal_evaluation_scores(updated)
 
-    total_checkpoints = len(HORIZON_MINUTES) + 3
+    total_checkpoints = len(SIGNAL_EVALUATION_HORIZON_MINUTES) + 3
     if completed_checkpoints == 0:
         updated["outcome_status"] = "PENDING"
     elif completed_checkpoints < total_checkpoints:
@@ -552,47 +543,8 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
     else:
         updated["outcome_status"] = "COMPLETE"
 
-    updated["updated_at"] = pd.Timestamp.now(tz=IST_TIMEZONE).isoformat()
+    updated["updated_at"] = as_of_ts.isoformat()
     return updated
-
-
-def _normalize_symbol_to_yfinance(symbol: str) -> str:
-    normalized = normalize_underlying_symbol(symbol)
-    ticker_map = {
-        "NIFTY": "^NSEI",
-        "BANKNIFTY": "^NSEBANK",
-        "FINNIFTY": "^NSEFIN",
-    }
-    if normalized in ticker_map:
-        return ticker_map[normalized]
-    if normalized.startswith("^") or "." in normalized:
-        return normalized
-    return f"{normalized}.NS"
-
-
-def fetch_realized_spot_path(symbol: str, signal_timestamp, *, as_of=None, interval: str = "5m") -> pd.DataFrame:
-    signal_ts = _coerce_ts(signal_timestamp)
-    end_ts = _coerce_ts(as_of) if as_of is not None else pd.Timestamp.now(tz=IST_TIMEZONE)
-    fetch_end_ts = max(end_ts, signal_ts + pd.Timedelta(days=2))
-
-    ticker = yf.Ticker(_normalize_symbol_to_yfinance(symbol))
-    frame = ticker.history(
-        start=(signal_ts - pd.Timedelta(days=1)).tz_convert("UTC").to_pydatetime(),
-        end=(fetch_end_ts + pd.Timedelta(days=1)).tz_convert("UTC").to_pydatetime(),
-        interval=interval,
-        auto_adjust=False,
-    )
-
-    if frame is None or frame.empty:
-        return pd.DataFrame(columns=["timestamp", "spot"])
-
-    history = frame.reset_index()
-    ts_col = "Datetime" if "Datetime" in history.columns else "Date"
-    history["timestamp"] = history[ts_col].map(_coerce_ts)
-    history["spot"] = pd.to_numeric(history.get("Close"), errors="coerce")
-    history = history.dropna(subset=["timestamp", "spot"])
-    history = history.loc[(history["timestamp"] >= signal_ts) & (history["timestamp"] <= fetch_end_ts)].reset_index(drop=True)
-    return history[["timestamp", "spot"]]
 
 
 def save_signal_evaluation(
@@ -604,9 +556,26 @@ def save_signal_evaluation(
     notes: str | None = None,
     return_frame: bool = True,
 ) -> pd.DataFrame | None:
-    row = build_signal_evaluation_row(result, notes=notes)
+    capture_default = (
+        result.get("spot_summary", {}).get("timestamp")
+        or result.get("trade", {}).get("valuation_time")
+    )
+    row = build_signal_evaluation_row(
+        result,
+        notes=notes,
+        captured_at=resolve_research_as_of(as_of, default=capture_default),
+    )
     if realized_spot_path is not None and not realized_spot_path.empty:
-        row = evaluate_signal_outcomes(row, realized_spot_path, as_of=as_of)
+        evaluation_default = (
+            realized_spot_path["timestamp"].max()
+            if "timestamp" in realized_spot_path.columns
+            else capture_default
+        )
+        row = evaluate_signal_outcomes(
+            row,
+            realized_spot_path,
+            as_of=resolve_research_as_of(as_of, default=evaluation_default),
+        )
     return upsert_signal_rows([row], path=dataset_path, return_frame=return_frame)
 
 
@@ -614,29 +583,47 @@ def update_signal_dataset_outcomes(
     *,
     dataset_path: str | Path = SIGNAL_DATASET_PATH,
     as_of=None,
-    fetch_spot_path_fn=fetch_realized_spot_path,
+    fetch_spot_path_fn=None,
+    fetch_spot_history_fn=fetch_realized_spot_history,
 ) -> pd.DataFrame:
     dataset_path = Path(dataset_path)
     if not dataset_path.exists():
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
         return upsert_signal_rows([], path=dataset_path)
 
-    frame = pd.read_csv(dataset_path)
+    resolved_as_of = resolve_research_as_of(as_of)
+    frame = load_signals_dataset(dataset_path)
     if frame.empty:
         return upsert_signal_rows([], path=dataset_path)
 
+    records = frame.to_dict(orient="records")
+    path_cache = (
+        build_realized_spot_path_cache(
+            [row for row in records if row.get("outcome_status") != "COMPLETE"],
+            as_of=resolved_as_of,
+            fetch_history_fn=fetch_spot_history_fn,
+        )
+        if fetch_spot_path_fn is None
+        else {}
+    )
+
     updated_rows = []
-    for _, row in frame.iterrows():
-        row_dict = row.to_dict()
+    for row_dict in records:
         if row_dict.get("outcome_status") == "COMPLETE":
             updated_rows.append(row_dict)
             continue
 
-        realized_path = fetch_spot_path_fn(
-            row_dict.get("symbol"),
-            row_dict.get("signal_timestamp"),
-            as_of=as_of,
-        )
-        updated_rows.append(evaluate_signal_outcomes(row_dict, realized_path, as_of=as_of))
+        if fetch_spot_path_fn is not None:
+            realized_path = fetch_spot_path_fn(
+                row_dict.get("symbol"),
+                row_dict.get("signal_timestamp"),
+                as_of=resolved_as_of,
+            )
+        else:
+            realized_path = path_cache.get(
+                (str(row_dict.get("symbol")), str(row_dict.get("signal_timestamp"))),
+                pd.DataFrame(columns=["timestamp", "spot"]),
+            )
+        updated_rows.append(evaluate_signal_outcomes(row_dict, realized_path, as_of=resolved_as_of))
 
     return upsert_signal_rows(updated_rows, path=dataset_path)

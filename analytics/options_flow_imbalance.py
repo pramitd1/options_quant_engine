@@ -4,16 +4,18 @@ Directional options flow based on front-expiry, near-ATM traded premium.
 
 import pandas as pd
 
+from config.analytics_feature_policy import get_flow_imbalance_policy_config
 from analytics.flow_utils import front_expiry_atm_slice
 
 
 def calculate_flow_imbalance(option_chain, spot=None):
+    cfg = get_flow_imbalance_policy_config()
     if option_chain is None or option_chain.empty:
-        return 1.0
+        return cfg.neutral_default_imbalance
 
     df = front_expiry_atm_slice(option_chain, spot=spot, strike_window_steps=4)
     if df is None or df.empty:
-        return 1.0
+        return cfg.neutral_default_imbalance
 
     calls = df[df["OPTION_TYP"] == "CE"].copy()
     puts = df[df["OPTION_TYP"] == "PE"].copy()
@@ -29,21 +31,22 @@ def calculate_flow_imbalance(option_chain, spot=None):
     ).sum()
 
     if call_notional <= 0 and put_notional <= 0:
-        return 1.0
+        return cfg.neutral_default_imbalance
 
     if put_notional <= 0:
-        return 2.0
+        return cfg.no_put_flow_fallback_imbalance
 
     return float(call_notional / put_notional)
 
 
 def flow_signal(option_chain, spot=None):
+    cfg = get_flow_imbalance_policy_config()
     imbalance = calculate_flow_imbalance(option_chain, spot=spot)
 
-    if imbalance >= 1.20:
+    if imbalance >= cfg.bullish_threshold:
         return "BULLISH_FLOW"
 
-    if imbalance <= 0.83:
+    if imbalance <= cfg.bearish_threshold:
         return "BEARISH_FLOW"
 
     return "NEUTRAL_FLOW"

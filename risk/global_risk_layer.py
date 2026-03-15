@@ -4,6 +4,7 @@ Backward-compatible facade for the global risk layer.
 
 from __future__ import annotations
 
+from config.global_risk_policy import get_global_risk_policy_config
 from risk.global_risk_features import build_global_risk_features
 from risk.global_risk_regime import classify_global_risk_state
 
@@ -137,6 +138,7 @@ def evaluate_global_risk_layer(
     global_risk_state=None,
     holding_profile="AUTO",
 ):
+    cfg = get_global_risk_policy_config()
     data_quality = data_quality if isinstance(data_quality, dict) else {}
     confirmation = confirmation if isinstance(confirmation, dict) else {}
     macro_news_adjustments = macro_news_adjustments if isinstance(macro_news_adjustments, dict) else {}
@@ -157,10 +159,10 @@ def evaluate_global_risk_layer(
         _clip(_safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0), 0.0, 1.0),
         _clip(_safe_float(global_risk_state.get("global_risk_position_size_multiplier"), 1.0), 0.0, 1.0),
     )
-    score = int(round((100 - _safe_float(data_quality.get("score"), 100.0)) * 0.35))
-    score += int(round(_safe_float(macro_event_risk_score, 0.0) * 0.20))
-    score += int(round(_safe_float(global_risk_state.get("global_risk_score"), 0.0) * 0.45))
-    score += int(round((1.0 - size_cap) * 20.0))
+    score = int(round((100 - _safe_float(data_quality.get("score"), 100.0)) * cfg.layer_data_quality_weight))
+    score += int(round(_safe_float(macro_event_risk_score, 0.0) * cfg.layer_macro_event_weight))
+    score += int(round(_safe_float(global_risk_state.get("global_risk_score"), 0.0) * cfg.layer_global_risk_weight))
+    score += int(round((1.0 - size_cap) * cfg.layer_size_cap_penalty_scale))
 
     if data_quality.get("fatal"):
         return _result(
@@ -190,7 +192,7 @@ def evaluate_global_risk_layer(
         reasons.extend(global_risk_state.get("global_risk_reasons", []))
         return _result(
             state=global_risk_state,
-            score=max(score, 82),
+            score=max(score, cfg.layer_veto_block_score_floor),
             level="HIGH",
             action="BLOCK",
             size_cap=0.0,
@@ -208,10 +210,10 @@ def evaluate_global_risk_layer(
             reasons.append(str(overnight_hold_reason))
         return _result(
             state=global_risk_state,
-            score=max(score, 70),
+            score=max(score, cfg.layer_overnight_watch_score_floor),
             level="HIGH",
             action="WATCHLIST",
-            size_cap=min(size_cap, 0.5),
+            size_cap=min(size_cap, cfg.layer_overnight_watch_size_cap),
             reasons=reasons or ["overnight_hold_not_allowed"],
             trade_status="WATCHLIST",
             message=f"Trade downgraded due to elevated overnight risk: {global_risk_state.get('overnight_hold_reason', 'overnight_hold_not_allowed')}",
@@ -221,7 +223,7 @@ def evaluate_global_risk_layer(
         reasons.append("confirmation_veto")
         return _result(
             state=global_risk_state,
-            score=max(score, 72),
+            score=max(score, cfg.layer_confirmation_watch_score_floor),
             level="HIGH",
             action="WATCHLIST",
             size_cap=size_cap,
@@ -234,7 +236,7 @@ def evaluate_global_risk_layer(
         reasons.append("insufficient_trade_strength")
         return _result(
             state=global_risk_state,
-            score=max(score, 58),
+            score=max(score, cfg.layer_low_strength_watch_score_floor),
             level="MEDIUM",
             action="WATCHLIST",
             size_cap=size_cap,
@@ -243,50 +245,50 @@ def evaluate_global_risk_layer(
             message="Trade filtered out due to low strength",
         )
 
-    if _safe_float(data_quality.get("score"), 0.0) < 55:
+    if _safe_float(data_quality.get("score"), 0.0) < cfg.layer_weak_data_quality_score_threshold:
         reasons.append("weak_data_quality")
         return _result(
             state=global_risk_state,
-            score=max(score, 66),
+            score=max(score, cfg.layer_weak_data_quality_watch_score_floor),
             level="HIGH",
             action="WATCHLIST",
-            size_cap=min(size_cap, 0.5),
+            size_cap=min(size_cap, cfg.layer_weak_data_quality_size_cap),
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to weak data quality",
         )
 
-    if data_quality.get("status") == "CAUTION" and adjusted_trade_strength < (min_trade_strength + 8):
+    if data_quality.get("status") == "CAUTION" and adjusted_trade_strength < (min_trade_strength + cfg.layer_caution_strength_buffer):
         reasons.append("cautionary_data_quality")
         return _result(
             state=global_risk_state,
-            score=max(score, 54),
+            score=max(score, cfg.layer_caution_watch_score_floor),
             level="MEDIUM",
             action="WATCHLIST",
-            size_cap=min(size_cap, 0.75),
+            size_cap=min(size_cap, cfg.layer_caution_watch_size_cap),
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to cautionary data quality",
         )
 
-    if confirmation.get("status") == "CONFLICT" and adjusted_trade_strength < (min_trade_strength + 10):
+    if confirmation.get("status") == "CONFLICT" and adjusted_trade_strength < (min_trade_strength + cfg.layer_confirmation_conflict_strength_buffer):
         reasons.append("live_confirmation_conflict")
         return _result(
             state=global_risk_state,
-            score=max(score, 57),
+            score=max(score, cfg.layer_confirmation_conflict_watch_score_floor),
             level="MEDIUM",
             action="WATCHLIST",
-            size_cap=min(size_cap, 0.75),
+            size_cap=min(size_cap, cfg.layer_caution_watch_size_cap),
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to weak live confirmation",
         )
 
-    if size_cap < 0.75 and adjusted_trade_strength < (min_trade_strength + 12):
+    if size_cap < cfg.layer_caution_watch_size_cap and adjusted_trade_strength < (min_trade_strength + cfg.layer_size_reduction_strength_buffer):
         reasons.append("global_macro_size_reduction")
         return _result(
             state=global_risk_state,
-            score=max(score, 60),
+            score=max(score, cfg.layer_size_reduction_watch_score_floor),
             level="MEDIUM",
             action="WATCHLIST",
             size_cap=size_cap,
@@ -303,9 +305,9 @@ def evaluate_global_risk_layer(
         reasons.append("risk_checks_passed")
 
     level = "LOW"
-    if score >= 60:
+    if score >= cfg.layer_high_level_threshold:
         level = "HIGH"
-    elif score >= 35:
+    elif score >= cfg.layer_medium_level_threshold:
         level = "MEDIUM"
 
     return _result(

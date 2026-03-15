@@ -16,7 +16,7 @@ from config.settings import (
 )
 from data.historical_option_chain import load_option_chain
 from data.expiry_resolver import filter_option_chain_by_expiry, resolve_selected_expiry
-from engine.trading_engine import generate_trade
+from engine.signal_engine import generate_trade
 from backtest.pnl_engine import calculate_trade_pnl
 from backtest.performance_metrics import compute_performance_metrics
 

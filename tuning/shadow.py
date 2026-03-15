@@ -4,12 +4,12 @@ Live shadow-mode comparison and logging utilities.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from tuning.artifacts import append_jsonl_record, load_jsonl_frame
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TUNING_RESEARCH_DIR = PROJECT_ROOT / "research" / "parameter_tuning"
@@ -116,26 +116,11 @@ def compare_shadow_trade_outputs(
 
 
 def append_shadow_log(record: dict[str, Any], path: str | Path = SHADOW_LOG_PATH) -> Path:
-    log_path = Path(path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(dict(record or {}), sort_keys=True))
-        handle.write("\n")
-    return log_path
+    return append_jsonl_record(dict(record or {}), path)
 
 
 def load_shadow_log(path: str | Path = SHADOW_LOG_PATH) -> pd.DataFrame:
-    log_path = Path(path)
-    if not log_path.exists():
-        return pd.DataFrame()
-    records = []
-    with log_path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-    return pd.DataFrame(records)
+    return load_jsonl_frame(path)
 
 
 def summarize_shadow_log(path: str | Path = SHADOW_LOG_PATH) -> dict[str, Any]:

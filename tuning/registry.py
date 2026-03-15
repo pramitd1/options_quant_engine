@@ -7,11 +7,17 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Any
 
+from config.analytics_feature_policy import (
+    FlowImbalancePolicyConfig,
+    SmartMoneyFlowPolicyConfig,
+    VolatilityRegimePolicyConfig,
+)
 from config.dealer_hedging_pressure_policy import DealerHedgingPressurePolicyConfig
 from config.event_window_policy import EventWindowPolicyConfig
 from config.gamma_vol_acceleration_policy import GammaVolAccelerationPolicyConfig
 from config.global_risk_policy import GlobalRiskPolicyConfig
 from config.large_move_policy import LARGE_MOVE_PROBABILITY_CONFIG
+from config.news_keyword_policy import HEADLINE_RULES
 from config.news_category_policy import (
     CATEGORY_GLOBAL_BIAS_MULTIPLIERS,
     CATEGORY_IMPACT_MULTIPLIERS,
@@ -20,6 +26,7 @@ from config.news_category_policy import (
     CATEGORY_VOL_MULTIPLIERS,
 )
 from config.option_efficiency_policy import OptionEfficiencyPolicyConfig
+from config.probability_feature_policy import ProbabilityFeaturePolicyConfig
 from config.signal_evaluation_scoring import (
     SIGNAL_EVALUATION_DIRECTION_WEIGHTS,
     SIGNAL_EVALUATION_SCORE_WEIGHTS,
@@ -30,11 +37,15 @@ from config.signal_evaluation_scoring import (
 from config.signal_policy import (
     CONFIRMATION_FILTER_CONFIG,
     CONSENSUS_SCORE_CONFIG,
+    DataQualityPolicyConfig,
     DIRECTION_MIN_MARGIN,
     DIRECTION_MIN_SCORE,
     DIRECTION_VOTE_WEIGHTS,
+    ExecutionRegimePolicyConfig,
+    LargeMoveScoringPolicyConfig,
     TRADE_RUNTIME_THRESHOLDS,
     TRADE_STRENGTH_WEIGHTS,
+    TradeModifierPolicyConfig,
 )
 from config.strike_selection_policy import STRIKE_SELECTION_SCORE_CONFIG
 from macro.macro_news_config import (
@@ -118,6 +129,24 @@ GROUP_TUNING_METADATA = {
         "validation_mode": "walk_forward_regime_aware",
         "overfit_risk": "high",
         "tuning_priority": 30,
+    },
+    "signal_engine": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "medium",
+        "tuning_priority": 16,
+    },
+    "analytics": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "medium",
+        "tuning_priority": 18,
+    },
+    "headline_rules": {
+        "search_strategy": "latin_hypercube",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "high",
+        "tuning_priority": 40,
     },
 }
 
@@ -305,6 +334,56 @@ def build_default_parameter_registry() -> ParameterRegistry:
         )
     )
     definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.data_quality",
+            module="config.signal_policy",
+            group="signal_engine",
+            category="data_quality",
+            config_obj=DataQualityPolicyConfig(),
+            description_prefix="Signal-engine data-quality parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.execution_regime",
+            module="config.signal_policy",
+            group="signal_engine",
+            category="execution_regime",
+            config_obj=ExecutionRegimePolicyConfig(),
+            description_prefix="Signal-engine execution-regime parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.large_move_scoring",
+            module="config.signal_policy",
+            group="signal_engine",
+            category="large_move_scoring",
+            config_obj=LargeMoveScoringPolicyConfig(),
+            description_prefix="Large-move trade-strength parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.trade_modifiers",
+            module="config.signal_policy",
+            group="signal_engine",
+            category="trade_modifiers",
+            config_obj=TradeModifierPolicyConfig(),
+            description_prefix="Signal-engine trade-modifier parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.probability",
+            module="config.probability_feature_policy",
+            group="signal_engine",
+            category="probability",
+            config_obj=ProbabilityFeaturePolicyConfig(),
+            description_prefix="Signal-engine probability parameter",
+        )
+    )
+    definitions.extend(
         _from_mapping(
             prefix="confirmation_filter.core",
             module="config.signal_policy",
@@ -339,6 +418,37 @@ def build_default_parameter_registry() -> ParameterRegistry:
                 max_value=10.0,
             ),
         ]
+    )
+
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.flow_imbalance",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="flow_imbalance",
+            config_obj=FlowImbalancePolicyConfig(),
+            description_prefix="Analytics flow-imbalance parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.smart_money_flow",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="smart_money_flow",
+            config_obj=SmartMoneyFlowPolicyConfig(),
+            description_prefix="Analytics smart-money-flow parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.volatility_regime",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="volatility_regime",
+            config_obj=VolatilityRegimePolicyConfig(),
+            description_prefix="Analytics volatility-regime parameter",
+        )
     )
 
     definitions.extend(
@@ -383,6 +493,29 @@ def build_default_parameter_registry() -> ParameterRegistry:
             config_obj=MacroNewsAdjustmentConfig(),
             description_prefix="Macro news engine adjustment parameter",
         )
+    )
+    definitions.extend(
+        [
+            _parameter_definition(
+                key=f"headline_rules.{rule['name']}.{field_name}",
+                module="config.news_keyword_policy",
+                group="headline_rules",
+                category=rule["name"],
+                default_value=rule[field_name],
+                description=f"Headline rule scalar parameter: {rule['name']}.{field_name}",
+                min_value=-1.5 if field_name != "impact_score" else 0.0,
+                max_value=100.0 if field_name == "impact_score" else 1.5,
+                live_safe=False,
+            )
+            for rule in HEADLINE_RULES
+            for field_name in (
+                "sentiment_weight",
+                "vol_weight",
+                "impact_score",
+                "india_macro_bias",
+                "global_risk_bias",
+            )
+        ]
     )
 
     definitions.extend(

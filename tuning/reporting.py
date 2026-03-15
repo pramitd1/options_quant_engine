@@ -4,42 +4,22 @@ Reporting helpers for experiment ledger inspection.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pandas as pd
 
+from tuning.artifacts import load_jsonl_frame
 from tuning.experiments import EXPERIMENT_LEDGER_PATH
 from tuning.promotion import PROMOTION_LEDGER_PATH, PROMOTION_STATE_PATH, load_promotion_state
 from tuning.shadow import SHADOW_LOG_PATH, summarize_shadow_log
 
 
 def load_experiment_ledger(path: str | Path = EXPERIMENT_LEDGER_PATH) -> pd.DataFrame:
-    ledger_path = Path(path)
-    if not ledger_path.exists():
-        return pd.DataFrame()
-    records = []
-    with ledger_path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-    return pd.DataFrame(records)
+    return load_jsonl_frame(path)
 
 
 def _load_jsonl(path: str | Path) -> pd.DataFrame:
-    ledger_path = Path(path)
-    if not ledger_path.exists():
-        return pd.DataFrame()
-    records = []
-    with ledger_path.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-    return pd.DataFrame(records)
+    return load_jsonl_frame(path)
 
 
 def load_promotion_ledger(path: str | Path = PROMOTION_LEDGER_PATH) -> pd.DataFrame:

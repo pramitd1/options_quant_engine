@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+import sqlite3
 
 import pandas as pd
 
@@ -158,6 +159,44 @@ def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _dataset_store_path(path: Path) -> Path:
+    return path.with_suffix(".sqlite")
+
+
+def _read_sqlite_dataset(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return _empty_dataset_frame()
+    with sqlite3.connect(path) as connection:
+        frame = pd.read_sql_query("SELECT * FROM signals", connection)
+    return _normalize_dataset_frame(frame)
+
+
+def _write_sqlite_dataset(frame: pd.DataFrame, path: Path) -> None:
+    _ensure_parent_dir(path)
+    with sqlite3.connect(path) as connection:
+        normalized = _normalize_dataset_frame(frame)
+        normalized.to_sql("signals", connection, if_exists="replace", index=False)
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_signal_id ON signals(signal_id)")
+
+
+def _append_sqlite_rows(frame: pd.DataFrame, path: Path) -> None:
+    if frame.empty:
+        return
+    _ensure_parent_dir(path)
+    with sqlite3.connect(path) as connection:
+        if not _sqlite_has_table(connection, "signals"):
+            normalized = _normalize_dataset_frame(frame)
+            normalized.to_sql("signals", connection, if_exists="replace", index=False)
+            connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_signal_id ON signals(signal_id)")
+            return
+        _normalize_dataset_frame(frame).to_sql("signals", connection, if_exists="append", index=False)
+
+
+def _sqlite_has_table(connection: sqlite3.Connection, table_name: str) -> bool:
+    query = "SELECT name FROM sqlite_master WHERE type='table' AND name = ?"
+    return connection.execute(query, (table_name,)).fetchone() is not None
+
+
 def _empty_dataset_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=SIGNAL_DATASET_COLUMNS)
 
@@ -188,17 +227,27 @@ def _update_signal_id_cache(path: Path, signal_ids: Iterable[object]) -> None:
 
 def _load_existing_signal_ids(path: Path) -> set[str]:
     if not path.exists():
-        return set()
+        sqlite_path = _dataset_store_path(path)
+        if not sqlite_path.exists():
+            return set()
 
     signature = _current_file_signature(path)
     cached = _SIGNAL_ID_CACHE.get(path)
     if cached and cached.get("signature") == signature:
         return set(cached.get("signal_ids", set()))
 
-    try:
-        frame = pd.read_csv(path, usecols=["signal_id"])
-    except ValueError:
-        frame = load_signals_dataset(path)[["signal_id"]]
+    sqlite_path = _dataset_store_path(path)
+    if sqlite_path.exists():
+        try:
+            with sqlite3.connect(sqlite_path) as connection:
+                frame = pd.read_sql_query("SELECT signal_id FROM signals", connection)
+        except Exception:
+            frame = load_signals_dataset(path)[["signal_id"]]
+    else:
+        try:
+            frame = pd.read_csv(path, usecols=["signal_id"])
+        except ValueError:
+            frame = load_signals_dataset(path)[["signal_id"]]
 
     signal_ids = {str(signal_id) for signal_id in frame["signal_id"].dropna()}
     _SIGNAL_ID_CACHE[path] = {
@@ -240,6 +289,7 @@ def _append_rows_to_dataset(frame: pd.DataFrame, path: Path, existing_signal_ids
         return
 
     frame.to_csv(path, mode="a", header=False, index=False)
+    _append_sqlite_rows(frame, _dataset_store_path(path))
     existing_ids = set(existing_signal_ids or ())
     existing_ids.update(str(signal_id) for signal_id in frame["signal_id"].dropna())
     _update_signal_id_cache(path, existing_ids)
@@ -247,9 +297,16 @@ def _append_rows_to_dataset(frame: pd.DataFrame, path: Path, existing_signal_ids
 
 def load_signals_dataset(path: str | Path = SIGNAL_DATASET_PATH) -> pd.DataFrame:
     dataset_path = Path(path)
+    sqlite_path = _dataset_store_path(dataset_path)
     if not dataset_path.exists():
         write_signals_dataset(_empty_dataset_frame(), dataset_path)
         return _empty_dataset_frame()
+
+    if sqlite_path.exists():
+        try:
+            return _read_sqlite_dataset(sqlite_path)
+        except Exception:
+            pass
 
     frame = pd.read_csv(dataset_path)
     return _normalize_dataset_frame(frame)
@@ -260,6 +317,7 @@ def write_signals_dataset(frame: pd.DataFrame, path: str | Path = SIGNAL_DATASET
     _ensure_parent_dir(dataset_path)
     normalized = _normalize_dataset_frame(frame)
     normalized.to_csv(dataset_path, index=False)
+    _write_sqlite_dataset(normalized, _dataset_store_path(dataset_path))
     _update_signal_id_cache(dataset_path, normalized.get("signal_id", pd.Series(dtype="object")))
     return dataset_path
 
@@ -303,7 +361,15 @@ def upsert_signal_rows(
     if existing.empty:
         combined = incoming.copy()
     else:
-        combined = pd.concat([existing, incoming], ignore_index=True)
+        combined = pd.concat(
+            [
+                existing.dropna(axis=1, how="all"),
+                incoming.dropna(axis=1, how="all"),
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+        combined = _normalize_dataset_frame(combined)
 
     combined = _dedupe_signal_frame(combined)
     write_signals_dataset(combined, dataset_path)

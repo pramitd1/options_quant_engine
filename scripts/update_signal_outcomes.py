@@ -6,14 +6,20 @@ Refresh pending signal outcomes in the canonical signal evaluation dataset.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if __package__:
+    from ._bootstrap import ensure_project_root_on_path
+else:
+    from _bootstrap import ensure_project_root_on_path
 
-from research.signal_evaluation import SIGNAL_DATASET_PATH, update_signal_dataset_outcomes
+ensure_project_root_on_path(Path(__file__))
+
+from research.signal_evaluation import (
+    SIGNAL_DATASET_PATH,
+    resolve_research_as_of,
+    update_signal_dataset_outcomes,
+)
 
 
 def parse_args():
@@ -35,9 +41,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    resolved_as_of = resolve_research_as_of(args.as_of)
     frame = update_signal_dataset_outcomes(
         dataset_path=args.dataset_path,
-        as_of=args.as_of,
+        as_of=resolved_as_of,
     )
 
     pending = int((frame.get("outcome_status") == "PENDING").sum()) if not frame.empty else 0
@@ -45,6 +52,7 @@ def main():
     complete = int((frame.get("outcome_status") == "COMPLETE").sum()) if not frame.empty else 0
 
     print(f"dataset_path: {args.dataset_path}")
+    print(f"as_of: {resolved_as_of.isoformat()}")
     print(f"rows: {len(frame)}")
     print(f"pending: {pending}")
     print(f"partial: {partial}")

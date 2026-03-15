@@ -15,7 +15,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from data.expiry_resolver import filter_option_chain_by_expiry, resolve_selected_expiry
 from data.replay_loader import load_option_chain_snapshot, load_spot_snapshot
-from engine.trading_engine import generate_trade
+from engine.signal_engine import generate_trade
 
 
 def _extract_ts_from_filename(path: Path, marker: str):

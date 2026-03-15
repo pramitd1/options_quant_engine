@@ -1,12 +1,5 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
 from tuning.promotion import (
     evaluate_promotion,
     get_active_live_pack,
@@ -127,9 +120,24 @@ def test_promote_and_rollback_live_pack_are_safe_and_logged(tmp_path):
     state_path = tmp_path / "promotion_state.json"
     ledger_path = tmp_path / "promotion_ledger.jsonl"
 
+    update_pack_state(
+        state_name="candidate",
+        pack_name="experimental_v1",
+        reason="candidate_created",
+        assigned_by="researcher",
+        path=state_path,
+        ledger_path=ledger_path,
+    )
+    record_manual_approval(
+        pack_name="experimental_v1",
+        approved=True,
+        reviewer="pm",
+        notes="approved for live",
+        path=state_path,
+        ledger_path=ledger_path,
+    )
     promote_candidate(
         "experimental_v1",
-        baseline_pack_name="baseline_v1",
         approved_by="pm",
         path=state_path,
         ledger_path=ledger_path,

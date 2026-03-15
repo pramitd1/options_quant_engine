@@ -33,6 +33,13 @@ class EventWindowPolicyConfig:
     post_event_cooldown_penalty_high: int = -4
     post_event_cooldown_penalty_normal: int = -2
     lockdown_penalty: int = -10
+    pre_watch_base_multiplier: float = 0.35
+    pre_watch_proximity_multiplier: float = 0.25
+    pre_lockdown_base_multiplier: float = 0.75
+    pre_lockdown_proximity_multiplier: float = 0.25
+    post_cooldown_base_multiplier: float = 0.35
+    post_cooldown_decay_multiplier: float = 0.35
+    live_event_risk_bonus: int = 10
 
 
 EVENT_WINDOW_POLICY_CONFIG = EventWindowPolicyConfig()

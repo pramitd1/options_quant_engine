@@ -4,6 +4,8 @@ Signal policy calibration for live engine scoring and direction selection.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 DIRECTION_VOTE_WEIGHTS = {
     "FLOW": 1.2,
     "HEDGING_BIAS": 1.1,
@@ -63,6 +65,7 @@ TRADE_RUNTIME_THRESHOLDS = {
     "weak_signal_threshold": 40,
     "expansion_bias_threshold": 75,
     "directional_bias_threshold": 55,
+    "neutral_flow_probability_floor": 0.55,
 }
 
 CONFIRMATION_FILTER_CONFIG = {
@@ -95,6 +98,70 @@ CONFIRMATION_FILTER_CONFIG = {
     "veto_hard_conflicts": 3,
     "veto_move_probability_ceiling": 0.55,
 }
+
+
+@dataclass(frozen=True)
+class DataQualityPolicyConfig:
+    invalid_spot_penalty: int = 45
+    stale_spot_penalty: int = 10
+    invalid_option_chain_penalty: int = 45
+    stale_option_chain_penalty: int = 10
+    provider_health_weak_penalty: int = 18
+    provider_health_caution_penalty: int = 8
+    missing_analytics_penalty_per_field: int = 6
+    missing_analytics_penalty_cap: int = 24
+    missing_all_probabilities_penalty: int = 10
+    missing_hybrid_probability_penalty: int = 5
+    status_strong_threshold: int = 85
+    status_good_threshold: int = 70
+    status_caution_threshold: int = 55
+
+
+@dataclass(frozen=True)
+class ExecutionRegimePolicyConfig:
+    reduced_size_multiplier_threshold: float = 1.0
+    observe_data_quality_threshold: int = 70
+
+
+@dataclass(frozen=True)
+class LargeMoveScoringPolicyConfig:
+    hybrid_threshold_extreme: float = 0.75
+    hybrid_score_extreme: int = 12
+    hybrid_threshold_high: float = 0.65
+    hybrid_score_high: int = 10
+    hybrid_threshold_moderate: float = 0.55
+    hybrid_score_moderate: int = 8
+    hybrid_threshold_watch: float = 0.45
+    hybrid_score_watch: int = 6
+    hybrid_threshold_tail: float = 0.35
+    hybrid_score_tail: int = 3
+    ml_threshold_extreme: float = 0.75
+    ml_score_extreme: int = 6
+    ml_threshold_high: float = 0.65
+    ml_score_high: int = 5
+    ml_threshold_moderate: float = 0.55
+    ml_score_moderate: int = 4
+    ml_threshold_watch: float = 0.45
+    ml_score_watch: int = 2
+    ml_threshold_tail: float = 0.35
+    ml_score_tail: int = 1
+    overlap_hybrid_floor: int = 8
+    overlap_ml_floor: int = 4
+    overlap_penalty: int = 1
+    total_score_cap: int = 14
+
+
+@dataclass(frozen=True)
+class TradeModifierPolicyConfig:
+    gamma_alignment_score: int = 2
+    gamma_conflict_penalty: int = -6
+    gamma_two_sided_score: int = 1
+    dealer_pinning_penalty: int = -2
+    dealer_instability_penalty: int = -1
+    dealer_alignment_score: int = 2
+    dealer_conflict_penalty: int = -3
+    alignment_score_floor: int = -6
+    alignment_score_cap: int = 8
 
 
 def get_direction_vote_weights():
@@ -134,3 +201,27 @@ def get_confirmation_filter_config():
     from tuning.runtime import resolve_mapping
 
     return resolve_mapping("confirmation_filter.core", CONFIRMATION_FILTER_CONFIG)
+
+
+def get_data_quality_policy_config() -> DataQualityPolicyConfig:
+    from tuning.runtime import resolve_dataclass_config
+
+    return resolve_dataclass_config("signal_engine.data_quality", DataQualityPolicyConfig())
+
+
+def get_execution_regime_policy_config() -> ExecutionRegimePolicyConfig:
+    from tuning.runtime import resolve_dataclass_config
+
+    return resolve_dataclass_config("signal_engine.execution_regime", ExecutionRegimePolicyConfig())
+
+
+def get_large_move_scoring_policy_config() -> LargeMoveScoringPolicyConfig:
+    from tuning.runtime import resolve_dataclass_config
+
+    return resolve_dataclass_config("signal_engine.large_move_scoring", LargeMoveScoringPolicyConfig())
+
+
+def get_trade_modifier_policy_config() -> TradeModifierPolicyConfig:
+    from tuning.runtime import resolve_dataclass_config
+
+    return resolve_dataclass_config("signal_engine.trade_modifiers", TradeModifierPolicyConfig())

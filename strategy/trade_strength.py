@@ -4,7 +4,11 @@ Trade Strength Model
 Direction-aware scoring.
 """
 
-from config.signal_policy import get_consensus_score_config, get_trade_strength_weights
+from config.signal_policy import (
+    get_consensus_score_config,
+    get_large_move_scoring_policy_config,
+    get_trade_strength_weights,
+)
 
 
 def _wall_proximity_score(spot, support_wall, resistance_wall, direction, proximity_buffer=50):
@@ -185,34 +189,35 @@ def _large_move_score(large_move_probability, ml_move_probability):
     Hybrid/rule probability is the primary signal.
     ML probability is supportive, with lower standalone weight.
     """
+    cfg = get_large_move_scoring_policy_config()
     hybrid_score = _probability_bucket_score(
         large_move_probability,
         [
-            (0.75, 12),
-            (0.65, 10),
-            (0.55, 8),
-            (0.45, 6),
-            (0.35, 3),
+            (cfg.hybrid_threshold_extreme, cfg.hybrid_score_extreme),
+            (cfg.hybrid_threshold_high, cfg.hybrid_score_high),
+            (cfg.hybrid_threshold_moderate, cfg.hybrid_score_moderate),
+            (cfg.hybrid_threshold_watch, cfg.hybrid_score_watch),
+            (cfg.hybrid_threshold_tail, cfg.hybrid_score_tail),
         ],
     )
 
     ml_score = _probability_bucket_score(
         ml_move_probability,
         [
-            (0.75, 6),
-            (0.65, 5),
-            (0.55, 4),
-            (0.45, 2),
-            (0.35, 1),
+            (cfg.ml_threshold_extreme, cfg.ml_score_extreme),
+            (cfg.ml_threshold_high, cfg.ml_score_high),
+            (cfg.ml_threshold_moderate, cfg.ml_score_moderate),
+            (cfg.ml_threshold_watch, cfg.ml_score_watch),
+            (cfg.ml_threshold_tail, cfg.ml_score_tail),
         ],
     )
 
     # Avoid double counting when both are saying essentially the same thing.
-    if hybrid_score >= 8 and ml_score >= 4:
-        ml_score -= 1
+    if hybrid_score >= cfg.overlap_hybrid_floor and ml_score >= cfg.overlap_ml_floor:
+        ml_score -= cfg.overlap_penalty
 
     total = hybrid_score + max(0, ml_score)
-    return min(total, 14)
+    return min(total, cfg.total_score_cap)
 
 
 def compute_trade_strength(

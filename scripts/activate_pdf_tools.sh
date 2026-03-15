@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PDF_TOOLS_ROOT="/Users/pramitdutta/.local/oqe-pdf-tools"
+PDF_TOOLS_ROOT="${PDF_TOOLS_ROOT:-$HOME/.local/oqe-pdf-tools}"
 
 if [ ! -d "$PDF_TOOLS_ROOT" ]; then
   echo "PDF tools environment not found at $PDF_TOOLS_ROOT" >&2

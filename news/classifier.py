@@ -15,7 +15,11 @@ from config.news_category_policy import (
     get_category_sentiment_multipliers,
     get_category_vol_multipliers,
 )
-from news.keyword_rules import HEADLINE_RULES, NEGATIVE_KEYWORDS, POSITIVE_KEYWORDS
+from config.news_keyword_policy import (
+    get_headline_rules,
+    get_negative_keywords,
+    get_positive_keywords,
+)
 from news.models import HeadlineRecord
 
 
@@ -46,6 +50,9 @@ class HeadlineClassification:
 
 def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
     cfg = get_headline_classification_config()
+    headline_rules = get_headline_rules()
+    positive_keywords = get_positive_keywords()
+    negative_keywords = get_negative_keywords()
     sentiment_multipliers = get_category_sentiment_multipliers()
     vol_multipliers = get_category_vol_multipliers()
     impact_multipliers = get_category_impact_multipliers()
@@ -63,7 +70,7 @@ def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
     india_bias = 0.0
     global_bias = 0.0
 
-    for rule in HEADLINE_RULES:
+    for rule in headline_rules:
         keywords = [keyword for keyword in rule["keywords"] if keyword in text]
         if not keywords:
             continue
@@ -84,8 +91,8 @@ def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
         india_bias += float(rule["india_macro_bias"]) * india_bias_multiplier
         global_bias += float(rule["global_risk_bias"]) * global_bias_multiplier
 
-    positive_hits = sum(1 for keyword in POSITIVE_KEYWORDS if keyword in text)
-    negative_hits = sum(1 for keyword in NEGATIVE_KEYWORDS if keyword in text)
+    positive_hits = sum(1 for keyword in positive_keywords if keyword in text)
+    negative_hits = sum(1 for keyword in negative_keywords if keyword in text)
     sentiment += cfg.positive_hit_weight * positive_hits
     sentiment -= cfg.negative_hit_weight * negative_hits
 
@@ -93,7 +100,7 @@ def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
         primary_category = "uncategorized"
         impact = cfg.uncategorized_keyword_impact if positive_hits or negative_hits else 0.0
     else:
-        category_order = {rule["category"]: idx for idx, rule in enumerate(HEADLINE_RULES)}
+        category_order = {rule["category"]: idx for idx, rule in enumerate(headline_rules)}
         primary_category = sorted(set(matched_categories), key=lambda cat: category_order.get(cat, 999))[0]
 
     sentiment = _clip(sentiment, -1.0, 1.0)

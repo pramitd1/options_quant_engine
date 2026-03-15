@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
 from pathlib import Path
 
 import pandas as pd
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
 from research.signal_evaluation.reports import (
     average_realized_return_by_horizon,
@@ -19,6 +14,10 @@ from research.signal_evaluation.reports import (
     move_probability_calibration,
     regime_fingerprint_performance,
     signal_count_by_regime,
+)
+from research.signal_evaluation.reporting import (
+    build_signal_evaluation_summary,
+    write_signal_evaluation_report,
 )
 
 
@@ -99,6 +98,48 @@ class SignalEvaluationReportsTests(unittest.TestCase):
         self.assertIn("move_probability_calibration", report)
         self.assertIn("regime_fingerprint_performance", report)
         self.assertFalse(report["move_probability_calibration"].empty)
+
+    def test_structured_signal_evaluation_summary_and_artifacts_are_generated(self):
+        frame = self._sample_frame()
+        frame["signal_timestamp"] = [
+            "2026-03-10T09:20:00+05:30",
+            "2026-03-11T09:20:00+05:30",
+        ]
+        frame["correct_60m"] = [1, 0]
+        frame["signed_return_60m_bps"] = [54.0, -23.0]
+        frame["outcome_status"] = ["COMPLETE", "COMPLETE"]
+        summary = build_signal_evaluation_summary(
+            frame,
+            production_pack_name="baseline_v1",
+            dataset_path="research/signal_evaluation/signals_dataset.csv",
+        )
+
+        self.assertEqual(summary["production_pack_name"], "baseline_v1")
+        self.assertEqual(summary["total_signal_count"], 2)
+        self.assertIn("signals_by_symbol", summary)
+        self.assertIn("horizon_performance", summary)
+        self.assertIn("score_statistics", summary)
+        self.assertIn("score_bucket_performance", summary)
+
+        tmp_dir = Path(self.id().replace(".", "_"))
+        try:
+            artifact = write_signal_evaluation_report(
+                frame,
+                production_pack_name="baseline_v1",
+                dataset_path="research/signal_evaluation/signals_dataset.csv",
+                output_dir=tmp_dir,
+                report_name="unit_test_signal_eval",
+            )
+            self.assertTrue(Path(artifact["json_path"]).exists())
+            self.assertTrue(Path(artifact["markdown_path"]).exists())
+            self.assertIn("signals_by_symbol", artifact["csv_paths"])
+        finally:
+            if tmp_dir.exists():
+                for child in sorted(tmp_dir.rglob("*"), reverse=True):
+                    if child.is_file():
+                        child.unlink()
+                    elif child.is_dir():
+                        child.rmdir()
 
 
 if __name__ == "__main__":

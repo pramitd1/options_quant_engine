@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+import pandas as pd
 
 from data.global_market_snapshot import build_global_market_snapshot
 from risk import build_global_risk_state
@@ -23,6 +19,29 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         self.assertTrue(snapshot["neutral_fallback"])
         self.assertIn("global_market_data_disabled", snapshot["warnings"])
         self.assertEqual(snapshot["market_inputs"], {})
+
+    def test_build_global_market_snapshot_batches_downloads(self):
+        download_calls = []
+
+        def fake_download(tickers, **kwargs):
+            download_calls.append(tickers)
+            index = pd.to_datetime(["2026-03-13", "2026-03-14"], utc=True)
+            tickers_list = tickers if isinstance(tickers, list) else [tickers]
+            payload = {
+                (ticker, "Close"): [100.0 + idx, 101.0 + idx]
+                for idx, ticker in enumerate(tickers_list)
+            }
+            frame = pd.DataFrame(payload, index=index)
+            frame.index.name = "Date"
+            frame.columns = pd.MultiIndex.from_tuples(frame.columns)
+            return frame
+
+        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download):
+            snapshot = build_global_market_snapshot("NIFTY", as_of="2026-03-14T10:00:00+05:30")
+
+        self.assertEqual(len(download_calls), 1)
+        self.assertTrue(snapshot["market_inputs"]["oil_change_24h"] is not None)
+        self.assertTrue(snapshot["market_inputs"]["sp500_change_24h"] is not None)
 
     def test_build_global_risk_features_computes_cross_asset_scores(self):
         features = build_global_risk_features(

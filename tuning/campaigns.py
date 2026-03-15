@@ -9,11 +9,11 @@ The campaign runner is intentionally conservative:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from research.signal_evaluation.dataset import SIGNAL_DATASET_PATH
+from tuning.artifacts import append_jsonl_record
 from tuning.experiments import TUNING_RESEARCH_DIR
 from tuning.models import TuningGroupPlan
 from tuning.registry import get_parameter_registry
@@ -39,6 +39,9 @@ DEFAULT_GROUP_MAX_TRIALS = {
     "event_windows": 16,
     "keyword_category": 20,
     "evaluation_thresholds": 18,
+    "signal_engine": 20,
+    "analytics": 18,
+    "headline_rules": 22,
 }
 
 
@@ -85,18 +88,13 @@ def _score_result(result: dict[str, Any]) -> float:
     out_of_sample_score = float(validation.get("aggregate_out_of_sample_score", result.get("objective_score", 0.0)))
     robustness_score = float(robustness.get("robustness_score", 0.0))
     comparison = dict(result.get("comparison_summary", {}))
-    aggregate_delta = dict(comparison.get("aggregate_delta", {}))
+    aggregate_delta = dict(comparison.get("aggregate_comparison", {}).get("metric_deltas", {}))
     direction_delta = float(aggregate_delta.get("direction_hit_rate", 0.0))
     return round(out_of_sample_score + (0.15 * robustness_score) + (0.10 * direction_delta), 6)
 
 
 def _append_campaign_result(payload: dict[str, Any], path: str | Path = TUNING_CAMPAIGN_LEDGER_PATH) -> Path:
-    ledger_path = Path(path)
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True))
-        handle.write("\n")
-    return ledger_path
+    return append_jsonl_record(payload, path)
 
 
 def run_group_tuning_campaign(
@@ -136,6 +134,7 @@ def run_group_tuning_campaign(
             objective_weights=objective_weights,
             walk_forward_config=walk_forward_config,
             base_overrides=incumbent_overrides,
+            comparison_baseline_pack=comparison_baseline_pack,
             persist=persist,
         )
         lhs_best = max(lhs_results, key=_score_result) if lhs_results else None
@@ -154,6 +153,7 @@ def run_group_tuning_campaign(
             selection_thresholds=selection_thresholds,
             objective_weights=objective_weights,
             walk_forward_config=walk_forward_config,
+            comparison_baseline_pack=comparison_baseline_pack,
             persist=persist,
         )
         combined = list(lhs_results) + list(coord_results)

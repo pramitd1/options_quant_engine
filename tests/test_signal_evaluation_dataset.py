@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 import warnings
 from pathlib import Path
 
 import pandas as pd
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
 from research.signal_evaluation.dataset import ensure_signals_dataset_exists, load_signals_dataset
 from research.signal_evaluation.dataset import write_signals_dataset
@@ -202,6 +197,27 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("volatility_shock_score", frame.columns)
             self.assertIn("volatility_explosion_probability", frame.columns)
             self.assertEqual(len(frame), 0)
+
+    def test_dataset_writes_sqlite_sidecar_for_durable_storage(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset_path = Path(tmp_dir) / "signals_dataset.csv"
+            save_signal_evaluation(self._sample_result(), dataset_path=dataset_path)
+
+            sqlite_path = dataset_path.with_suffix(".sqlite")
+            self.assertTrue(sqlite_path.exists())
+
+            frame = load_signals_dataset(dataset_path)
+            self.assertEqual(len(frame), 1)
+            self.assertEqual(frame.iloc[0]["signal_id"], build_signal_evaluation_row(self._sample_result())["signal_id"])
+
+    def test_save_signal_evaluation_uses_signal_timestamp_as_default_capture_time(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset_path = Path(tmp_dir) / "signals_dataset.csv"
+            save_signal_evaluation(self._sample_result(), dataset_path=dataset_path)
+
+            frame = load_signals_dataset(dataset_path)
+            self.assertEqual(frame.iloc[0]["created_at"], "2026-03-14T10:00:00+05:30")
+            self.assertEqual(frame.iloc[0]["updated_at"], "2026-03-14T10:00:00+05:30")
 
     def test_sparse_frame_normalization_does_not_emit_fragmentation_warning(self):
         sparse_frame = pd.DataFrame(

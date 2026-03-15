@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from tuning.artifacts import append_jsonl_record
 from tuning.models import ManualApprovalRecord, PackStateAssignment, PromotionDecision, PromotionLedgerEvent
 
 
@@ -112,12 +113,7 @@ def write_promotion_state(state: dict, path: str | Path = PROMOTION_STATE_PATH) 
 
 def append_promotion_event(event: PromotionLedgerEvent | dict[str, Any], path: str | Path = PROMOTION_LEDGER_PATH) -> Path:
     event_payload = event.to_dict() if hasattr(event, "to_dict") else dict(event or {})
-    ledger_path = Path(path)
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    with ledger_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event_payload, sort_keys=True))
-        handle.write("\n")
-    return ledger_path
+    return append_jsonl_record(event_payload, path)
 
 
 def _state_key(state_name: str) -> str:
@@ -243,6 +239,15 @@ def record_manual_approval(
         path=ledger_path,
     )
     return state
+
+
+def get_manual_approval_record(
+    pack_name: str,
+    *,
+    path: str | Path = PROMOTION_STATE_PATH,
+) -> dict[str, Any]:
+    state = load_promotion_state(path)
+    return dict((state.get("manual_approvals") or {}).get(pack_name, {}))
 
 
 def evaluate_promotion(
@@ -376,15 +381,33 @@ def evaluate_promotion(
 def promote_candidate(
     candidate_pack_name: str,
     *,
-    baseline_pack_name: str = "baseline_v1",
+    baseline_pack_name: str | None = None,
     approved_by: str | None = None,
     reason: str = "candidate_promoted_to_live",
     source_experiment_id: str | None = None,
     source_validation_experiment_id: str | None = None,
+    require_manual_approval: bool = True,
+    expected_improvement_summary: dict[str, Any] | None = None,
     path: str | Path = PROMOTION_STATE_PATH,
     ledger_path: str | Path = PROMOTION_LEDGER_PATH,
 ) -> Path:
+    if not approved_by:
+        raise ValueError("Promotion requires an explicit approver via approved_by")
+
     state = load_promotion_state(path)
+    baseline_pack_name = baseline_pack_name or str(state.get("live") or "baseline_v1")
+    if state.get("candidate") != candidate_pack_name:
+        raise ValueError(
+            f"Candidate promotion requires the active candidate pack. "
+            f"Current state candidate={state.get('candidate')}, requested={candidate_pack_name}"
+        )
+
+    approval_record = dict((state.get("manual_approvals") or {}).get(candidate_pack_name, {}))
+    if require_manual_approval and not approval_record.get("approved", False):
+        raise PermissionError(
+            f"Candidate pack '{candidate_pack_name}' does not have recorded manual approval"
+        )
+
     previous_live = state.get("live")
     state = update_pack_state(
         state_name="baseline",
@@ -401,7 +424,10 @@ def promote_candidate(
         assigned_by=approved_by,
         source_experiment_id=source_experiment_id,
         source_validation_experiment_id=source_validation_experiment_id,
-        metadata={"previous_live_pack": previous_live},
+        metadata={
+            "previous_live_pack": previous_live,
+            "expected_improvement_summary": dict(expected_improvement_summary or {}),
+        },
         path=path,
         ledger_path=ledger_path,
     )
@@ -414,6 +440,28 @@ def promote_candidate(
             path=path,
             ledger_path=ledger_path,
         )
+    append_promotion_event(
+        PromotionLedgerEvent(
+            timestamp=_utc_now_iso(),
+            event_type="candidate_promoted_to_live",
+            parameter_pack_name=candidate_pack_name,
+            previous_state="candidate",
+            new_state="live",
+            reason=reason,
+            experiment_references={
+                "source_experiment_id": source_experiment_id,
+                "source_validation_experiment_id": source_validation_experiment_id,
+            },
+            human_approval=approval_record,
+            metadata={
+                "approved_by": approved_by,
+                "previous_live_pack": previous_live,
+                "baseline_pack_name": baseline_pack_name,
+                "expected_improvement_summary": dict(expected_improvement_summary or {}),
+            },
+        ),
+        path=ledger_path,
+    )
     return write_promotion_state(state, path)
 
 

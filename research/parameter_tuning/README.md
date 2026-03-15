@@ -2,6 +2,11 @@
 
 This directory stores auditable outputs from the parameter registry and tuning framework.
 
+It is an artifact store, not the implementation package:
+
+- `tuning/` contains the tuning, validation, reporting, governance, and promotion code
+- `research/parameter_tuning/` contains the ledgers, reports, state files, and research-generated candidate packs produced by that code
+
 Expected artifacts:
 
 - `experiment_ledger.jsonl`: append-only experiment results
@@ -27,14 +32,14 @@ Promotion state supports explicit pack roles:
 
 The code for these workflows lives in:
 
-- [experiments.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/experiments.py)
-- [campaigns.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/campaigns.py)
-- [promotion.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/promotion.py)
-- [reporting.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/reporting.py)
-- [walk_forward.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/walk_forward.py)
-- [regimes.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/regimes.py)
-- [validation.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/validation.py)
-- [shadow.py](/Users/pramitdutta/Desktop/options_quant_engine/tuning/shadow.py)
+- [experiments.py](../../tuning/experiments.py)
+- [campaigns.py](../../tuning/campaigns.py)
+- [promotion.py](../../tuning/promotion.py)
+- [reporting.py](../../tuning/reporting.py)
+- [walk_forward.py](../../tuning/walk_forward.py)
+- [regimes.py](../../tuning/regimes.py)
+- [validation.py](../../tuning/validation.py)
+- [shadow.py](../../tuning/shadow.py)
 
 Search methods now include:
 

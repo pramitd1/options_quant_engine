@@ -5,38 +5,60 @@ Runtime access to active parameter packs and overrides.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, is_dataclass
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, is_dataclass
 import os
 from typing import Any
 
-from tuning.packs import PARAMETER_PACKS_DIR, resolve_parameter_pack
+from tuning.packs import resolve_parameter_pack
 from tuning.registry import get_parameter_registry
 
 
 DEFAULT_PARAMETER_PACK = "baseline_v1"
 
-_ACTIVE_PACK_NAME = os.getenv("OQE_PARAMETER_PACK", DEFAULT_PARAMETER_PACK)
-_ACTIVE_PACK_OVERRIDES: dict[str, Any] | None = None
+
+@dataclass(frozen=True)
+class ParameterRuntimeContext:
+    name: str
+    overrides: dict[str, Any]
+
+
+_DEFAULT_PACK_NAME = os.getenv("OQE_PARAMETER_PACK", DEFAULT_PARAMETER_PACK)
+_ACTIVE_CONTEXT: ContextVar[ParameterRuntimeContext | None] = ContextVar(
+    "oqe_active_parameter_context",
+    default=None,
+)
+
+
+def _build_runtime_context(
+    name: str = DEFAULT_PARAMETER_PACK,
+    *,
+    overrides: dict[str, Any] | None = None,
+) -> ParameterRuntimeContext:
+    pack_name = str(name or DEFAULT_PARAMETER_PACK).strip() or DEFAULT_PARAMETER_PACK
+    try:
+        base_overrides = dict(resolve_parameter_pack(pack_name).overrides)
+    except Exception:
+        if pack_name != DEFAULT_PARAMETER_PACK:
+            pack_name = DEFAULT_PARAMETER_PACK
+            try:
+                base_overrides = dict(resolve_parameter_pack(pack_name).overrides)
+            except Exception:
+                base_overrides = {}
+        else:
+            base_overrides = {}
+
+    if overrides:
+        base_overrides.update(dict(overrides))
+    return ParameterRuntimeContext(name=pack_name, overrides=base_overrides)
 
 
 def _resolve_active_overrides() -> tuple[str, dict[str, Any]]:
-    global _ACTIVE_PACK_NAME, _ACTIVE_PACK_OVERRIDES
-
-    if _ACTIVE_PACK_OVERRIDES is not None:
-        return _ACTIVE_PACK_NAME, dict(_ACTIVE_PACK_OVERRIDES)
-
-    try:
-        pack = resolve_parameter_pack(_ACTIVE_PACK_NAME, packs_dir=PARAMETER_PACKS_DIR)
-        _ACTIVE_PACK_OVERRIDES = dict(pack.overrides)
-    except Exception:
-        _ACTIVE_PACK_NAME = DEFAULT_PARAMETER_PACK
-        try:
-            pack = resolve_parameter_pack(DEFAULT_PARAMETER_PACK, packs_dir=PARAMETER_PACKS_DIR)
-            _ACTIVE_PACK_OVERRIDES = dict(pack.overrides)
-        except Exception:
-            _ACTIVE_PACK_OVERRIDES = {}
-
-    return _ACTIVE_PACK_NAME, dict(_ACTIVE_PACK_OVERRIDES)
+    context = _ACTIVE_CONTEXT.get()
+    if context is None:
+        context = _build_runtime_context(_DEFAULT_PACK_NAME)
+        _ACTIVE_CONTEXT.set(context)
+    return context.name, dict(context.overrides)
 
 
 def get_active_parameter_pack() -> dict[str, Any]:
@@ -48,27 +70,17 @@ def get_active_parameter_pack() -> dict[str, Any]:
 
 
 def set_active_parameter_pack(name: str = DEFAULT_PARAMETER_PACK, *, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    global _ACTIVE_PACK_NAME, _ACTIVE_PACK_OVERRIDES
-    _ACTIVE_PACK_NAME = str(name or DEFAULT_PARAMETER_PACK).strip() or DEFAULT_PARAMETER_PACK
-    base_overrides = resolve_parameter_pack(_ACTIVE_PACK_NAME, packs_dir=PARAMETER_PACKS_DIR).overrides
-    merged = dict(base_overrides)
-    if overrides:
-        merged.update(overrides)
-    _ACTIVE_PACK_OVERRIDES = merged
+    _ACTIVE_CONTEXT.set(_build_runtime_context(name, overrides=overrides))
     return get_active_parameter_pack()
 
 
 @contextmanager
 def temporary_parameter_pack(name: str = DEFAULT_PARAMETER_PACK, *, overrides: dict[str, Any] | None = None):
-    global _ACTIVE_PACK_NAME, _ACTIVE_PACK_OVERRIDES
-    prior_name = _ACTIVE_PACK_NAME
-    prior_overrides = None if _ACTIVE_PACK_OVERRIDES is None else dict(_ACTIVE_PACK_OVERRIDES)
-    set_active_parameter_pack(name, overrides=overrides)
+    token = _ACTIVE_CONTEXT.set(_build_runtime_context(name, overrides=overrides))
     try:
         yield get_active_parameter_pack()
     finally:
-        _ACTIVE_PACK_NAME = prior_name
-        _ACTIVE_PACK_OVERRIDES = prior_overrides
+        _ACTIVE_CONTEXT.reset(token)
 
 
 def get_parameter_value(key: str, default: Any | None = None) -> Any:

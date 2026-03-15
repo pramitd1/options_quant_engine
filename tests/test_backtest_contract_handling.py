@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
 
 from backtest.intraday_backtester import run_intraday_backtest
 from backtest.pnl_engine import calculate_trade_pnl
