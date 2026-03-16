@@ -1,5 +1,17 @@
 """
-Backward-compatible facade for the expected move / option efficiency overlay.
+Module: option_efficiency_layer.py
+
+Purpose:
+    Assemble the option efficiency overlay decision from features and policy rules.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -10,10 +22,45 @@ from risk.option_efficiency_models import OptionEfficiencyState
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `option efficiency layer` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `option efficiency layer` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -23,6 +70,22 @@ def _safe_float(value, default=0.0):
 
 
 def _score_target_reachability(features):
+    """
+    Purpose:
+        Process score target reachability for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        features (Any): Input associated with features.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     ratio = features.get("expected_move_coverage_ratio")
     if ratio is None:
@@ -40,6 +103,22 @@ def _score_target_reachability(features):
 
 
 def _score_premium_efficiency(features):
+    """
+    Purpose:
+        Process score premium efficiency for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        features (Any): Input associated with features.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     ratio = features.get("premium_coverage_ratio")
     if ratio is None:
@@ -57,6 +136,22 @@ def _score_premium_efficiency(features):
 
 
 def _score_strike_efficiency(features):
+    """
+    Purpose:
+        Process score strike efficiency for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        features (Any): Input associated with features.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     ratio = features.get("strike_distance_ratio")
     bucket = str(features.get("strike_moneyness_bucket", "UNKNOWN")).upper().strip()
@@ -91,6 +186,25 @@ def _score_strike_efficiency(features):
 
 
 def _adjustment_score(option_efficiency_score, premium_efficiency_score, strike_efficiency_score, target_reachability_score):
+    """
+    Purpose:
+        Compute the adjustment score used by the surrounding model.
+
+    Context:
+        Function inside the `option efficiency layer` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        option_efficiency_score (Any): Normalized score for option efficiency.
+        premium_efficiency_score (Any): Normalized score for premium efficiency.
+        strike_efficiency_score (Any): Normalized score for strike efficiency.
+        target_reachability_score (Any): Normalized score for target reachability.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     cfg = get_option_efficiency_policy_config()
 
     if option_efficiency_score <= cfg.poor_efficiency_threshold:
@@ -113,6 +227,26 @@ def _overnight_evaluation(
     premium_efficiency_score,
     strike_efficiency_score,
 ):
+    """
+    Purpose:
+        Process overnight evaluation for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        features (Any): Input associated with features.
+        option_efficiency_score (Any): Score value for option efficiency.
+        target_reachability_score (Any): Score value for target reachability.
+        premium_efficiency_score (Any): Score value for premium efficiency.
+        strike_efficiency_score (Any): Score value for strike efficiency.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     holding_context = features.get("holding_context", {})
     overnight_relevant = bool((holding_context or {}).get("overnight_relevant", False))
@@ -153,6 +287,22 @@ def _overnight_evaluation(
 
 
 def classify_option_efficiency_state(features: dict | None) -> OptionEfficiencyState:
+    """
+    Purpose:
+        Classify option efficiency state into the appropriate regime or label.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        features (dict | None): Input associated with features.
+    
+    Returns:
+        OptionEfficiencyState: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     features = features if isinstance(features, dict) else {}
 
@@ -236,6 +386,22 @@ def classify_option_efficiency_state(features: dict | None) -> OptionEfficiencyS
 
 
 def build_option_efficiency_state(**kwargs):
+    """
+    Purpose:
+        Build the option efficiency state used by downstream trading logic.
+
+    Context:
+        Function inside the `option efficiency layer` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        **kwargs (Any): Additional keyword inputs forwarded by the caller.
+
+    Returns:
+        dict: State payload produced for downstream consumption.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     features = build_option_efficiency_features(**kwargs)
     return classify_option_efficiency_state(features).to_dict()
 
@@ -261,6 +427,39 @@ def score_option_efficiency_candidate(
     support_wall=None,
     resistance_wall=None,
 ):
+    """
+    Purpose:
+        Process score option efficiency candidate for downstream use.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        row (Any): Input associated with row.
+        spot (Any): Input associated with spot.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        atm_iv (Any): Input associated with ATM IV.
+        selected_expiry (Any): Expiry associated with the contract referenced by the signal.
+        valuation_time (Any): Input associated with valuation time.
+        hybrid_move_probability (Any): Input associated with hybrid move probability.
+        gamma_regime (Any): Input associated with gamma regime.
+        volatility_regime (Any): Input associated with volatility regime.
+        volatility_shock_score (Any): Score value for volatility shock.
+        volatility_compression_score (Any): Score value for volatility compression.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        global_risk_state (Any): Structured state payload for global risk.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+        dealer_hedging_pressure_score (Any): Score value for dealer hedging pressure.
+        liquidity_vacuum_state (Any): Structured state payload for liquidity vacuum.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     row = row if hasattr(row, "get") else {}
     state = build_option_efficiency_state(
         spot=spot,

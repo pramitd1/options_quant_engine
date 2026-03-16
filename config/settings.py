@@ -1,5 +1,17 @@
 """
-Global configuration settings for the Options Quant Engine
+Module: settings.py
+
+Purpose:
+    Define repository-wide runtime defaults such as symbols, capital settings, and provider options.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 import os
@@ -12,6 +24,22 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 def _csv_env_list(name: str) -> list[str]:
+    """
+    Purpose:
+        Process csv env list for downstream use.
+    
+    Context:
+        Internal helper within the configuration layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        name (str): Input associated with name.
+    
+    Returns:
+        list[str]: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
     raw = os.getenv(name, "")
     if not raw:
         return []
@@ -19,10 +47,42 @@ def _csv_env_list(name: str) -> list[str]:
 
 
 def _env_or_placeholder(name: str) -> str:
+    """
+    Purpose:
+        Process env or placeholder for downstream use.
+    
+    Context:
+        Internal helper within the configuration layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        name (str): Input associated with name.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
     return os.getenv(name, f"YOUR_{name}")
 
 
 def get_zerodha_runtime_config() -> dict:
+    """
+    Purpose:
+        Return the Zerodha runtime configuration bundle used by data ingestion.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        dict: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
     return {
         "api_key": _env_or_placeholder("ZERODHA_API_KEY"),
         "api_secret": _env_or_placeholder("ZERODHA_API_SECRET"),
@@ -31,6 +91,22 @@ def get_zerodha_runtime_config() -> dict:
 
 
 def get_icici_runtime_config() -> dict:
+    """
+    Purpose:
+        Return the ICICI runtime configuration bundle used by data ingestion.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        dict: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
     return {
         "api_key": _env_or_placeholder("ICICI_BREEZE_API_KEY"),
         "secret_key": _env_or_placeholder("ICICI_BREEZE_SECRET_KEY"),

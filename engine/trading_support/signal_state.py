@@ -1,3 +1,18 @@
+"""
+Module: signal_state.py
+
+Purpose:
+    Provide signal state helpers used during market-state, probability, or signal assembly.
+
+Role in the System:
+    Part of the signal engine that turns analytics, probability estimates, and overlays into final trade decisions.
+
+Key Outputs:
+    Trade decisions, intermediate state bundles, and signal diagnostics.
+
+Downstream Usage:
+    Consumed by the live runtime loop, backtests, shadow mode, and signal-evaluation logging.
+"""
 from __future__ import annotations
 
 from config.signal_policy import (
@@ -16,6 +31,25 @@ from .common import _clip, _normalize_validation_dict, _safe_float
 
 
 def _compute_data_quality(*, spot_validation, option_chain_validation, analytics_state, probability_state):
+    """
+    Purpose:
+        Compute data quality from the supplied inputs.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot_validation (Any): Input associated with spot validation.
+        option_chain_validation (Any): Input associated with option chain validation.
+        analytics_state (Any): Structured state payload for analytics.
+        probability_state (Any): Structured state payload for probability.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_data_quality_policy_config()
     spot_validation = _normalize_validation_dict(spot_validation)
     option_chain_validation = _normalize_validation_dict(option_chain_validation)
@@ -58,6 +92,8 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
         "vol_regime": analytics_state.get("vol_regime"),
     }
 
+    # These fields are the minimum structural features the strategy expects to
+    # see before it trusts downstream probability and strength calculations.
     for name, value in critical_analytics.items():
         if value in (None, "", "UNKNOWN"):
             analytics_missing.append(name)
@@ -100,10 +136,45 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
 
 
 def classify_spot_vs_flip(spot, flip):
+    """
+    Purpose:
+        Classify spot vs flip into the appropriate regime or label.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        flip (Any): Input associated with flip.
+    
+    Returns:
+        Any: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     return classify_spot_vs_flip_for_symbol(None, spot, flip)
 
 
 def classify_spot_vs_flip_for_symbol(symbol, spot, flip):
+    """
+    Purpose:
+        Classify spot vs flip for symbol into the appropriate regime or label.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (Any): Underlying symbol or index identifier.
+        spot (Any): Input associated with spot.
+        flip (Any): Input associated with flip.
+    
+    Returns:
+        Any: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if flip is None:
         return "UNKNOWN"
 
@@ -116,6 +187,22 @@ def classify_spot_vs_flip_for_symbol(symbol, spot, flip):
 
 
 def classify_signal_quality(trade_strength):
+    """
+    Purpose:
+        Classify signal quality into the appropriate regime or label.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade_strength (Any): Input associated with trade strength.
+    
+    Returns:
+        Any: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     thresholds = get_trade_runtime_thresholds()
     if trade_strength >= thresholds["strong_signal_threshold"]:
         return "STRONG"
@@ -136,6 +223,28 @@ def classify_signal_regime(
     event_lockdown_flag,
     data_quality_status,
 ):
+    """
+    Purpose:
+        Classify signal regime into the appropriate regime or label.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        adjusted_trade_strength (Any): Input associated with adjusted trade strength.
+        final_flow_signal (Any): Input associated with final flow signal.
+        gamma_regime (Any): Input associated with gamma regime.
+        confirmation_status (Any): Status label for confirmation.
+        event_lockdown_flag (Any): Boolean flag indicating whether scheduled-event rules require a hard lockdown.
+        data_quality_status (Any): Status label for data quality.
+    
+    Returns:
+        Any: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     thresholds = get_trade_runtime_thresholds()
     if event_lockdown_flag:
         return "LOCKDOWN"
@@ -160,6 +269,25 @@ def classify_signal_regime(
 
 
 def classify_execution_regime(*, trade_status, signal_regime, data_quality_score, macro_position_size_multiplier):
+    """
+    Purpose:
+        Classify execution regime into the appropriate regime or label.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade_status (Any): Status label for trade.
+        signal_regime (Any): Input associated with signal regime.
+        data_quality_score (Any): Score value for data quality.
+        macro_position_size_multiplier (Any): Input associated with macro position size multiplier.
+    
+    Returns:
+        Any: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_execution_regime_policy_config()
     if trade_status in {"DATA_INVALID", "EVENT_LOCKDOWN", "NO_TRADE", "BUDGET_FAIL"}:
         return "BLOCKED"
@@ -173,6 +301,23 @@ def classify_execution_regime(*, trade_status, signal_regime, data_quality_score
 
 
 def normalize_flow_signal(flow_signal_value, smart_money_signal_value):
+    """
+    Purpose:
+        Normalize flow signal into the repository-standard form.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        flow_signal_value (Any): Input associated with flow signal value.
+        smart_money_signal_value (Any): Input associated with smart money signal value.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     bullish_votes = 0
     bearish_votes = 0
 
@@ -205,12 +350,57 @@ def decide_direction(
     charm_regime=None,
     backtest_mode=False,
 ):
+    """
+    Purpose:
+        Process decide direction for downstream use.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        final_flow_signal (Any): Input associated with final flow signal.
+        dealer_pos (Any): Input associated with dealer pos.
+        vol_regime (Any): Input associated with vol regime.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        gamma_regime (Any): Input associated with gamma regime.
+        hedging_bias (Any): Input associated with hedging bias.
+        gamma_event (Any): Input associated with gamma event.
+        vanna_regime (Any): Input associated with vanna regime.
+        charm_regime (Any): Input associated with charm regime.
+        backtest_mode (Any): Input associated with backtest mode.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     direction_weights = get_direction_vote_weights()
     direction_thresholds = get_direction_thresholds()
     bullish_votes = []
     bearish_votes = []
 
     def add_vote(side, reason):
+        """
+        Purpose:
+            Append one directional vote to the running bullish or bearish vote ledger.
+
+        Context:
+            Internal helper inside direction assembly. Each market mechanism
+            contributes a named vote so the final signal remains explainable in
+            live diagnostics, replay output, and research captures.
+
+        Inputs:
+            side (Any): Direction bucket that should receive the vote, typically `BULLISH` or `BEARISH`.
+            reason (Any): Named evidence source that explains why the vote was added.
+
+        Returns:
+            None: The helper mutates the surrounding vote collections in place.
+
+        Notes:
+            Vote weights come from policy configuration so the engine can rebalance
+            how much each heuristic contributes without rewriting this assembly logic.
+        """
         weight = float(direction_weights.get(reason, 1.0))
         entry = (reason, round(weight, 2))
         if side == "BULLISH":
@@ -218,6 +408,8 @@ def decide_direction(
         elif side == "BEARISH":
             bearish_votes.append(entry)
 
+    # Votes are intentionally additive so operators can inspect which market
+    # mechanisms aligned behind the final direction.
     if final_flow_signal == "BULLISH_FLOW":
         add_vote("BULLISH", "FLOW")
     elif final_flow_signal == "BEARISH_FLOW":
@@ -268,6 +460,25 @@ def decide_direction(
     score_margin = round(abs(bullish_score - bearish_score), 2)
 
     def build_source(votes):
+        """
+        Purpose:
+            Collapse the recorded vote reasons into one human-readable source string.
+
+        Context:
+            Internal helper used after voting is complete. It preserves the
+            evidence trail behind the chosen direction so downstream consumers
+            can see which heuristics aligned.
+
+        Inputs:
+            votes (Any): Collection of directional votes accumulated during signal assembly.
+
+        Returns:
+            str: `+`-delimited list of vote reasons in insertion order.
+
+        Notes:
+            Keeping the explanation string deterministic makes signal-review logs
+            easier to diff across live, replay, and shadow-mode runs.
+        """
         return "+".join(reason for reason, _ in votes)
 
     if (
@@ -298,6 +509,29 @@ def _compute_signal_state(
     market_state,
     probability_state,
 ):
+    """
+    Purpose:
+        Compute signal state from the supplied inputs.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        symbol (Any): Underlying symbol or index identifier.
+        day_open (Any): Input associated with day open.
+        prev_close (Any): Input associated with prev close.
+        intraday_range_pct (Any): Input associated with intraday range percentage.
+        backtest_mode (Any): Input associated with backtest mode.
+        market_state (Any): Structured state payload for market.
+        probability_state (Any): Structured state payload for probability.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     direction, direction_source = decide_direction(
         final_flow_signal=market_state["final_flow_signal"],
         dealer_pos=market_state["dealer_pos"],
@@ -320,6 +554,8 @@ def _compute_signal_state(
             "confirmation": empty_confirmation_state(),
         }
 
+    # Trade strength measures how much structural alignment exists behind the
+    # chosen direction before overlays are allowed to resize or veto it.
     trade_strength, scoring_breakdown = compute_trade_strength(
         direction=direction,
         flow_signal_value=market_state["flow_signal_value"],

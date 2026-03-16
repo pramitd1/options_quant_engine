@@ -1,24 +1,39 @@
 """
-Dealer Liquidity Map Predictor
+Module: dealer_liquidity_map.py
 
-Builds a simple structure map from:
-- liquidity levels
-- gamma walls
-- gamma flip
-- spot
+Purpose:
+    Compute dealer liquidity map analytics used by downstream signal and risk layers.
 
-Outputs a trader-friendly summary:
-- next support
-- next resistance
-- nearest dealer flip
-- nearest squeeze zone proxy
-- liquidity vacuum bands
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import pandas as pd
 
 
 def _to_sorted_levels(levels):
+    """
+    Purpose:
+        Convert sorted levels into the representation expected downstream.
+    
+    Context:
+        Internal helper within the analytics layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        levels (Any): Input associated with levels.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if levels is None:
         return []
 

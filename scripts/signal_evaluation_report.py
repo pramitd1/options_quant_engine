@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate a structured current signal evaluation report for human review.
+Module: signal_evaluation_report.py
+
+Purpose:
+    Implement the signal evaluation report script used for repeatable operational or research tasks.
+
+Role in the System:
+    Part of the operational scripting layer that supports repeatable maintenance and research tasks.
+
+Key Outputs:
+    CLI side effects, maintenance artifacts, and repeatable batch jobs.
+
+Downstream Usage:
+    Consumed by operators and by repeatable development or research workflows.
 """
 
 from __future__ import annotations
@@ -24,6 +36,22 @@ from tuning.promotion import get_active_live_pack
 
 
 def parse_args():
+    """
+    Purpose:
+        Parse command-line arguments for the current entry point.
+
+    Context:
+        Function inside the `signal evaluation report` module. The module sits in the operations layer that exposes reporting, maintenance, and governance entry points.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Parsed argument namespace.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     parser = argparse.ArgumentParser(
         description="Build a structured signal evaluation report for the canonical signal dataset."
     )
@@ -57,6 +85,22 @@ def parse_args():
 
 
 def main():
+    """
+    Purpose:
+        Run the module entry point for command-line or operational execution.
+
+    Context:
+        Function inside the `signal evaluation report` module. The module sits in the operations layer that exposes reporting, maintenance, and governance entry points.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Exit status or workflow result returned by the implementation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     args = parse_args()
     frame = load_signals_dataset(args.dataset_path)
     production_pack_name = args.production_pack_name or get_active_live_pack()

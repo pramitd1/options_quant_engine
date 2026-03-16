@@ -1,3 +1,18 @@
+"""
+Module: zerodha_option_chain.py
+
+Purpose:
+    Implement zerodha option chain data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
+"""
 from kiteconnect import KiteConnect
 import pandas as pd
 
@@ -11,6 +26,22 @@ class ZerodhaOptionChain:
     """
 
     def __init__(self):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `ZerodhaOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         creds = get_zerodha_runtime_config()
 
         api_key = creds["api_key"]
@@ -29,6 +60,22 @@ class ZerodhaOptionChain:
         self.instruments_df = None
 
     def load_instruments(self):
+        """
+        Purpose:
+            Process load instruments for downstream use.
+        
+        Context:
+            Method on `ZerodhaOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if self.instruments_df is None:
             instruments = self.kite.instruments("NFO")
             self.instruments_df = pd.DataFrame(instruments)
@@ -36,10 +83,43 @@ class ZerodhaOptionChain:
         return self.instruments_df
 
     def chunk_list(self, data, size=QUOTE_BATCH_SIZE):
+        """
+        Purpose:
+            Process chunk list for downstream use.
+        
+        Context:
+            Method on `ZerodhaOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            data (Any): Input associated with data.
+            size (Any): Input associated with size.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         for i in range(0, len(data), size):
             yield data[i:i + size]
 
     def build_option_chain(self, symbol="NIFTY"):
+        """
+        Purpose:
+            Build the option chain used by downstream components.
+        
+        Context:
+            Method on `ZerodhaOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (Any): Underlying symbol or index identifier.
+        
+        Returns:
+            Any: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         instruments = self.load_instruments()
 
         options = instruments[

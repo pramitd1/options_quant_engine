@@ -1,3 +1,18 @@
+"""
+Module: __init__.py
+
+Purpose:
+    Provide init helpers used during market-state, probability, or signal assembly.
+
+Role in the System:
+    Part of the signal engine that turns analytics, probability estimates, and overlays into final trade decisions.
+
+Key Outputs:
+    Trade decisions, intermediate state bundles, and signal diagnostics.
+
+Downstream Usage:
+    Consumed by the live runtime loop, backtests, shadow mode, and signal-evaluation logging.
+"""
 from .common import (
     _call_first,
     _clean_zone_list,

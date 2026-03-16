@@ -1,5 +1,17 @@
 """
-Research reporting layer for signal evaluation analysis.
+Module: reports.py
+
+Purpose:
+    Implement reports utilities for signal evaluation, reporting, or research diagnostics.
+
+Role in the System:
+    Part of the research layer that records signal-evaluation datasets and diagnostic reports.
+
+Key Outputs:
+    Signal-evaluation datasets, reports, and comparison artifacts.
+
+Downstream Usage:
+    Consumed by tuning, governance reviews, and post-trade analysis.
 """
 
 from __future__ import annotations
@@ -16,10 +28,42 @@ RETURN_HORIZON_FIELDS = [
 
 
 def _safe_numeric(series: pd.Series) -> pd.Series:
+    """
+    Purpose:
+        Safely normalize numeric while preserving fallback behavior.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        series (pd.Series): Input associated with series.
+    
+    Returns:
+        pd.Series: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return pd.to_numeric(series, errors="coerce")
 
 
 def _signal_hit_flag(frame: pd.DataFrame) -> pd.Series:
+    """
+    Purpose:
+        Process signal hit flag for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.Series: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     spot_at_signal = _safe_numeric(df.get("spot_at_signal", pd.Series(index=df.index)))
     spot_next_close = _safe_numeric(df.get("spot_next_close", pd.Series(index=df.index)))
@@ -41,6 +85,23 @@ def _signal_hit_flag(frame: pd.DataFrame) -> pd.Series:
 
 
 def _group_hit_rate(frame: pd.DataFrame, group_field: str) -> pd.DataFrame:
+    """
+    Purpose:
+        Group records by hit rate.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        group_field (str): Input associated with group field.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     if group_field not in df.columns:
         return pd.DataFrame(columns=[group_field, "signal_count", "hit_rate"])
@@ -60,15 +121,63 @@ def _group_hit_rate(frame: pd.DataFrame, group_field: str) -> pd.DataFrame:
 
 
 def hit_rate_by_trade_strength(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process hit rate by trade strength for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     group_field = "signal_calibration_bucket" if "signal_calibration_bucket" in frame.columns else "trade_strength"
     return _group_hit_rate(frame, group_field)
 
 
 def hit_rate_by_macro_regime(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process hit rate by macro regime for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return _group_hit_rate(frame, "macro_regime")
 
 
 def average_score_by_signal_quality(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Compute the average value for score by signal quality.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     required = [
         "signal_quality",
@@ -103,6 +212,22 @@ def average_score_by_signal_quality(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def average_realized_return_by_horizon(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Compute the average value for realized return by horizon.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     available_fields = [field for field in RETURN_HORIZON_FIELDS if field in df.columns]
     if not available_fields:
@@ -123,6 +248,22 @@ def average_realized_return_by_horizon(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def signal_count_by_regime(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process signal count by regime for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     rows = []
     for regime_field in ["signal_regime", "macro_regime", "gamma_regime", "regime_fingerprint_id"]:
@@ -144,6 +285,23 @@ def signal_count_by_regime(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def regime_fingerprint_performance(frame: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
+    """
+    Purpose:
+        Process regime fingerprint performance for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        top_n (int): Input associated with top n.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     required = ["regime_fingerprint_id", "regime_fingerprint", "composite_signal_score"]
     if any(column not in df.columns for column in required):
@@ -167,6 +325,22 @@ def regime_fingerprint_performance(frame: pd.DataFrame, top_n: int = 20) -> pd.D
 
 
 def move_probability_calibration(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process move probability calibration for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     df = frame.copy()
     if "move_probability" not in df.columns:
         return pd.DataFrame(columns=["probability_calibration_bucket", "signal_count", "avg_move_probability", "actual_hit_rate"])
@@ -193,6 +367,22 @@ def move_probability_calibration(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_research_report(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """
+    Purpose:
+        Build the research report used by downstream components.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        dict[str, pd.DataFrame]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return {
         "hit_rate_by_trade_strength": hit_rate_by_trade_strength(frame),
         "hit_rate_by_macro_regime": hit_rate_by_macro_regime(frame),

@@ -1,5 +1,17 @@
 """
-Centralized configuration for the stage-1 global risk layer.
+Module: global_risk_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by global risk.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -9,6 +21,161 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class GlobalRiskPolicyConfig:
+    """
+    Purpose:
+        Dataclass representing GlobalRiskPolicyConfig within the repository.
+    
+    Context:
+        Used within the configuration layer that centralizes policy defaults and thresholds. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        oil_shock_extreme_change_pct (float): Value supplied for oil shock extreme change percentage.
+        oil_shock_medium_change_pct (float): Value supplied for oil shock medium change percentage.
+        oil_shock_relief_change_pct (float): Value supplied for oil shock relief change percentage.
+        oil_shock_extreme_score (float): Score value for oil shock extreme.
+        oil_shock_medium_score (float): Score value for oil shock medium.
+        oil_shock_relief_score (float): Score value for oil shock relief.
+        gold_risk_extreme_change_pct (float): Value supplied for gold risk extreme change percentage.
+        gold_risk_medium_change_pct (float): Value supplied for gold risk medium change percentage.
+        gold_risk_extreme_score (float): Score value for gold risk extreme.
+        gold_risk_medium_score (float): Score value for gold risk medium.
+        copper_growth_severe_drop_pct (float): Value supplied for copper growth severe drop percentage.
+        copper_growth_moderate_drop_pct (float): Value supplied for copper growth moderate drop percentage.
+        copper_growth_severe_score (float): Score value for copper growth severe.
+        copper_growth_moderate_score (float): Score value for copper growth moderate.
+        commodity_risk_oil_weight (float): Weight applied to commodity risk oil.
+        commodity_risk_gold_weight (float): Weight applied to commodity risk gold.
+        commodity_risk_copper_weight (float): Weight applied to commodity risk copper.
+        vix_shock_extreme_change_pct (float): Value supplied for vix shock extreme change percentage.
+        vix_shock_medium_change_pct (float): Value supplied for vix shock medium change percentage.
+        vix_shock_low_change_pct (float): Value supplied for vix shock low change percentage.
+        vix_shock_extreme_score (float): Score value for vix shock extreme.
+        vix_shock_medium_score (float): Score value for vix shock medium.
+        vix_shock_low_score (float): Score value for vix shock low.
+        us_equity_risk_extreme_move_pct (float): Value supplied for us equity risk extreme move percentage.
+        us_equity_risk_moderate_move_pct (float): Value supplied for us equity risk moderate move percentage.
+        us_equity_risk_extreme_score (float): Score value for us equity risk extreme.
+        us_equity_risk_moderate_score (float): Score value for us equity risk moderate.
+        rates_shock_threshold_bp (float): Value supplied for rates shock threshold basis points.
+        rates_shock_score (float): Score value for rates shock.
+        currency_shock_threshold_pct (float): Value supplied for currency shock threshold percentage.
+        currency_shock_score_base (float): Value supplied for currency shock score base.
+        vol_compression_extreme_ratio (float): Ratio used for vol compression extreme.
+        vol_compression_medium_ratio (float): Ratio used for vol compression medium.
+        vol_compression_low_ratio (float): Ratio used for vol compression low.
+        vol_compression_extreme_score (float): Score value for vol compression extreme.
+        vol_compression_medium_score (float): Score value for vol compression medium.
+        vol_compression_low_score (float): Score value for vol compression low.
+        commodity_stress_oil_weight (float): Weight applied to commodity stress oil.
+        commodity_stress_gold_weight (float): Weight applied to commodity stress gold.
+        commodity_stress_copper_weight (float): Weight applied to commodity stress copper.
+        risk_off_intensity_vol_weight (float): Weight applied to risk off intensity vol.
+        risk_off_intensity_us_equity_weight (float): Weight applied to risk off intensity us equity.
+        risk_off_intensity_rates_weight (float): Weight applied to risk off intensity rates.
+        risk_off_intensity_currency_weight (float): Weight applied to risk off intensity currency.
+        risk_off_intensity_commodity_weight (float): Weight applied to risk off intensity commodity.
+        risk_off_intensity_macro_event_weight (float): Weight applied to risk off intensity macro event.
+        risk_off_pressure_vol_weight (float): Weight applied to risk off pressure vol.
+        risk_off_pressure_us_equity_weight (float): Weight applied to risk off pressure us equity.
+        risk_off_pressure_rates_weight (float): Weight applied to risk off pressure rates.
+        risk_off_pressure_currency_weight (float): Weight applied to risk off pressure currency.
+        risk_off_pressure_macro_event_weight (float): Weight applied to risk off pressure macro event.
+        risk_off_pressure_vol_explosion_weight (float): Weight applied to risk off pressure vol explosion.
+        risk_off_pressure_commodity_weight (float): Weight applied to risk off pressure commodity.
+        risk_on_support_commodity_weight (float): Weight applied to risk on support commodity.
+        risk_on_support_global_bias_weight (float): Weight applied to risk on support global bias.
+        risk_on_support_macro_sentiment_weight (float): Weight applied to risk on support macro sentiment.
+        positive_macro_sentiment_full_scale (float): Value supplied for positive macro sentiment full scale.
+        volatility_expansion_market_vol_weight (float): Weight applied to volatility expansion market vol.
+        volatility_expansion_explosion_weight (float): Weight applied to volatility expansion explosion.
+        volatility_expansion_headline_weight (float): Weight applied to volatility expansion headline.
+        global_risk_score_risk_off_pressure_weight (float): Weight applied to global risk score risk off pressure.
+        global_risk_score_macro_event_weight (float): Weight applied to global risk score macro event.
+        global_risk_score_volatility_expansion_weight (float): Weight applied to global risk score volatility expansion.
+        global_risk_score_risk_off_intensity_weight (float): Weight applied to global risk score risk off intensity.
+        global_risk_score_headline_velocity_weight (float): Weight applied to global risk score headline velocity.
+        global_risk_score_global_bias_weight (float): Weight applied to global risk score global bias.
+        global_risk_score_currency_weight (float): Weight applied to global risk score currency.
+        global_risk_score_macro_regime_risk_off_bonus (float): Bonus applied when global risk score macro regime risk off is active.
+        overnight_gap_macro_event_weight (float): Weight applied to overnight gap macro event.
+        overnight_gap_volatility_expansion_weight (float): Weight applied to overnight gap volatility expansion.
+        overnight_gap_currency_weight (float): Weight applied to overnight gap currency.
+        overnight_gap_risk_off_intensity_weight (float): Weight applied to overnight gap risk off intensity.
+        overnight_gap_headline_velocity_weight (float): Weight applied to overnight gap headline velocity.
+        overnight_gap_global_score_excess_weight (float): Weight applied to overnight gap global score excess.
+        overnight_gap_global_score_excess_floor (float): Floor value used for overnight gap global score excess.
+        overnight_gap_overnight_context_bonus (float): Bonus applied when overnight gap overnight context is active.
+        state_vol_shock_probability_threshold (float): Threshold used to classify or trigger state vol shock probability.
+        state_event_lockdown_probability_threshold (float): Threshold used to classify or trigger state event lockdown probability.
+        state_risk_off_regime_score_threshold (float): Threshold used to classify or trigger state risk off regime score.
+        state_risk_on_regime_score_threshold (float): Threshold used to classify or trigger state risk on regime score.
+        caution_threshold (int): Threshold used to classify or trigger caution.
+        risk_off_threshold (int): Threshold used to classify or trigger risk off.
+        extreme_threshold (int): Threshold used to classify or trigger extreme.
+        event_risk_state_threshold (int): Threshold used to classify or trigger event risk state.
+        extreme_veto_threshold (int): Threshold used to classify or trigger extreme veto.
+        overnight_gap_block_threshold (int): Threshold used to classify or trigger overnight gap block.
+        overnight_gap_veto_threshold (int): Threshold used to classify or trigger overnight gap veto.
+        volatility_expansion_high_threshold (float): Threshold used to classify or trigger volatility expansion high.
+        volatility_expansion_medium_threshold (float): Threshold used to classify or trigger volatility expansion medium.
+        global_bias_risk_full_scale (float): Value supplied for global bias risk full scale.
+        news_confidence_floor (float): Floor value used for news confidence.
+        headline_velocity_full_scale (float): Value supplied for headline velocity full scale.
+        risk_adjustment_caution (int): Value supplied for risk adjustment caution.
+        risk_adjustment_risk_off (int): Value supplied for risk adjustment risk off.
+        risk_adjustment_extreme (int): Value supplied for risk adjustment extreme.
+        overnight_vol_explosion_high_threshold (float): Threshold used to classify or trigger overnight vol explosion high.
+        overnight_vol_explosion_watch_threshold (float): Threshold used to classify or trigger overnight vol explosion watch.
+        overnight_vol_explosion_high_penalty (int): Penalty applied when overnight vol explosion high is active.
+        overnight_vol_explosion_watch_penalty (int): Penalty applied when overnight vol explosion watch is active.
+        overnight_macro_event_high_threshold (float): Threshold used to classify or trigger overnight macro event high.
+        overnight_macro_event_watch_threshold (float): Threshold used to classify or trigger overnight macro event watch.
+        overnight_macro_event_high_penalty (int): Penalty applied when overnight macro event high is active.
+        overnight_macro_event_watch_penalty (int): Penalty applied when overnight macro event watch is active.
+        overnight_oil_shock_threshold (float): Threshold used to classify or trigger overnight oil shock.
+        overnight_oil_shock_penalty (int): Penalty applied when overnight oil shock is active.
+        overnight_us_equity_high_threshold (float): Threshold used to classify or trigger overnight us equity high.
+        overnight_us_equity_watch_threshold (float): Threshold used to classify or trigger overnight us equity watch.
+        overnight_us_equity_high_penalty (int): Penalty applied when overnight us equity high is active.
+        overnight_us_equity_watch_penalty (int): Penalty applied when overnight us equity watch is active.
+        overnight_risk_off_regime_penalty (int): Penalty applied when overnight risk off regime is active.
+        volatility_explosion_penalty_threshold (float): Threshold used to classify or trigger volatility explosion penalty.
+        volatility_explosion_penalty_score (int): Score value for volatility explosion penalty.
+        oil_shock_penalty_threshold (float): Threshold used to classify or trigger oil shock penalty.
+        oil_shock_penalty_score (int): Score value for oil shock penalty.
+        size_cap_caution (float): Value supplied for size cap caution.
+        size_cap_risk_off (float): Value supplied for size cap risk off.
+        size_cap_extreme (float): Value supplied for size cap extreme.
+        near_close_overnight_minutes (int): Number of minutes used for near close overnight.
+        market_open_hour (int): Hour component used for market open.
+        market_open_minute (int): Minute component used for market open.
+        market_close_hour (int): Hour component used for market close.
+        market_close_minute (int): Minute component used for market close.
+        layer_data_quality_weight (float): Weight applied to layer data quality.
+        layer_macro_event_weight (float): Weight applied to layer macro event.
+        layer_global_risk_weight (float): Weight applied to layer global risk.
+        layer_size_cap_penalty_scale (float): Value supplied for layer size cap penalty scale.
+        layer_veto_block_score_floor (int): Floor value used for layer veto block score.
+        layer_overnight_watch_score_floor (int): Floor value used for layer overnight watch score.
+        layer_confirmation_watch_score_floor (int): Floor value used for layer confirmation watch score.
+        layer_low_strength_watch_score_floor (int): Floor value used for layer low strength watch score.
+        layer_weak_data_quality_score_threshold (float): Threshold used to classify or trigger layer weak data quality score.
+        layer_weak_data_quality_watch_score_floor (int): Floor value used for layer weak data quality watch score.
+        layer_caution_strength_buffer (int): Buffer applied around layer caution strength.
+        layer_caution_watch_score_floor (int): Floor value used for layer caution watch score.
+        layer_confirmation_conflict_strength_buffer (int): Buffer applied around layer confirmation conflict strength.
+        layer_confirmation_conflict_watch_score_floor (int): Floor value used for layer confirmation conflict watch score.
+        layer_size_reduction_strength_buffer (int): Buffer applied around layer size reduction strength.
+        layer_size_reduction_watch_score_floor (int): Floor value used for layer size reduction watch score.
+        layer_medium_level_threshold (int): Threshold used to classify or trigger layer medium level.
+        layer_high_level_threshold (int): Threshold used to classify or trigger layer high level.
+        layer_caution_watch_size_cap (float): Cap applied to layer caution watch size.
+        layer_weak_data_quality_size_cap (float): Cap applied to layer weak data quality size.
+        layer_overnight_watch_size_cap (float): Cap applied to layer overnight watch size.
+    
+    Notes:
+        Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
+    """
     oil_shock_extreme_change_pct: float = 7.0
     oil_shock_medium_change_pct: float = 4.0
     oil_shock_relief_change_pct: float = -5.0
@@ -158,6 +325,22 @@ GLOBAL_RISK_POLICY_CONFIG = GlobalRiskPolicyConfig()
 
 
 def get_global_risk_policy_config() -> GlobalRiskPolicyConfig:
-    from tuning.runtime import resolve_dataclass_config
+    """
+    Purpose:
+        Return the global-risk policy bundle used by the overlay layer.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        GlobalRiskPolicyConfig: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("global_risk.core", GlobalRiskPolicyConfig())

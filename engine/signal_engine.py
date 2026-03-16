@@ -1,8 +1,17 @@
 """
-Signal assembly module.
+Module: signal_engine.py
 
-This is the canonical layer where analytics features, strategy logic, macro
-adjustments, and risk overlays are combined into a final trade decision.
+Purpose:
+    Assemble the final trade decision from normalized market data, analytics features, macro context, and risk controls.
+
+Role in the System:
+    Part of the signal engine layer that assembles analytics, strategy logic, and overlays into trade decisions.
+
+Key Outputs:
+    A fully explained trade or no-trade payload, including diagnostics, overlay scores, strike selection, and sizing fields.
+
+Downstream Usage:
+    Consumed by the live runtime loop, replay tooling, shadow-mode comparisons, and signal-evaluation logging.
 """
 
 from __future__ import annotations
@@ -17,6 +26,7 @@ from config.settings import (
 )
 from config.event_window_policy import get_event_window_policy_config
 from config.signal_policy import get_trade_runtime_thresholds
+from engine.runtime_metadata import attach_trade_views
 from engine.trading_support import (
     _clip,
     _collect_market_state,
@@ -72,9 +82,49 @@ def generate_trade(
     target_profit_percent=TARGET_PROFIT_PERCENT,
     stop_loss_percent=STOP_LOSS_PERCENT,
 ):
+    """
+    Purpose:
+        Assemble the final trade or no-trade payload for one market snapshot.
+    
+    Context:
+        This is the engine's top-level orchestration entry point. It sits after data normalization and analytics extraction, then layers probability estimates, macro context, risk overlays, strike selection, and position sizing into a single payload that live runtime, replay tools, and research logging can all consume.
+    
+    Inputs:
+        symbol (Any): Underlying symbol or index identifier.
+        spot (Any): Current underlying spot price.
+        option_chain (Any): Current option-chain snapshot.
+        previous_chain (Any): Previous option-chain snapshot used for change-sensitive features such as flow and open-interest shifts.
+        day_high (Any): Session high used for intraday range context.
+        day_low (Any): Session low used for intraday range context.
+        day_open (Any): Session open used for intraday context and early-session fallback logic.
+        prev_close (Any): Previous session close used as a reference anchor.
+        lookback_avg_range_pct (Any): Historical average range percentage used to normalize today's move.
+        spot_validation (Any): Validation summary for the spot snapshot.
+        option_chain_validation (Any): Validation summary for the option-chain snapshot.
+        apply_budget_constraint (Any): Whether capital-budget rules should be enforced during trade construction.
+        requested_lots (Any): Requested lot count before any optimizer or budget cap adjusts size.
+        lot_size (Any): Contract lot size used when translating premium into capital required.
+        max_capital (Any): Maximum capital budget allowed for the trade.
+        backtest_mode (Any): Whether the snapshot is being evaluated in a backtest or replay context.
+        macro_event_state (Any): Scheduled-event state produced by the macro layer.
+        macro_news_state (Any): Headline-driven macro state produced by the news layer.
+        global_risk_state (Any): Precomputed cross-asset risk state, when already available.
+        holding_profile (Any): Holding intent used by overnight-sensitive overlays.
+        valuation_time (Any): Timestamp used when normalizing expiries and Greeks.
+        target_profit_percent (Any): Target-profit percentage passed into the exit model.
+        stop_loss_percent (Any): Stop-loss percentage passed into the exit model.
+    
+    Returns:
+        dict | None: Final trade or no-trade payload. Returns `None` only when the option chain is unusable at the very first gate.
+    
+    Notes:
+        The returned payload doubles as the live engine contract and the structured record captured by evaluation and tuning workflows, so the function keeps diagnostics and decision-state fields explicit.
+    """
     if option_chain is None or option_chain.empty:
         return None
 
+    # Normalize provider-specific column names and enrich missing Greeks once so
+    # every downstream model works off a consistent option-chain schema.
     df = normalize_option_chain(option_chain, spot=spot, valuation_time=valuation_time)
     prev_df = (
         normalize_option_chain(previous_chain, spot=spot, valuation_time=valuation_time)
@@ -94,6 +144,8 @@ def generate_trade(
     )
     intraday_range_pct = probability_state["components"]["intraday_range_pct"]
 
+    # Keep the analytics subset explicit because these values feed both
+    # confidence checks and the final audit payload consumed by research tools.
     analytics_state = {
         "flip": market_state["flip"],
         "dealer_pos": market_state["dealer_pos"],
@@ -146,6 +198,8 @@ def generate_trade(
     )
     event_cfg = get_event_window_policy_config()
 
+    # Scheduled events and headline overlays are scored separately so operators
+    # can see whether a downgrade came from the calendar, the news tape, or both.
     macro_event_score_adjustment = 0
     if event_window_status == "PRE_EVENT_WATCH":
         macro_event_score_adjustment = (
@@ -172,6 +226,9 @@ def generate_trade(
     scoring_breakdown["global_risk_base_adjustment_score"] = global_risk_trade_modifiers["base_adjustment_score"]
     scoring_breakdown["global_risk_feature_adjustment_score"] = global_risk_trade_modifiers["feature_adjustment_score"]
     scoring_breakdown["global_risk_adjustment_score"] = global_risk_adjustment_score
+
+    # Each overlay returns both diagnostics and a score contribution so the
+    # engine can explain not just the decision, but why the decision changed.
     gamma_vol_state = build_gamma_vol_acceleration_state(
         gamma_regime=market_state["gamma_regime"],
         spot_vs_flip=market_state["spot_vs_flip"],
@@ -243,6 +300,9 @@ def generate_trade(
     option_efficiency_trade_modifiers = derive_option_efficiency_trade_modifiers(option_efficiency_state)
     option_efficiency_adjustment_score = option_efficiency_trade_modifiers["option_efficiency_adjustment_score"]
     scoring_breakdown["option_efficiency_adjustment_score"] = option_efficiency_adjustment_score
+
+    # Trade strength is accumulated in layers: base directional edge, then
+    # confirmation/macro adjustments, then stateful risk overlays.
     adjusted_trade_strength = int(
         _clip(
             trade_strength
@@ -279,6 +339,8 @@ def generate_trade(
         else runtime_thresholds["min_trade_strength"]
     )
 
+    # This payload is intentionally verbose because it serves three audiences:
+    # the live trader, the risk overlays, and the offline evaluation dataset.
     base_payload = {
         "symbol": symbol,
         "spot": round(spot, 2),
@@ -409,6 +471,8 @@ def generate_trade(
         "backtest_mode": backtest_mode,
     }
 
+    # The global risk layer is the final pre-trade gate. It can block, downgrade
+    # to watchlist, or cap size even when the analytics stack is directionally strong.
     global_risk = evaluate_global_risk_layer(
         data_quality=data_quality,
         confirmation=confirmation,
@@ -516,6 +580,29 @@ def generate_trade(
     )
 
     def _finalize(payload, trade_status, message):
+        """
+        Purpose:
+            Finalize the response payload with execution status and regime
+            metadata.
+
+        Context:
+            Used at every exit path in `generate_trade` so blocked trades,
+            watchlist outcomes, and executable trades all share the same output
+            contract.
+
+        Inputs:
+            payload (Any): Base response payload that already contains shared diagnostics for the current snapshot.
+            trade_status (Any): Final trade-status label such as `OK`, `NO_TRADE`, or a validation-specific code.
+            message (Any): Human-readable explanation attached to the final payload.
+
+        Returns:
+            dict: Final response payload ready for runtime consumption and
+            signal-evaluation logging.
+
+        Notes:
+            Centralizing this bookkeeping keeps decision branches focused on why
+            the trade changed state rather than how the payload is shaped.
+        """
         payload["message"] = message
         payload["trade_status"] = trade_status
         execution_size_multiplier = min(
@@ -528,7 +615,7 @@ def generate_trade(
             data_quality_score=data_quality["score"],
             macro_position_size_multiplier=execution_size_multiplier,
         )
-        return payload
+        return attach_trade_views(payload)
 
     if global_risk["risk_trade_status"] == "DATA_INVALID":
         return _finalize(base_payload, "DATA_INVALID", global_risk["risk_message"])
@@ -549,8 +636,33 @@ def generate_trade(
     ranked_strikes = []
     strike = None
 
+    # Strike ranking only happens after the directional thesis survives macro
+    # and risk gating. That keeps expensive contract-specific work off the
+    # path for obvious no-trade scenarios.
     if direction is not None:
         def option_efficiency_candidate_hook(row):
+            """
+            Purpose:
+                Score a strike candidate with contract-level option-efficiency
+                heuristics.
+
+            Context:
+                Used by strike ranking after the engine has already chosen a
+                direction. This lets contract selection account for payoff
+                geometry, expected move, and overlay state without mutating the
+                base strike-ranking model.
+
+            Inputs:
+                row (Any): Candidate option row under evaluation.
+
+            Returns:
+                dict: Optional score adjustment plus option-efficiency
+                diagnostics for the candidate strike.
+
+            Notes:
+                The hook is nested because it depends on the fully assembled
+                signal state for the current snapshot.
+            """
             return score_option_efficiency_candidate(
                 row,
                 spot=spot,
@@ -612,6 +724,9 @@ def generate_trade(
         stop_loss_percent=stop_loss_percent,
     )
     option_row_dict = option_row.iloc[0].to_dict()
+
+    # Once a specific contract is chosen, recompute option-efficiency metrics
+    # with contract-level Greeks, expiry, and payoff geometry.
     option_efficiency_state = build_option_efficiency_state(
         spot=spot,
         atm_iv=market_state["atm_iv"],
@@ -723,6 +838,8 @@ def generate_trade(
         }
     )
 
+    # Budget controls are applied after the signal is fully validated so they
+    # affect position size, not the informational content of the signal itself.
     if apply_budget_constraint:
         budget_info = optimize_lots(
             entry_price=entry_price,
@@ -742,6 +859,8 @@ def generate_trade(
         base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
         base_payload["capital_required"] = round(entry_price * lot_size * requested_lots, 2)
 
+    # Macro and global-risk size caps can reduce exposure without vetoing the
+    # idea entirely, which is useful for elevated-risk but still actionable setups.
     risk_size_cap = global_risk["global_risk_size_cap"]
     suggested_lots = max(0, int(base_payload["number_of_lots"] * risk_size_cap))
     if base_payload["number_of_lots"] > 0 and suggested_lots == 0 and risk_size_cap > 0:

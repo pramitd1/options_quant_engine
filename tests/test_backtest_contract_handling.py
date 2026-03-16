@@ -65,14 +65,18 @@ class BacktestContractHandlingTests(unittest.TestCase):
         )
         captured = {}
 
-        def fake_generate_trade(**kwargs):
+        def fake_run_preloaded_engine_snapshot(**kwargs):
             captured["expiries"] = sorted(kwargs["option_chain"]["EXPIRY_DT"].astype(str).unique().tolist())
             captured["target_profit_percent"] = kwargs["target_profit_percent"]
             captured["stop_loss_percent"] = kwargs["stop_loss_percent"]
-            return {"trade_status": "NO_SIGNAL", "direction": None}
+            return {
+                "ok": True,
+                "trade": {"trade_status": "NO_SIGNAL", "direction": None},
+                "execution_trade": {"trade_status": "NO_SIGNAL", "direction": None},
+            }
 
         with patch("backtest.intraday_backtester.load_option_chain", return_value=historical_df):
-            with patch("backtest.intraday_backtester.generate_trade", side_effect=fake_generate_trade):
+            with patch("backtest.intraday_backtester.run_preloaded_engine_snapshot", side_effect=fake_run_preloaded_engine_snapshot):
                 with patch("backtest.intraday_backtester.compute_performance_metrics", return_value={}):
                     result = run_intraday_backtest(
                         "NIFTY",

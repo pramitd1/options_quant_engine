@@ -1,3 +1,18 @@
+"""
+Module: backtest_runner.py
+
+Purpose:
+    Implement backtest runner logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
+"""
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from config.settings import BACKTEST_YEARS, MC_SIMULATIONS, MAX_WORKERS
@@ -11,6 +26,22 @@ warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
 
 
 def _run_one_sweep(args):
+    """
+    Purpose:
+        Process run one sweep for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        args (Any): Input associated with args.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     symbol, years, signal_persistence, max_hold_bars, tp, sl = args
     result = run_intraday_backtest(
         symbol=symbol,
@@ -30,6 +61,22 @@ def _run_one_sweep(args):
 
 
 def run_backtest():
+    """
+    Purpose:
+        Process run backtest for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     symbol = input("Symbol to backtest: ").strip().upper()
     years_input = input(f"Years of data [{BACKTEST_YEARS}]: ").strip()
     years = int(years_input) if years_input else BACKTEST_YEARS

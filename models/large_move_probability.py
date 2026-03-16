@@ -1,3 +1,18 @@
+"""
+Module: large_move_probability.py
+
+Purpose:
+    Implement large move probability modeling logic used by predictive or heuristic components.
+
+Role in the System:
+    Part of the modeling layer that builds statistical features and predictive estimates.
+
+Key Outputs:
+    Model-ready feature sets, fitted estimators, or predictive outputs.
+
+Downstream Usage:
+    Consumed by analytics, the probability stack, and research workflows.
+"""
 from __future__ import annotations
 
 from typing import Optional
@@ -6,10 +21,45 @@ from config.large_move_policy import get_large_move_probability_config
 
 
 def _clip(x: float, lo: float, hi: float) -> float:
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Used within the large move probability workflow. The module sits in the modeling layer that turns features into scores and probabilities.
+
+    Inputs:
+        x (float): Raw scalar input supplied by the caller.
+        lo (float): Inclusive lower bound for the returned value.
+        hi (float): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     return max(lo, min(hi, x))
 
 
 def _safe_float(x, default: float = 0.0) -> float:
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Used within the large move probability workflow. The module sits in the modeling layer that turns features into scores and probabilities.
+
+    Inputs:
+        x (Any): Raw scalar input supplied by the caller.
+        default (float): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if x is None:
             return default
@@ -32,28 +82,48 @@ def large_move_probability(
     intraday_range_pct: Optional[float] = None,
 ) -> float:
     """
-    Estimate probability of a large intraday move (roughly 150-300 points)
-    using a bounded evidence model.
+    Purpose:
+        Estimate the probability of a large intraday move with a bounded
+        additive evidence model.
 
-    Backward compatible with the old 4 categorical inputs, but improved by
-    allowing continuous intraday features that can change throughout the day.
+    Context:
+        This model is the rule-based probability leg used by the signal engine.
+        It translates structural gamma, liquidity, hedging, flow, and
+        volatility cues into a move-probability estimate even when the ML model
+        is unavailable.
 
-    Optional inputs:
-    - gamma_flip_distance_pct: abs(spot - gamma_flip) / spot * 100
-      Smaller distance -> more unstable regime -> higher probability
-    - vacuum_strength: 0..1
-      Higher means stronger/cleaner liquidity vacuum
-    - hedging_flow_ratio: -1..1
-      Magnitude captures dealer acceleration pressure
-    - smart_money_flow_score: -1..1
-      Magnitude captures directional institutional flow
-    - atm_iv_percentile: 0..1
-      Higher IV percentile -> more move potential
-    - intraday_range_pct: 0..1+
-      Normalized realized/expected range expansion
+    Inputs:
+        gamma_regime (str): Gamma regime classification such as
+        `NEGATIVE_GAMMA` or `LONG_GAMMA_ZONE`.
+        vacuum_state (str): Liquidity-vacuum regime around spot.
+        hedging_bias (str): Dealer-hedging bias classification.
+        smart_money_flow (str): Directional institutional-flow regime.
+        gamma_flip_distance_pct (Optional[float]): `abs(spot - gamma_flip) /
+        spot * 100`; smaller values imply spot is closer to the unstable flip.
+        vacuum_strength (Optional[float]): Normalized vacuum score from 0 to 1.
+        hedging_flow_ratio (Optional[float]): Normalized hedging-flow ratio,
+        usually bounded to `-1..1`.
+        smart_money_flow_score (Optional[float]): Normalized smart-money-flow
+        score, usually bounded to `-1..1`.
+        atm_iv_percentile (Optional[float]): Normalized ATM-IV percentile from
+        0 to 1.
+        intraday_range_pct (Optional[float]): Realized range normalized by the
+        expected baseline range.
+
+    Returns:
+        float: Probability estimate clipped to the configured floor and ceiling.
+
+    Notes:
+        The model is intentionally additive and bounded so each feature can be
+        interpreted as evidence for or against expansion rather than as a black
+        box score.
     """
 
     cfg = get_large_move_probability_config()
+
+    # Start from a calibrated prior and add evidence from each market feature.
+    # This keeps the model interpretable while allowing the config to tune the
+    # relative influence of each signal source.
     prob = cfg["base_probability"]
 
     # --- Categorical regime effects ---
@@ -82,6 +152,8 @@ def large_move_probability(
     # --- Continuous refinements ---
     if gamma_flip_distance_pct is not None:
         d = _clip(_safe_float(gamma_flip_distance_pct), 0.0, 2.0)
+        # Distance is inverted because being closer to the flip usually means
+        # a less stable dealer-hedging regime and therefore more move potential.
         prob += cfg["gamma_flip_distance_weight"] * (1.0 - d / 2.0)
 
     if vacuum_strength is not None:
@@ -90,10 +162,14 @@ def large_move_probability(
 
     if hedging_flow_ratio is not None:
         h = abs(_clip(_safe_float(hedging_flow_ratio), -1.0, 1.0))
+        # Move-size probability is driven more by hedging intensity than by
+        # direction, so the magnitude rather than the sign is used here.
         prob += cfg["hedging_flow_ratio_weight"] * h
 
     if smart_money_flow_score is not None:
         s = abs(_clip(_safe_float(smart_money_flow_score), -1.0, 1.0))
+        # Strong one-sided institutional flow often matters even if the
+        # direction is already encoded elsewhere in the signal pipeline.
         prob += cfg["smart_money_flow_weight"] * s
 
     if atm_iv_percentile is not None:
@@ -110,6 +186,8 @@ def large_move_probability(
     upside_accel = hedging_bias == "UPSIDE_ACCELERATION"
     downside_accel = hedging_bias == "DOWNSIDE_ACCELERATION"
 
+    # Penalize directional disagreement because conflicting flow and dealer
+    # pressure usually imply chop rather than clean expansion.
     if (bullish_flow and downside_accel) or (bearish_flow and upside_accel):
         prob += cfg["directional_conflict_penalty"]
 

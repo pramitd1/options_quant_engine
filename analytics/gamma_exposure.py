@@ -1,17 +1,17 @@
 """
-Gamma Exposure Model
+Module: gamma_exposure.py
 
-Estimates aggregate dealer gamma exposure from the option chain.
+Purpose:
+    Compute gamma exposure analytics used by downstream signal and risk layers.
 
-Interpretation:
-- Positive gamma -> dealers dampen moves
-- Negative gamma -> dealers amplify moves
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
 
-This file intentionally exposes both:
-- calculate_gamma_exposure(...)
-- calculate_gex(...)
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
 
-so older modules remain compatible.
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import numpy as np

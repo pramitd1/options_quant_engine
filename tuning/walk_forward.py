@@ -1,5 +1,17 @@
 """
-Deterministic walk-forward split engine for time-based validation.
+Module: walk_forward.py
+
+Purpose:
+    Implement walk forward utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -24,11 +36,42 @@ DEFAULT_WALK_FORWARD_CONFIG = {
 
 @dataclass(frozen=True)
 class SplitFrames:
+    """
+    Purpose:
+        Represent SplitFrames within the repository.
+    
+    Context:
+        Used within the `walk forward` module. The class standardizes records that move through search, validation, shadow mode, and promotion.
+    
+    Attributes:
+        train (pd.DataFrame): DataFrame containing train.
+        validation (pd.DataFrame): DataFrame containing validation.
+    
+    Notes:
+        The record is immutable so tuning artifacts can be compared, persisted, and promoted without accidental mutation.
+    """
     train: pd.DataFrame
     validation: pd.DataFrame
 
 
 def _prepare_frame(frame: pd.DataFrame, timestamp_col: str = "signal_timestamp") -> pd.DataFrame:
+    """
+    Purpose:
+        Process prepare frame for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        timestamp_col (str): Input associated with timestamp col.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame is None or frame.empty:
         return pd.DataFrame(columns=[timestamp_col])
 
@@ -49,6 +92,29 @@ def build_walk_forward_splits(
     minimum_validation_rows: int = 10,
     timestamp_col: str = "signal_timestamp",
 ) -> list[WalkForwardSplit]:
+    """
+    Purpose:
+        Build the walk forward splits used by downstream components.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        split_type (str): Input associated with split type.
+        train_window_days (int): Input associated with train window days.
+        validation_window_days (int): Input associated with validation window days.
+        step_size_days (int | None): Input associated with step size days.
+        minimum_train_rows (int): Input associated with minimum train rows.
+        minimum_validation_rows (int): Input associated with minimum validation rows.
+        timestamp_col (str): Input associated with timestamp col.
+    
+    Returns:
+        list[WalkForwardSplit]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     ordered = _prepare_frame(frame, timestamp_col=timestamp_col)
     if ordered.empty:
         return []
@@ -109,6 +175,24 @@ def apply_walk_forward_split(
     *,
     timestamp_col: str = "signal_timestamp",
 ) -> SplitFrames:
+    """
+    Purpose:
+        Process apply walk forward split for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        split (WalkForwardSplit | dict[str, Any]): Input associated with split.
+        timestamp_col (str): Input associated with timestamp col.
+    
+    Returns:
+        SplitFrames: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     ordered = _prepare_frame(frame, timestamp_col=timestamp_col)
     split_payload = split.to_dict() if hasattr(split, "to_dict") else dict(split or {})
     if ordered.empty:

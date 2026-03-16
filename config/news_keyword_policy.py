@@ -1,5 +1,17 @@
 """
-Centralized deterministic keyword and rule definitions for headline classification.
+Module: news_keyword_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by news keyword.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -146,7 +158,23 @@ _OVERRIDABLE_RULE_FIELDS = (
 
 
 def get_headline_rules() -> list[dict[str, Any]]:
-    from tuning.runtime import get_parameter_value
+    """
+    Purpose:
+        Return headline rules for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import get_parameter_value
 
     resolved_rules: list[dict[str, Any]] = []
     for rule in HEADLINE_RULES:
@@ -162,8 +190,40 @@ def get_headline_rules() -> list[dict[str, Any]]:
 
 
 def get_positive_keywords() -> list[str]:
+    """
+    Purpose:
+        Return positive keywords for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        list[str]: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
     return list(POSITIVE_KEYWORDS)
 
 
 def get_negative_keywords() -> list[str]:
+    """
+    Purpose:
+        Return negative keywords for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        list[str]: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
     return list(NEGATIVE_KEYWORDS)

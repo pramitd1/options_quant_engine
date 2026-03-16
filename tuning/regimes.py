@@ -1,5 +1,17 @@
 """
-Deterministic regime labeling for validation and robustness analysis.
+Module: regimes.py
+
+Purpose:
+    Implement regimes utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -23,10 +35,43 @@ REGIME_COLUMNS = [
 
 
 def _normalize(value: Any) -> str:
+    """
+    Purpose:
+        Process normalize for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return str(value or "").upper().strip()
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `regimes` module. The module sits in the tuning layer that searches, validates, and promotes parameter packs.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (float | None): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None or value == "":
             return default
@@ -36,10 +81,42 @@ def _safe_float(value: Any, default: float | None = None) -> float | None:
 
 
 def _normalize_series(series: pd.Series) -> pd.Series:
+    """
+    Purpose:
+        Normalize series into the repository-standard representation.
+    
+    Context:
+        Internal helper in the `regimes` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        series (pd.Series): Series containing series.
+    
+    Returns:
+        pd.Series: Series returned by the current transformation.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     return series.fillna("").astype(str).str.upper().str.strip()
 
 
 def _vol_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process vol bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = _normalize(row.get("volatility_regime"))
     global_state = _normalize(row.get("global_risk_state"))
     if global_state == "VOL_SHOCK":
@@ -54,6 +131,22 @@ def _vol_bucket(row: pd.Series) -> str:
 
 
 def _gamma_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process gamma bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = _normalize(row.get("gamma_regime"))
     if state in {"NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"}:
         return "SHORT_GAMMA"
@@ -65,6 +158,22 @@ def _gamma_bucket(row: pd.Series) -> str:
 
 
 def _macro_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process macro bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = _normalize(row.get("macro_regime"))
     if state in {"EVENT_LOCKDOWN"}:
         return "EVENT_LOCKDOWN"
@@ -78,6 +187,22 @@ def _macro_bucket(row: pd.Series) -> str:
 
 
 def _global_risk_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process global risk bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = _normalize(row.get("global_risk_state"))
     if state in {"VOL_SHOCK", "EVENT_LOCKDOWN", "RISK_OFF", "RISK_ON", "GLOBAL_NEUTRAL"}:
         return state
@@ -85,6 +210,22 @@ def _global_risk_bucket(row: pd.Series) -> str:
 
 
 def _overnight_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process overnight bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     value = row.get("overnight_hold_allowed")
     raw = str(value).strip().lower() if value is not None and str(value) != "<NA>" else ""
     if raw in {"true", "1"}:
@@ -95,6 +236,22 @@ def _overnight_bucket(row: pd.Series) -> str:
 
 
 def _squeeze_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process squeeze bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = _normalize(row.get("squeeze_risk_state"))
     if state in {
         "LOW_ACCELERATION_RISK",
@@ -113,6 +270,22 @@ def _squeeze_bucket(row: pd.Series) -> str:
 
 
 def _event_risk_bucket(row: pd.Series) -> str:
+    """
+    Purpose:
+        Process event risk bucket for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        row (pd.Series): Input associated with row.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     event_score = _safe_float(row.get("macro_event_risk_score"), None)
     if event_score is None:
         return "EVENT_RISK_UNKNOWN"
@@ -124,6 +297,22 @@ def _event_risk_bucket(row: pd.Series) -> str:
 
 
 def label_validation_regimes(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process label validation regimes for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     labeled = frame.copy() if frame is not None else pd.DataFrame()
     if labeled.empty:
         for column in REGIME_COLUMNS:

@@ -1,11 +1,17 @@
 """
-Scheduled macro event risk layer.
+Module: scheduled_event_risk.py
 
-Stage 1 scope:
-- configurable local event schedule
-- provider-agnostic loading interface
-- conservative pre/post-event risk scoring
-- interpretable outputs for the trading engine
+Purpose:
+    Implement scheduled event risk logic used to score scheduled events and macro catalysts.
+
+Role in the System:
+    Part of the macro context layer that scores scheduled events and broad market catalysts.
+
+Key Outputs:
+    Macro-event state, catalyst scores, and gating diagnostics.
+
+Downstream Usage:
+    Consumed by the signal engine, risk overlays, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -26,6 +32,22 @@ from config.settings import (
 
 
 def _severity_to_base_risk():
+    """
+    Purpose:
+        Process severity to base risk for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     return {
         "CRITICAL": cfg.severity_risk_critical,
@@ -38,6 +60,22 @@ IST_TIMEZONE = "Asia/Kolkata"
 
 
 def _coerce_timestamp(value):
+    """
+    Purpose:
+        Parse flexible timestamp inputs into timezone-aware timestamps.
+
+    Context:
+        Function inside the `scheduled event risk` module. The module sits in the macro overlay layer that models scheduled events and headline-driven context.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+
+    Returns:
+        pd.Timestamp | None: Parsed timestamp or `None` when parsing fails.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     if value is None or value == "":
         return None
 
@@ -59,6 +97,23 @@ def _coerce_timestamp(value):
 
 
 def _coerce_int(value, default):
+    """
+    Purpose:
+        Coerce int into a consistent representation.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+        default (Any): Input associated with default.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     try:
         return int(value)
     except Exception:
@@ -66,6 +121,22 @@ def _coerce_int(value, default):
 
 
 def _resolve_schedule_path(path_value: str | None):
+    """
+    Purpose:
+        Resolve schedule path needed by downstream logic.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path_value (str | None): Input associated with path value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if not path_value:
         return None
 
@@ -77,6 +148,23 @@ def _resolve_schedule_path(path_value: str | None):
 
 
 def load_scheduled_macro_events(schedule_path: str | None = None, default_events=None) -> list[dict]:
+    """
+    Purpose:
+        Process load scheduled macro events for downstream use.
+    
+    Context:
+        Public function within the macro context layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        schedule_path (str | None): Input associated with schedule path.
+        default_events (Any): Input associated with default events.
+    
+    Returns:
+        list[dict]: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     default_events = default_events if default_events is not None else DEFAULT_MACRO_EVENT_SCHEDULE
     resolved_path = _resolve_schedule_path(schedule_path or MACRO_EVENT_SCHEDULE_FILE)
@@ -121,6 +209,22 @@ def load_scheduled_macro_events(schedule_path: str | None = None, default_events
 
 
 def _normalize_event_list(events) -> list[dict]:
+    """
+    Purpose:
+        Normalize event list into the repository-standard form.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        events (Any): Input associated with events.
+    
+    Returns:
+        list[dict]: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     if not events:
         return []
@@ -158,6 +262,22 @@ def _normalize_event_list(events) -> list[dict]:
 
 
 def _neutral_event_state(status="NO_EVENT_DATA"):
+    """
+    Purpose:
+        Process neutral event state for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        status (Any): Input associated with status.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     event_data_available = status not in {"NO_EVENT_DATA", "EVENT_FILTER_DISABLED"}
     return {
         "macro_event_risk_score": 0,
@@ -172,6 +292,25 @@ def _neutral_event_state(status="NO_EVENT_DATA"):
 
 
 def _risk_from_pre_watch(base_risk: int, minutes_until: float, warning_minutes: int, lockdown_minutes: int) -> int:
+    """
+    Purpose:
+        Process risk from pre watch for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        base_risk (int): Input associated with base risk.
+        minutes_until (float): Input associated with minutes until.
+        warning_minutes (int): Input associated with warning minutes.
+        lockdown_minutes (int): Input associated with lockdown minutes.
+    
+    Returns:
+        int: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     span = max(warning_minutes - lockdown_minutes, 1)
     proximity = 1.0 - max(minutes_until - lockdown_minutes, 0.0) / span
@@ -179,6 +318,24 @@ def _risk_from_pre_watch(base_risk: int, minutes_until: float, warning_minutes: 
 
 
 def _risk_from_pre_lockdown(base_risk: int, minutes_until: float, lockdown_minutes: int) -> int:
+    """
+    Purpose:
+        Process risk from pre lockdown for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        base_risk (int): Input associated with base risk.
+        minutes_until (float): Input associated with minutes until.
+        lockdown_minutes (int): Input associated with lockdown minutes.
+    
+    Returns:
+        int: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     span = max(lockdown_minutes, 1)
     proximity = 1.0 - max(minutes_until, 0.0) / span
@@ -186,6 +343,24 @@ def _risk_from_pre_lockdown(base_risk: int, minutes_until: float, lockdown_minut
 
 
 def _risk_from_post_cooldown(base_risk: int, minutes_since: float, cooldown_minutes: int) -> int:
+    """
+    Purpose:
+        Process risk from post cooldown for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        base_risk (int): Input associated with base risk.
+        minutes_since (float): Input associated with minutes since.
+        cooldown_minutes (int): Input associated with cooldown minutes.
+    
+    Returns:
+        int: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     span = max(cooldown_minutes, 1)
     decay = 1.0 - max(minutes_since, 0.0) / span
@@ -199,6 +374,25 @@ def evaluate_scheduled_event_risk(
     events: list[dict] | None = None,
     enabled: bool = MACRO_EVENT_FILTER_ENABLED,
 ):
+    """
+    Purpose:
+        Process evaluate scheduled event risk for downstream use.
+    
+    Context:
+        Public function within the macro context layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        as_of (Any): Input associated with as of.
+        events (list[dict] | None): Input associated with events.
+        enabled (bool): Boolean flag associated with enabled.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_event_window_policy_config()
     if not enabled:
         return _neutral_event_state(status="EVENT_FILTER_DISABLED")

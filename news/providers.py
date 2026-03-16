@@ -1,5 +1,17 @@
 """
-Headline provider interface and mock provider.
+Module: providers.py
+
+Purpose:
+    Implement providers logic used to classify headlines and derive news context.
+
+Role in the System:
+    Part of the news context layer that scores headline risk and directional news pressure.
+
+Key Outputs:
+    Headline state, news sentiment features, and risk flags.
+
+Downstream Usage:
+    Consumed by macro/news overlays, the signal engine, and research logging.
 """
 
 from __future__ import annotations
@@ -24,20 +36,95 @@ from news.models import HeadlineRecord, coerce_headline_timestamp
 
 
 class HeadlineProvider(ABC):
+    """
+    Purpose:
+        Provider adapter responsible for `HeadlineProvider` interactions.
+
+    Context:
+        Used within the `providers` module. The module sits in the news layer that converts provider headlines into structured macro state.
+
+    Attributes:
+        None: The class primarily groups behavior or protocol methods rather than declared fields.
+
+    Notes:
+        Documents the current role of the class without changing runtime behavior.
+    """
     provider_name = "UNKNOWN"
 
     @abstractmethod
     def fetch_headlines(self, *, symbol: str | None = None, limit: int | None = None) -> list[HeadlineRecord]:
+        """
+        Purpose:
+            Fetch headlines for the current evaluation step.
+        
+        Context:
+            Method on `HeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str | None): Underlying symbol or index identifier.
+            limit (int | None): Input associated with limit.
+        
+        Returns:
+            list[HeadlineRecord]: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         raise NotImplementedError
 
     def last_fetch_metadata(self) -> dict:
+        """
+        Purpose:
+            Process last fetch metadata for downstream use.
+        
+        Context:
+            Method on `HeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            dict: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return {}
 
 
 class MockHeadlineProvider(HeadlineProvider):
+    """
+    Purpose:
+        Provider adapter responsible for `MockHeadlineProvider` interactions.
+
+    Context:
+        Used within the `providers` module. The module sits in the news layer that converts provider headlines into structured macro state.
+
+    Attributes:
+        None: The class primarily groups behavior or protocol methods rather than declared fields.
+
+    Notes:
+        Documents the current role of the class without changing runtime behavior.
+    """
     provider_name = "MOCK"
 
     def __init__(self, mock_file: str):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `MockHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            mock_file (str): Input associated with mock file.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         path = Path(mock_file)
         if not path.is_absolute():
             path = Path(BASE_DIR) / path
@@ -45,6 +132,23 @@ class MockHeadlineProvider(HeadlineProvider):
         self._last_fetch_metadata = {}
 
     def fetch_headlines(self, *, symbol: str | None = None, limit: int | None = None) -> list[HeadlineRecord]:
+        """
+        Purpose:
+            Fetch headlines for the current evaluation step.
+        
+        Context:
+            Method on `MockHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str | None): Underlying symbol or index identifier.
+            limit (int | None): Input associated with limit.
+        
+        Returns:
+            list[HeadlineRecord]: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self._last_fetch_metadata = {
             "mock_file": str(self.mock_file),
             "status": "UNKNOWN",
@@ -106,10 +210,43 @@ class MockHeadlineProvider(HeadlineProvider):
         return records
 
     def last_fetch_metadata(self) -> dict:
+        """
+        Purpose:
+            Process last fetch metadata for downstream use.
+        
+        Context:
+            Method on `MockHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            dict: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return dict(self._last_fetch_metadata)
 
 
 def _first_text(element, names: list[str]) -> str | None:
+    """
+    Purpose:
+        Process first text for downstream use.
+    
+    Context:
+        Internal helper within the news layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        element (Any): Input associated with element.
+        names (list[str]): Input associated with names.
+    
+    Returns:
+        str | None: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     for name in names:
         child = element.find(name)
         if child is not None and child.text:
@@ -120,6 +257,22 @@ def _first_text(element, names: list[str]) -> str | None:
 
 
 def _parse_rss_timestamp(raw_value):
+    """
+    Purpose:
+        Process parse rss timestamp for downstream use.
+    
+    Context:
+        Internal helper within the news layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        raw_value (Any): Input associated with raw value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if not raw_value:
         return None
 
@@ -134,6 +287,19 @@ def _parse_rss_timestamp(raw_value):
 
 
 class RSSHeadlineProvider(HeadlineProvider):
+    """
+    Purpose:
+        Provider adapter responsible for `RSSHeadlineProvider` interactions.
+
+    Context:
+        Used within the `providers` module. The module sits in the news layer that converts provider headlines into structured macro state.
+
+    Attributes:
+        None: The class primarily groups behavior or protocol methods rather than declared fields.
+
+    Notes:
+        Documents the current role of the class without changing runtime behavior.
+    """
     provider_name = "RSS"
 
     def __init__(
@@ -143,12 +309,47 @@ class RSSHeadlineProvider(HeadlineProvider):
         timeout_seconds: int = HEADLINE_RSS_TIMEOUT_SECONDS,
         user_agent: str = HEADLINE_RSS_USER_AGENT,
     ):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `RSSHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            urls (list[str] | None): Input associated with urls.
+            timeout_seconds (int): Input associated with timeout seconds.
+            user_agent (str): Input associated with user agent.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self.urls = [url for url in (urls or HEADLINE_RSS_URLS) if str(url).strip()]
         self.timeout_seconds = timeout_seconds
         self.user_agent = user_agent
         self._last_fetch_metadata = {}
 
     def _source_label(self, url: str, root: ET.Element) -> str:
+        """
+        Purpose:
+            Process source label for downstream use.
+        
+        Context:
+            Method on `RSSHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            url (str): Input associated with url.
+            root (ET.Element): Input associated with root.
+        
+        Returns:
+            str: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         channel_title = _first_text(root, ["channel/title"])
         if channel_title:
             return channel_title
@@ -157,6 +358,23 @@ class RSSHeadlineProvider(HeadlineProvider):
         return parsed.netloc or self.provider_name
 
     def fetch_headlines(self, *, symbol: str | None = None, limit: int | None = None) -> list[HeadlineRecord]:
+        """
+        Purpose:
+            Fetch headlines for the current evaluation step.
+        
+        Context:
+            Method on `RSSHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str | None): Underlying symbol or index identifier.
+            limit (int | None): Input associated with limit.
+        
+        Returns:
+            list[HeadlineRecord]: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self._last_fetch_metadata = {
             "status": "UNKNOWN",
             "urls": list(self.urls),
@@ -252,6 +470,22 @@ class RSSHeadlineProvider(HeadlineProvider):
         return records
 
     def last_fetch_metadata(self) -> dict:
+        """
+        Purpose:
+            Process last fetch metadata for downstream use.
+        
+        Context:
+            Method on `RSSHeadlineProvider` within the news layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            dict: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return dict(self._last_fetch_metadata)
 
 
@@ -263,6 +497,26 @@ def build_headline_provider(
     rss_timeout_seconds: int = HEADLINE_RSS_TIMEOUT_SECONDS,
     rss_user_agent: str = HEADLINE_RSS_USER_AGENT,
 ) -> HeadlineProvider:
+    """
+    Purpose:
+        Build the headline provider used by downstream components.
+    
+    Context:
+        Public function within the news layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        provider_name (str): Human-readable name for provider.
+        mock_file (str): Input associated with mock file.
+        rss_urls (list[str] | None): Input associated with rss urls.
+        rss_timeout_seconds (int): Input associated with rss timeout seconds.
+        rss_user_agent (str): Input associated with rss user agent.
+    
+    Returns:
+        HeadlineProvider: Computed value returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     provider_name = str(provider_name or "MOCK").strip().upper()
 
     if provider_name == "MOCK":

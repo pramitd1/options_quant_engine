@@ -1,13 +1,17 @@
 """
-Confirmation Filters
+Module: confirmation_filters.py
 
-These filters do not generate direction on their own.
-They only confirm, trim, or veto a direction proposed by the engine.
+Purpose:
+    Evaluate confirmation filters that reinforce or veto candidate trade ideas.
 
-Design goals:
-- keep gamma / flow / hedging as the primary signal layer
-- add a lightweight confirmation layer based on live spot behavior
-- remain robust even when some inputs are missing
+Role in the System:
+    Part of the strategy layer that converts directional intent into executable option trades.
+
+Key Outputs:
+    Strike rankings, trade-construction inputs, and exit or sizing recommendations.
+
+Downstream Usage:
+    Consumed by the signal engine and by research tooling that inspects trade construction choices.
 """
 
 from config.signal_policy import get_confirmation_filter_config
@@ -15,6 +19,23 @@ from config.symbol_microstructure import DEFAULT_MICROSTRUCTURE_CONFIG, get_micr
 
 
 def _safe_float(x, default=None):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `confirmation filters` module. The module sits in the strategy layer that converts directional intent into executable option trades.
+
+    Inputs:
+        x (Any): Raw scalar input supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if x is None:
             return default
@@ -24,6 +45,23 @@ def _safe_float(x, default=None):
 
 
 def _sign_label(score, cfg):
+    """
+    Purpose:
+        Process sign label for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        score (Any): Input associated with score.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if score >= cfg["strong_confirmation_threshold"]:
         return "STRONG_CONFIRMATION"
     if score >= cfg["confirmed_threshold"]:

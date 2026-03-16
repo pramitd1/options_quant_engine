@@ -1,10 +1,17 @@
 """
-NSE Option Chain Downloader
+Module: nse_option_chain_downloader.py
 
-Hardened version for NSE's silent anti-bot behavior:
-- handles HTTP 200 with empty JSON {}
-- aggressively refreshes cookies/session
-- uses legacy endpoint directly
+Purpose:
+    Download nse option chain market data for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 import json
@@ -17,6 +24,19 @@ import requests
 
 
 class NSEOptionChainDownloader:
+    """
+    Purpose:
+        Represent NSEOptionChainDownloader within the repository.
+    
+    Context:
+        Used within the `nse option chain downloader` module. The class participates in the module's role within the trading system.
+    
+    Attributes:
+        None: The class primarily defines behavior or a protocol contract rather than stored fields.
+    
+    Notes:
+        The class groups behavior and state that need to stay explicit for maintainability and auditability.
+    """
     HOME_PAGE = "https://www.nseindia.com/"
     OPTION_CHAIN_PAGE = "https://www.nseindia.com/option-chain"
     ALT_OPTION_CHAIN_PAGE = "https://www.nseindia.com/market-data/option-chain"
@@ -33,16 +53,64 @@ class NSEOptionChainDownloader:
     }
 
     def __init__(self, debug=False):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            debug (Any): Input associated with debug.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self.debug = debug
         self.session = None
         self.last_error = None
         self._new_session()
 
     def _log(self, *args):
+        """
+        Purpose:
+            Process log for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            args (Any): Input associated with args.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if self.debug:
             print("[NSE DEBUG]", *args)
 
     def _base_headers(self, referer=None):
+        """
+        Purpose:
+            Process base headers for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            referer (Any): Input associated with referer.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return {
             "user-agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -59,6 +127,22 @@ class NSEOptionChainDownloader:
         }
 
     def _new_session(self):
+        """
+        Purpose:
+            Process new session for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if self.session is not None:
             try:
                 self.session.close()
@@ -69,6 +153,22 @@ class NSEOptionChainDownloader:
         self._bootstrap_session()
 
     def _bootstrap_session(self):
+        """
+        Purpose:
+            Process bootstrap session for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         warmup_urls = [
             self.HOME_PAGE,
             self.OPTION_CHAIN_PAGE,
@@ -88,9 +188,42 @@ class NSEOptionChainDownloader:
                 self._log("bootstrap_failed", url, str(e))
 
     def _is_index(self, symbol: str) -> bool:
+        """
+        Purpose:
+            Process is index for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            bool: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return symbol.upper().strip() in self.INDEX_SYMBOLS
 
     def _request_json_once(self, url: str, referer: str):
+        """
+        Purpose:
+            Process request json once for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            url (str): Input associated with url.
+            referer (str): Input associated with referer.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         try:
             response = self.session.get(
                 url,
@@ -128,6 +261,22 @@ class NSEOptionChainDownloader:
             return None, str(e)
 
     def _request_json(self, url: str):
+        """
+        Purpose:
+            Process request json for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            url (str): Input associated with url.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         referers = [
             self.OPTION_CHAIN_PAGE,
             self.ALT_OPTION_CHAIN_PAGE,
@@ -156,6 +305,22 @@ class NSEOptionChainDownloader:
         return {}
 
     def _get_legacy_chain_json(self, symbol: str) -> dict:
+        """
+        Purpose:
+            Return legacy chain json for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            dict: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         symbol = symbol.upper().strip()
 
         if self._is_index(symbol):
@@ -166,6 +331,22 @@ class NSEOptionChainDownloader:
         return self._request_json(url)
 
     def _extract_rows(self, data: dict) -> list:
+        """
+        Purpose:
+            Extract rows from the supplied payload.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            data (dict): Input associated with data.
+        
+        Returns:
+            list: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if not isinstance(data, dict):
             return []
 
@@ -187,6 +368,22 @@ class NSEOptionChainDownloader:
         return []
 
     def _extract_expiry_from_item(self, item: dict):
+        """
+        Purpose:
+            Extract expiry from item from the supplied payload.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            item (dict): Input associated with item.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         expiry = item.get("expiryDate")
         if expiry:
             return expiry
@@ -203,10 +400,42 @@ class NSEOptionChainDownloader:
         return None
 
     def _extract_nearest_expiry(self, items: list):
+        """
+        Purpose:
+            Extract nearest expiry from the supplied payload.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            items (list): Input associated with items.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         expiries = self._extract_ordered_expiries(items)
         return expiries[0] if expiries else None
 
     def _extract_ordered_expiries(self, items: list):
+        """
+        Purpose:
+            Extract ordered expiries from the supplied payload.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            items (list): Input associated with items.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         expiries = []
 
         for item in items:
@@ -232,6 +461,22 @@ class NSEOptionChainDownloader:
         return ordered
 
     def fetch_available_expiries(self, symbol="NIFTY") -> list[str]:
+        """
+        Purpose:
+            Fetch available expiries for the current evaluation step.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (Any): Underlying symbol or index identifier.
+        
+        Returns:
+            list[str]: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         symbol = symbol.upper().strip()
         data = self._get_legacy_chain_json(symbol)
 
@@ -247,6 +492,23 @@ class NSEOptionChainDownloader:
         return self._extract_ordered_expiries(items)
 
     def _safe_float(self, value, default=0.0):
+        """
+        Purpose:
+            Safely normalize float while preserving fallback behavior.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            value (Any): Input associated with value.
+            default (Any): Input associated with default.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         try:
             if value in (None, ""):
                 return default
@@ -255,6 +517,22 @@ class NSEOptionChainDownloader:
             return default
 
     def _validate_dataframe_quality(self, df: pd.DataFrame):
+        """
+        Purpose:
+            Process validate dataframe quality for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            df (pd.DataFrame): Input associated with df.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if df is None or df.empty:
             return {
                 "is_valid": False,
@@ -278,6 +556,23 @@ class NSEOptionChainDownloader:
         }
 
     def _rows_to_df(self, items: list, expiry_filter=None) -> pd.DataFrame:
+        """
+        Purpose:
+            Process rows to df for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            items (list): Input associated with items.
+            expiry_filter (Any): Input associated with expiry filter.
+        
+        Returns:
+            pd.DataFrame: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         rows = []
 
         for item in items:
@@ -331,6 +626,22 @@ class NSEOptionChainDownloader:
         return df
 
     def fetch_option_chain(self, symbol="NIFTY") -> pd.DataFrame:
+        """
+        Purpose:
+            Fetch option chain for the current evaluation step.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (Any): Underlying symbol or index identifier.
+        
+        Returns:
+            pd.DataFrame: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         symbol = symbol.upper().strip()
 
         data = self._get_legacy_chain_json(symbol)
@@ -365,6 +676,22 @@ class NSEOptionChainDownloader:
         return pd.DataFrame()
 
     def close(self):
+        """
+        Purpose:
+            Process close for downstream use.
+        
+        Context:
+            Method on `NSEOptionChainDownloader` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if self.session is not None:
             try:
                 self.session.close()

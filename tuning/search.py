@@ -1,5 +1,17 @@
 """
-Search strategies for parameter exploration.
+Module: search.py
+
+Purpose:
+    Implement search utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -14,6 +26,23 @@ from tuning.registry import get_parameter_registry
 
 
 def _allowed_key(key: str, *, allow_live_unsafe: bool) -> bool:
+    """
+    Purpose:
+        Determine whether a registry key may participate in the current search run.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        key (str): Registry key for the parameter under consideration.
+        allow_live_unsafe (bool): Whether parameters marked as unsafe for live trading may still be included in the search space.
+    
+    Returns:
+        bool: `True` when the parameter is eligible for inclusion in the search space.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     definition = get_parameter_registry().get(key)
     if not definition.tunable:
         return False
@@ -23,6 +52,22 @@ def _allowed_key(key: str, *, allow_live_unsafe: bool) -> bool:
 
 
 def _experiment_score(result: dict[str, Any]) -> float:
+    """
+    Purpose:
+        Compute the ranking score used to compare tuning experiment outputs.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        result (dict[str, Any]): Structured result payload produced by an earlier computation or evaluation step.
+    
+    Returns:
+        float: Composite score used to rank experiments before promotion or comparison.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     validation = dict(result.get("validation_results", {}))
     robustness = dict(result.get("robustness_metrics", {}))
     if validation:
@@ -33,6 +78,23 @@ def _experiment_score(result: dict[str, Any]) -> float:
 
 
 def _coerce_numeric(value: Any, *, value_type: str):
+    """
+    Purpose:
+        Coerce a sampled candidate into the declared parameter type.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        value_type (str): Declared parameter type used when coercing or sampling numeric values.
+    
+    Returns:
+        Any: Candidate value converted into the declared numeric type when appropriate.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     if value_type == "int":
         return int(round(float(value)))
     if value_type == "float":
@@ -41,6 +103,23 @@ def _coerce_numeric(value: Any, *, value_type: str):
 
 
 def _numeric_bounds(definition, current_value=None) -> tuple[float, float] | None:
+    """
+    Purpose:
+        Derive numeric search bounds for a tunable parameter definition.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        definition (Any): Parameter definition record describing bounds, allowed values, and governance flags.
+        current_value (Any): Current value associated with the definition when serializing or searching.
+    
+    Returns:
+        tuple[float, float] | None: Lower and upper bounds for numeric search, or `None` for non-numeric parameters.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     if definition.value_type not in {"int", "float"}:
         return None
     lo = definition.min_value
@@ -59,6 +138,23 @@ def _numeric_bounds(definition, current_value=None) -> tuple[float, float] | Non
 
 
 def _sample_parameter_value(definition, rng: random.Random):
+    """
+    Purpose:
+        Sample one candidate value from a parameter definition.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        definition (Any): Parameter definition record describing bounds, allowed values, and governance flags.
+        rng (random.Random): Random generator used to keep candidate sampling reproducible.
+    
+    Returns:
+        Any: One sampled candidate value drawn from allowed values or numeric bounds.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     if definition.allowed_values:
         return rng.choice(list(definition.allowed_values))
     bounds = _numeric_bounds(definition)
@@ -71,6 +167,25 @@ def _sample_parameter_value(definition, rng: random.Random):
 
 
 def _latin_hypercube_values(definition, *, iterations: int, rng: random.Random, base_value=None) -> list[Any]:
+    """
+    Purpose:
+        Generate stratified candidate values for one parameter using a Latin-hypercube style draw.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        definition (Any): Parameter definition record describing bounds, allowed values, and governance flags.
+        iterations (int): Number of candidate samples or search iterations to generate.
+        rng (random.Random): Random generator used to keep candidate sampling reproducible.
+        base_value (Any): Reference value around which new candidate values are generated.
+    
+    Returns:
+        list[Any]: Stratified candidate values spanning the parameter's search range.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     if definition.allowed_values:
         choices = list(definition.allowed_values)
         if not choices:
@@ -99,6 +214,23 @@ def _latin_hypercube_values(definition, *, iterations: int, rng: random.Random, 
 
 
 def _coordinate_neighbors(definition, center_value: Any) -> list[Any]:
+    """
+    Purpose:
+        Construct nearby candidate values around the current parameter setting.
+    
+    Context:
+        Internal helper in the `search` module. It keeps parameter-search and governance logic separate from experiment execution.
+    
+    Inputs:
+        definition (Any): Parameter definition record describing bounds, allowed values, and governance flags.
+        center_value (Any): Current center value used to propose nearby alternatives.
+    
+    Returns:
+        list[Any]: Nearby candidate values that form a local neighborhood around the center point.
+    
+    Notes:
+        The helper exists so search-space construction and candidate generation stay deterministic and easy to test.
+    """
     if definition.allowed_values:
         return [value for value in definition.allowed_values if value != center_value]
 
@@ -140,6 +272,30 @@ def run_grid_search(
     comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process run grid search for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        parameter_pack_name (str): Human-readable name for parameter pack.
+        grid (dict[str, list[Any]]): Input associated with grid.
+        dataset_path (str | None): Input associated with dataset path.
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+        selection_thresholds (dict | None): Input associated with selection thresholds.
+        objective_weights (dict | None): Input associated with objective weights.
+        walk_forward_config (dict | None): Input associated with walk forward config.
+        comparison_baseline_pack (str | None): Input associated with comparison baseline pack.
+        persist (bool): Boolean flag associated with persist.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     valid_grid = {
         key: list(values)
         for key, values in grid.items()
@@ -181,6 +337,32 @@ def run_random_search(
     comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process run random search for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        parameter_pack_name (str): Human-readable name for parameter pack.
+        parameter_keys (list[str]): Input associated with parameter keys.
+        dataset_path (str | None): Input associated with dataset path.
+        iterations (int): Input associated with iterations.
+        seed (int): Input associated with seed.
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+        selection_thresholds (dict | None): Input associated with selection thresholds.
+        objective_weights (dict | None): Input associated with objective weights.
+        walk_forward_config (dict | None): Input associated with walk forward config.
+        comparison_baseline_pack (str | None): Input associated with comparison baseline pack.
+        persist (bool): Boolean flag associated with persist.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     rng = random.Random(seed)
     registry = get_parameter_registry()
     eligible = [
@@ -225,6 +407,33 @@ def run_latin_hypercube_search(
     comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process run latin hypercube search for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        parameter_pack_name (str): Human-readable name for parameter pack.
+        parameter_keys (list[str]): Input associated with parameter keys.
+        dataset_path (str | None): Input associated with dataset path.
+        iterations (int): Input associated with iterations.
+        seed (int): Input associated with seed.
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+        selection_thresholds (dict | None): Input associated with selection thresholds.
+        objective_weights (dict | None): Input associated with objective weights.
+        walk_forward_config (dict | None): Input associated with walk forward config.
+        base_overrides (dict[str, Any] | None): Input associated with base overrides.
+        comparison_baseline_pack (str | None): Input associated with comparison baseline pack.
+        persist (bool): Boolean flag associated with persist.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     rng = random.Random(seed)
     registry = get_parameter_registry()
     eligible = [
@@ -280,6 +489,32 @@ def run_coordinate_descent_search(
     comparison_baseline_pack: str | None = None,
     persist: bool = True,
 ) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process run coordinate descent search for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        parameter_pack_name (str): Human-readable name for parameter pack.
+        parameter_keys (list[str]): Input associated with parameter keys.
+        dataset_path (str | None): Input associated with dataset path.
+        initial_overrides (dict[str, Any] | None): Input associated with initial overrides.
+        passes (int): Input associated with passes.
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+        selection_thresholds (dict | None): Input associated with selection thresholds.
+        objective_weights (dict | None): Input associated with objective weights.
+        walk_forward_config (dict | None): Input associated with walk forward config.
+        comparison_baseline_pack (str | None): Input associated with comparison baseline pack.
+        persist (bool): Boolean flag associated with persist.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     registry = get_parameter_registry()
     eligible = [
         registry.get(key)

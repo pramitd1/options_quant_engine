@@ -1,3 +1,18 @@
+"""
+Module: signal_evaluation_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by signal evaluation.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
+"""
 from __future__ import annotations
 
 
@@ -18,6 +33,24 @@ MOVE_PROBABILITY_BUCKETS = (
 
 
 def bucket_from_thresholds(value, thresholds, default_label: str):
+    """
+    Purpose:
+        Bucket from thresholds into configured ranges.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+        thresholds (Any): Input associated with thresholds.
+        default_label (str): Label associated with default.
+    
+    Returns:
+        Any: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
     if value is None:
         return None
 

@@ -1,9 +1,17 @@
 """
-Canonical signal evaluation dataset management.
+Module: dataset.py
 
-The dataset is a deduplicated CSV keyed by `signal_id`.
-Each signal corresponds to exactly one canonical row, which may be
-incrementally enriched over time as realized outcomes become available.
+Purpose:
+    Implement dataset utilities for signal evaluation, reporting, or research diagnostics.
+
+Role in the System:
+    Part of the research layer that records signal-evaluation datasets and diagnostic reports.
+
+Key Outputs:
+    Signal-evaluation datasets, reports, and comparison artifacts.
+
+Downstream Usage:
+    Consumed by tuning, governance reviews, and post-trade analysis.
 """
 
 from __future__ import annotations
@@ -156,14 +164,62 @@ _SIGNAL_ID_CACHE: dict[Path, dict[str, object]] = {}
 
 
 def _ensure_parent_dir(path: Path) -> None:
+    """
+    Purpose:
+        Ensure the parent directory exists before writing artifacts.
+
+    Context:
+        Function inside the `dataset` module. The module sits in the research layer that evaluates signals, curates datasets, and renders reports.
+
+    Inputs:
+        path (Path): Filesystem path used by the workflow.
+
+    Returns:
+        None: Filesystem side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _dataset_store_path(path: Path) -> Path:
+    """
+    Purpose:
+        Process dataset store path for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return path.with_suffix(".sqlite")
 
 
 def _read_sqlite_dataset(path: Path) -> pd.DataFrame:
+    """
+    Purpose:
+        Load the canonical signal-evaluation dataset from SQLite storage.
+
+    Context:
+        Function inside the `dataset` module. The module sits in the research layer that evaluates signals, curates datasets, and renders reports.
+
+    Inputs:
+        path (Path): Filesystem path used by the workflow.
+
+    Returns:
+        pd.DataFrame: Normalized dataset frame loaded from SQLite.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     if not path.exists():
         return _empty_dataset_frame()
     with sqlite3.connect(path) as connection:
@@ -172,6 +228,23 @@ def _read_sqlite_dataset(path: Path) -> pd.DataFrame:
 
 
 def _write_sqlite_dataset(frame: pd.DataFrame, path: Path) -> None:
+    """
+    Purpose:
+        Write sqlite dataset to the appropriate output artifact.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        path (Path): Input associated with path.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     _ensure_parent_dir(path)
     with sqlite3.connect(path) as connection:
         normalized = _normalize_dataset_frame(frame)
@@ -180,6 +253,23 @@ def _write_sqlite_dataset(frame: pd.DataFrame, path: Path) -> None:
 
 
 def _append_sqlite_rows(frame: pd.DataFrame, path: Path) -> None:
+    """
+    Purpose:
+        Process append sqlite rows for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        path (Path): Input associated with path.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty:
         return
     _ensure_parent_dir(path)
@@ -193,15 +283,64 @@ def _append_sqlite_rows(frame: pd.DataFrame, path: Path) -> None:
 
 
 def _sqlite_has_table(connection: sqlite3.Connection, table_name: str) -> bool:
+    """
+    Purpose:
+        Process sqlite has table for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        connection (sqlite3.Connection): Input associated with connection.
+        table_name (str): Human-readable name for table.
+    
+    Returns:
+        bool: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     query = "SELECT name FROM sqlite_master WHERE type='table' AND name = ?"
     return connection.execute(query, (table_name,)).fetchone() is not None
 
 
 def _empty_dataset_frame() -> pd.DataFrame:
+    """
+    Purpose:
+        Process empty dataset frame for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return pd.DataFrame(columns=SIGNAL_DATASET_COLUMNS)
 
 
 def _normalize_dataset_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Normalize dataset frame into the repository-standard form.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame is None:
         return _empty_dataset_frame()
 
@@ -212,6 +351,22 @@ def _normalize_dataset_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _current_file_signature(path: Path) -> tuple[int, int] | None:
+    """
+    Purpose:
+        Process current file signature for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+    
+    Returns:
+        tuple[int, int] | None: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not path.exists():
         return None
     stat = path.stat()
@@ -219,6 +374,23 @@ def _current_file_signature(path: Path) -> tuple[int, int] | None:
 
 
 def _update_signal_id_cache(path: Path, signal_ids: Iterable[object]) -> None:
+    """
+    Purpose:
+        Update signal identifier cache using the supplied inputs.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+        signal_ids (Iterable[object]): Input associated with signal ids.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     _SIGNAL_ID_CACHE[path] = {
         "signature": _current_file_signature(path),
         "signal_ids": {str(signal_id) for signal_id in signal_ids if pd.notna(signal_id)},
@@ -226,6 +398,22 @@ def _update_signal_id_cache(path: Path, signal_ids: Iterable[object]) -> None:
 
 
 def _load_existing_signal_ids(path: Path) -> set[str]:
+    """
+    Purpose:
+        Process load existing signal ids for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+    
+    Returns:
+        set[str]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not path.exists():
         sqlite_path = _dataset_store_path(path)
         if not sqlite_path.exists():
@@ -258,6 +446,22 @@ def _load_existing_signal_ids(path: Path) -> set[str]:
 
 
 def _dataset_has_canonical_header(path: Path) -> bool:
+    """
+    Purpose:
+        Process dataset has canonical header for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+    
+    Returns:
+        bool: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not path.exists():
         return False
     try:
@@ -268,6 +472,22 @@ def _dataset_has_canonical_header(path: Path) -> bool:
 
 
 def _dedupe_signal_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Remove duplicate entries from signal frame.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty:
         return frame.copy()
 
@@ -281,6 +501,24 @@ def _dedupe_signal_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _append_rows_to_dataset(frame: pd.DataFrame, path: Path, existing_signal_ids: set[str] | None = None) -> None:
+    """
+    Purpose:
+        Process append rows to dataset for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        path (Path): Input associated with path.
+        existing_signal_ids (set[str] | None): Input associated with existing signal ids.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty:
         return
 
@@ -296,6 +534,22 @@ def _append_rows_to_dataset(frame: pd.DataFrame, path: Path, existing_signal_ids
 
 
 def load_signals_dataset(path: str | Path = SIGNAL_DATASET_PATH) -> pd.DataFrame:
+    """
+    Purpose:
+        Process load signals dataset for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     dataset_path = Path(path)
     sqlite_path = _dataset_store_path(dataset_path)
     if not dataset_path.exists():
@@ -313,6 +567,23 @@ def load_signals_dataset(path: str | Path = SIGNAL_DATASET_PATH) -> pd.DataFrame
 
 
 def write_signals_dataset(frame: pd.DataFrame, path: str | Path = SIGNAL_DATASET_PATH) -> Path:
+    """
+    Purpose:
+        Write signals dataset to the appropriate output artifact.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        None: The function communicates through side effects such as terminal output or persisted artifacts.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     dataset_path = Path(path)
     _ensure_parent_dir(dataset_path)
     normalized = _normalize_dataset_frame(frame)
@@ -323,6 +594,22 @@ def write_signals_dataset(frame: pd.DataFrame, path: str | Path = SIGNAL_DATASET
 
 
 def ensure_signals_dataset_exists(path: str | Path = SIGNAL_DATASET_PATH) -> Path:
+    """
+    Purpose:
+        Ensure signals dataset exists exists and is ready for use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     dataset_path = Path(path)
     if not dataset_path.exists():
         write_signals_dataset(_empty_dataset_frame(), dataset_path)
@@ -335,6 +622,24 @@ def upsert_signal_rows(
     *,
     return_frame: bool = True,
 ) -> pd.DataFrame | None:
+    """
+    Purpose:
+        Process upsert signal rows for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        rows (Any): Input associated with rows.
+        path (str | Path): Input associated with path.
+        return_frame (bool): Boolean flag associated with return_frame.
+    
+    Returns:
+        pd.DataFrame | None: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     dataset_path = ensure_signals_dataset_exists(path)
     incoming = pd.DataFrame(rows or [])
 

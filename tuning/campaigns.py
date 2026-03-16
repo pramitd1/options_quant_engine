@@ -1,10 +1,17 @@
 """
-Automated group-level tuning campaigns.
+Module: campaigns.py
 
-The campaign runner is intentionally conservative:
-- group-wise rather than fully global optimization
-- walk-forward validation aware
-- robust-score ranking instead of raw objective only
+Purpose:
+    Implement campaigns utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -46,6 +53,23 @@ DEFAULT_GROUP_MAX_TRIALS = {
 
 
 def _group_parameter_keys(group: str, *, allow_live_unsafe: bool) -> list[str]:
+    """
+    Purpose:
+        Group records by parameter keys.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        group (str): Input associated with group.
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+    
+    Returns:
+        list[str]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     keys = []
     for key, definition in get_parameter_registry().items():
         if definition.group != group or not definition.tunable:
@@ -57,6 +81,22 @@ def _group_parameter_keys(group: str, *, allow_live_unsafe: bool) -> list[str]:
 
 
 def default_group_tuning_plans(*, allow_live_unsafe: bool = False) -> list[TuningGroupPlan]:
+    """
+    Purpose:
+        Process default group tuning plans for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+    
+    Returns:
+        list[TuningGroupPlan]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     groups = sorted({definition.group for _, definition in get_parameter_registry().items()})
     plans = []
     for group in groups:
@@ -83,6 +123,22 @@ def default_group_tuning_plans(*, allow_live_unsafe: bool = False) -> list[Tunin
 
 
 def _score_result(result: dict[str, Any]) -> float:
+    """
+    Purpose:
+        Process score result for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        result (dict[str, Any]): Input associated with result.
+    
+    Returns:
+        float: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     validation = dict(result.get("validation_results", {}))
     robustness = dict(result.get("robustness_metrics", {}))
     out_of_sample_score = float(validation.get("aggregate_out_of_sample_score", result.get("objective_score", 0.0)))
@@ -94,6 +150,23 @@ def _score_result(result: dict[str, Any]) -> float:
 
 
 def _append_campaign_result(payload: dict[str, Any], path: str | Path = TUNING_CAMPAIGN_LEDGER_PATH) -> Path:
+    """
+    Purpose:
+        Process append campaign result for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        payload (dict[str, Any]): Input associated with payload.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return append_jsonl_record(payload, path)
 
 
@@ -110,6 +183,31 @@ def run_group_tuning_campaign(
     seed: int = 19,
     persist: bool = True,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Process run group tuning campaign for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        parameter_pack_name (str): Human-readable name for parameter pack.
+        dataset_path (str | Path): Input associated with dataset path.
+        groups (list[str] | None): Input associated with groups.
+        allow_live_unsafe (bool): Boolean flag associated with allow_live_unsafe.
+        walk_forward_config (dict[str, Any] | None): Input associated with walk forward config.
+        objective_weights (dict[str, float] | None): Input associated with objective weights.
+        selection_thresholds (dict[str, Any] | None): Input associated with selection thresholds.
+        comparison_baseline_pack (str | None): Input associated with comparison baseline pack.
+        seed (int): Input associated with seed.
+        persist (bool): Boolean flag associated with persist.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     plans = default_group_tuning_plans(allow_live_unsafe=allow_live_unsafe)
     if groups:
         allowed = set(groups)

@@ -1,5 +1,17 @@
 """
-Signal evaluation and calibration dataset helpers.
+Module: __init__.py
+
+Purpose:
+    Implement init utilities for signal evaluation, reporting, or research diagnostics.
+
+Role in the System:
+    Part of the research layer that records signal-evaluation datasets and diagnostic reports.
+
+Key Outputs:
+    Signal-evaluation datasets, reports, and comparison artifacts.
+
+Downstream Usage:
+    Consumed by tuning, governance reviews, and post-trade analysis.
 """
 
 from research.signal_evaluation.dataset import (

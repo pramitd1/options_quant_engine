@@ -1,5 +1,17 @@
 """
-Deterministic objective functions for parameter tuning research.
+Module: objectives.py
+
+Purpose:
+    Implement objectives utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -29,11 +41,42 @@ DEFAULT_OBJECTIVE_WEIGHTS = {
 
 @dataclass(frozen=True)
 class SplitFrames:
+    """
+    Purpose:
+        Represent SplitFrames within the repository.
+    
+    Context:
+        Used within the `objectives` module. The class standardizes records that move through search, validation, shadow mode, and promotion.
+    
+    Attributes:
+        train (pd.DataFrame): DataFrame containing train.
+        validation (pd.DataFrame): DataFrame containing validation.
+    
+    Notes:
+        The record is immutable so tuning artifacts can be compared, persisted, and promoted without accidental mutation.
+    """
     train: pd.DataFrame
     validation: pd.DataFrame
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `objectives` module. The module sits in the tuning layer that searches, validates, and promotes parameter packs.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (float): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None or value == "":
             return default
@@ -43,6 +86,23 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _mean_or_default(series: pd.Series, default: float = 0.0) -> float:
+    """
+    Purpose:
+        Process mean or default for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        series (pd.Series): Input associated with series.
+        default (float): Input associated with default.
+    
+    Returns:
+        float: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     numeric = pd.to_numeric(series, errors="coerce")
     if numeric.dropna().empty:
         return default
@@ -50,6 +110,23 @@ def _mean_or_default(series: pd.Series, default: float = 0.0) -> float:
 
 
 def time_train_validation_split(frame: pd.DataFrame, validation_fraction: float = 0.30) -> SplitFrames:
+    """
+    Purpose:
+        Process time train validation split for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        validation_fraction (float): Input associated with validation fraction.
+    
+    Returns:
+        SplitFrames: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty:
         return SplitFrames(train=frame.copy(), validation=frame.copy())
 
@@ -65,6 +142,23 @@ def time_train_validation_split(frame: pd.DataFrame, validation_fraction: float 
 
 
 def apply_selection_policy(frame: pd.DataFrame, *, thresholds: dict[str, Any] | None = None) -> pd.DataFrame:
+    """
+    Purpose:
+        Process apply selection policy for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        thresholds (dict[str, Any] | None): Input associated with thresholds.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty:
         return frame.copy()
 
@@ -93,6 +187,22 @@ def apply_selection_policy(frame: pd.DataFrame, *, thresholds: dict[str, Any] | 
 
 
 def _regime_stability(frame: pd.DataFrame) -> float:
+    """
+    Purpose:
+        Process regime stability for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        float: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or "signal_regime" not in frame.columns:
         return 0.0
     counts = frame["signal_regime"].fillna("UNKNOWN").value_counts(normalize=True)
@@ -103,6 +213,23 @@ def _regime_stability(frame: pd.DataFrame) -> float:
 
 
 def compute_frame_metrics(selected: pd.DataFrame, total_sample_count: int) -> dict[str, Any]:
+    """
+    Purpose:
+        Compute frame metrics from the supplied inputs.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        selected (pd.DataFrame): Input associated with selected.
+        total_sample_count (int): Input associated with total sample count.
+    
+    Returns:
+        dict[str, Any]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     selected_count = int(len(selected))
     signal_frequency = 0.0 if total_sample_count <= 0 else selected_count / float(total_sample_count)
     direction_hit_rate = _mean_or_default(selected.get("correct_60m", pd.Series(dtype=float)))
@@ -131,6 +258,23 @@ def compute_frame_metrics(selected: pd.DataFrame, total_sample_count: int) -> di
 
 
 def compute_objective_score(components: dict[str, Any], *, objective_weights: dict[str, float] | None = None) -> float:
+    """
+    Purpose:
+        Compute objective score from the supplied inputs.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        components (dict[str, Any]): Input associated with components.
+        objective_weights (dict[str, float] | None): Input associated with objective weights.
+    
+    Returns:
+        float: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     weights = dict(DEFAULT_OBJECTIVE_WEIGHTS)
     if objective_weights:
         weights.update(objective_weights)
@@ -148,6 +292,25 @@ def compute_objective(
     objective_weights: dict[str, float] | None = None,
     parameter_count: int = 0,
 ) -> ObjectiveResult:
+    """
+    Purpose:
+        Compute objective from the supplied inputs.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        thresholds (dict[str, Any] | None): Input associated with thresholds.
+        objective_weights (dict[str, float] | None): Input associated with objective weights.
+        parameter_count (int): Input associated with parameter count.
+    
+    Returns:
+        ObjectiveResult: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     frame = frame.copy() if frame is not None else pd.DataFrame()
     split = time_train_validation_split(frame)
     train_selected = apply_selection_policy(split.train, thresholds=thresholds)

@@ -1,5 +1,17 @@
 """
-Backward-compatible facade for the dealer hedging pressure overlay.
+Module: dealer_hedging_pressure_layer.py
+
+Purpose:
+    Assemble the dealer hedging pressure overlay decision from features and policy rules.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -33,6 +45,43 @@ def build_dealer_hedging_pressure_state(
     gamma_vol_acceleration_score=None,
     holding_profile="AUTO",
 ):
+    """
+    Purpose:
+        Build the dealer hedging pressure state used by downstream components.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        gamma_regime (Any): Input associated with gamma regime.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        gamma_flip_distance_pct (Any): Input associated with gamma flip distance percentage.
+        dealer_position (Any): Input associated with dealer position.
+        dealer_hedging_bias (Any): Input associated with dealer hedging bias.
+        dealer_hedging_flow (Any): Input associated with dealer hedging flow.
+        market_gamma (Any): Input associated with market gamma.
+        gamma_clusters (Any): Input associated with gamma clusters.
+        liquidity_levels (Any): Input associated with liquidity levels.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+        liquidity_vacuum_state (Any): Structured state payload for liquidity vacuum.
+        intraday_gamma_state (Any): Structured state payload for intraday gamma.
+        intraday_range_pct (Any): Input associated with intraday range percentage.
+        flow_signal (Any): Input associated with flow signal.
+        smart_money_flow (Any): Input associated with smart money flow.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        global_risk_state (Any): Structured state payload for global risk.
+        volatility_explosion_probability (Any): Input associated with volatility explosion probability.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     features = build_dealer_hedging_pressure_features(
         spot=spot,
         gamma_regime=gamma_regime,

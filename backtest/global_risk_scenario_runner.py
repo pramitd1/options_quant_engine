@@ -1,9 +1,17 @@
 """
-Scenario runner for validating the global risk layer using local fixtures only.
+Module: global_risk_scenario_runner.py
 
-Usage:
-    python -m backtest.global_risk_scenario_runner
-    python -m backtest.global_risk_scenario_runner --scenario volatility_compression_breakout
+Purpose:
+    Implement global risk scenario runner logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
 """
 
 from __future__ import annotations
@@ -22,11 +30,43 @@ from risk import build_global_risk_state
 
 
 def _load_scenarios(path: str | None = None):
+    """
+    Purpose:
+        Process load scenarios for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (str | None): Input associated with path.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     path = Path(path or (Path(BASE_DIR) / "config/global_risk_scenarios.json"))
     return load_scenarios(path, list_key="scenarios")
 
 
 def run_scenario(scenario: dict):
+    """
+    Purpose:
+        Process run scenario for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        scenario (dict): Input associated with scenario.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     global_risk_state = build_global_risk_state(
         macro_event_state=scenario.get("macro_event_state"),
         macro_news_state=scenario.get("macro_news_state"),
@@ -55,6 +95,22 @@ def run_scenario(scenario: dict):
 
 
 def main():
+    """
+    Purpose:
+        Run the module entry point for command-line or operational execution.
+
+    Context:
+        Function inside the `global risk scenario runner` module. The module sits in the backtest layer that replays historical scenarios and scores realized performance.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Exit status or workflow result returned by the implementation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default=None, help="Optional scenario name from config/global_risk_scenarios.json")
     parser.add_argument("--scenario-file", default=None, help="Optional custom scenario file path")

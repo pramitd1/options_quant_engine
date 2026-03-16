@@ -163,6 +163,7 @@ def test_run_engine_snapshot_uses_promotion_state_and_logs_shadow(monkeypatch):
     assert result["signal_capture_status"] == "CAPTURED"
     assert result["shadow_log_status"] == "CAPTURED"
     assert result["trade"]["signal_id"] == "prod_pack-signal"
+    assert result["execution_trade"]["signal_id"] == "prod_pack-signal"
     assert comparisons[0]["shadow_pack_name"] == "cand_pack"
     assert len(captures) == 1
 

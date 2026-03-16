@@ -1,5 +1,17 @@
 """
-Signal policy calibration for live engine scoring and direction selection.
+Module: signal_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by signal.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -102,6 +114,31 @@ CONFIRMATION_FILTER_CONFIG = {
 
 @dataclass(frozen=True)
 class DataQualityPolicyConfig:
+    """
+    Purpose:
+        Dataclass representing DataQualityPolicyConfig within the repository.
+    
+    Context:
+        Used within the configuration layer that centralizes policy defaults and thresholds. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        invalid_spot_penalty (int): Penalty applied when invalid spot is active.
+        stale_spot_penalty (int): Penalty applied when stale spot is active.
+        invalid_option_chain_penalty (int): Penalty applied when invalid option chain is active.
+        stale_option_chain_penalty (int): Penalty applied when stale option chain is active.
+        provider_health_weak_penalty (int): Penalty applied when provider health weak is active.
+        provider_health_caution_penalty (int): Penalty applied when provider health caution is active.
+        missing_analytics_penalty_per_field (int): Value supplied for missing analytics penalty per field.
+        missing_analytics_penalty_cap (int): Cap applied to missing analytics penalty.
+        missing_all_probabilities_penalty (int): Penalty applied when missing all probabilities is active.
+        missing_hybrid_probability_penalty (int): Penalty applied when missing hybrid probability is active.
+        status_strong_threshold (int): Threshold used to classify or trigger status strong.
+        status_good_threshold (int): Threshold used to classify or trigger status good.
+        status_caution_threshold (int): Threshold used to classify or trigger status caution.
+    
+    Notes:
+        Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
+    """
     invalid_spot_penalty: int = 45
     stale_spot_penalty: int = 10
     invalid_option_chain_penalty: int = 45
@@ -119,12 +156,62 @@ class DataQualityPolicyConfig:
 
 @dataclass(frozen=True)
 class ExecutionRegimePolicyConfig:
+    """
+    Purpose:
+        Dataclass representing ExecutionRegimePolicyConfig within the repository.
+    
+    Context:
+        Used within the configuration layer that centralizes policy defaults and thresholds. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        reduced_size_multiplier_threshold (float): Threshold used to classify or trigger reduced size multiplier.
+        observe_data_quality_threshold (int): Threshold used to classify or trigger observe data quality.
+    
+    Notes:
+        Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
+    """
     reduced_size_multiplier_threshold: float = 1.0
     observe_data_quality_threshold: int = 70
 
 
 @dataclass(frozen=True)
 class LargeMoveScoringPolicyConfig:
+    """
+    Purpose:
+        Dataclass representing LargeMoveScoringPolicyConfig within the repository.
+    
+    Context:
+        Used within the configuration layer that centralizes policy defaults and thresholds. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        hybrid_threshold_extreme (float): Value supplied for hybrid threshold extreme.
+        hybrid_score_extreme (int): Value supplied for hybrid score extreme.
+        hybrid_threshold_high (float): Value supplied for hybrid threshold high.
+        hybrid_score_high (int): Value supplied for hybrid score high.
+        hybrid_threshold_moderate (float): Value supplied for hybrid threshold moderate.
+        hybrid_score_moderate (int): Value supplied for hybrid score moderate.
+        hybrid_threshold_watch (float): Value supplied for hybrid threshold watch.
+        hybrid_score_watch (int): Value supplied for hybrid score watch.
+        hybrid_threshold_tail (float): Value supplied for hybrid threshold tail.
+        hybrid_score_tail (int): Value supplied for hybrid score tail.
+        ml_threshold_extreme (float): Value supplied for ML threshold extreme.
+        ml_score_extreme (int): Value supplied for ML score extreme.
+        ml_threshold_high (float): Value supplied for ML threshold high.
+        ml_score_high (int): Value supplied for ML score high.
+        ml_threshold_moderate (float): Value supplied for ML threshold moderate.
+        ml_score_moderate (int): Value supplied for ML score moderate.
+        ml_threshold_watch (float): Value supplied for ML threshold watch.
+        ml_score_watch (int): Value supplied for ML score watch.
+        ml_threshold_tail (float): Value supplied for ML threshold tail.
+        ml_score_tail (int): Value supplied for ML score tail.
+        overlap_hybrid_floor (int): Floor value used for overlap hybrid.
+        overlap_ml_floor (int): Floor value used for overlap ML.
+        overlap_penalty (int): Penalty applied when overlap is active.
+        total_score_cap (int): Cap applied to total score.
+    
+    Notes:
+        Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
+    """
     hybrid_threshold_extreme: float = 0.75
     hybrid_score_extreme: int = 12
     hybrid_threshold_high: float = 0.65
@@ -153,6 +240,27 @@ class LargeMoveScoringPolicyConfig:
 
 @dataclass(frozen=True)
 class TradeModifierPolicyConfig:
+    """
+    Purpose:
+        Dataclass representing TradeModifierPolicyConfig within the repository.
+    
+    Context:
+        Used within the configuration layer that centralizes policy defaults and thresholds. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        gamma_alignment_score (int): Score value for gamma alignment.
+        gamma_conflict_penalty (int): Penalty applied when gamma conflict is active.
+        gamma_two_sided_score (int): Score value for gamma two sided.
+        dealer_pinning_penalty (int): Penalty applied when dealer pinning is active.
+        dealer_instability_penalty (int): Penalty applied when dealer instability is active.
+        dealer_alignment_score (int): Score value for dealer alignment.
+        dealer_conflict_penalty (int): Penalty applied when dealer conflict is active.
+        alignment_score_floor (int): Floor value used for alignment score.
+        alignment_score_cap (int): Cap applied to alignment score.
+    
+    Notes:
+        Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
+    """
     gamma_alignment_score: int = 2
     gamma_conflict_penalty: int = -6
     gamma_two_sided_score: int = 1
@@ -165,63 +273,223 @@ class TradeModifierPolicyConfig:
 
 
 def get_direction_vote_weights():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return direction vote weights for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("trade_strength.direction_vote", DIRECTION_VOTE_WEIGHTS)
 
 
 def get_direction_thresholds():
-    from tuning.runtime import get_parameter_value
+    """
+    Purpose:
+        Return direction thresholds for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import get_parameter_value
 
     return {
-        "min_score": float(get_parameter_value("trade_strength.direction_thresholds.min_score")),
-        "min_margin": float(get_parameter_value("trade_strength.direction_thresholds.min_margin")),
+        "min_score": float(get_parameter_value("trade_strength.direction_thresholds.min_score", DIRECTION_MIN_SCORE)),
+        "min_margin": float(get_parameter_value("trade_strength.direction_thresholds.min_margin", DIRECTION_MIN_MARGIN)),
     }
 
 
 def get_trade_strength_weights():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return trade strength weights for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("trade_strength.scoring", TRADE_STRENGTH_WEIGHTS)
 
 
 def get_consensus_score_config():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return the configuration bundle for consensus score.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("trade_strength.consensus", CONSENSUS_SCORE_CONFIG)
 
 
 def get_trade_runtime_thresholds():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return trade runtime thresholds for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("trade_strength.runtime_thresholds", TRADE_RUNTIME_THRESHOLDS)
 
 
 def get_confirmation_filter_config():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return the confirmation-filter policy bundle used by signal assembly.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("confirmation_filter.core", CONFIRMATION_FILTER_CONFIG)
 
 
 def get_data_quality_policy_config() -> DataQualityPolicyConfig:
-    from tuning.runtime import resolve_dataclass_config
+    """
+    Purpose:
+        Return the data-quality policy bundle used when validating signal inputs.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        DataQualityPolicyConfig: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("signal_engine.data_quality", DataQualityPolicyConfig())
 
 
 def get_execution_regime_policy_config() -> ExecutionRegimePolicyConfig:
-    from tuning.runtime import resolve_dataclass_config
+    """
+    Purpose:
+        Return the execution-regime policy bundle used by trade classification.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        ExecutionRegimePolicyConfig: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("signal_engine.execution_regime", ExecutionRegimePolicyConfig())
 
 
 def get_large_move_scoring_policy_config() -> LargeMoveScoringPolicyConfig:
-    from tuning.runtime import resolve_dataclass_config
+    """
+    Purpose:
+        Return the large-move scoring policy bundle used by the signal engine.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        LargeMoveScoringPolicyConfig: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("signal_engine.large_move_scoring", LargeMoveScoringPolicyConfig())
 
 
 def get_trade_modifier_policy_config() -> TradeModifierPolicyConfig:
-    from tuning.runtime import resolve_dataclass_config
+    """
+    Purpose:
+        Return the trade-modifier policy bundle used by overlay scoring.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        TradeModifierPolicyConfig: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("signal_engine.trade_modifiers", TradeModifierPolicyConfig())

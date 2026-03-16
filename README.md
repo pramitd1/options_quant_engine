@@ -115,6 +115,7 @@ These layers are intentionally modifiers and filters. They do not replace the co
 ### 2. Replay and Validation
 
 - replay through `main.py --replay`
+- shared replay/backtest orchestration through [run_preloaded_engine_snapshot](app/engine_runner.py)
 - snapshot-based validation under [backtest/](backtest)
 - deterministic scenario runners for global risk, gamma-vol, dealer pressure, and option efficiency
 
@@ -138,7 +139,8 @@ These layers are intentionally modifiers and filters. They do not replace the co
 - central parameter registry in [registry.py](tuning/registry.py)
 - named packs in [parameter_packs](config/parameter_packs)
 - research-generated candidate packs in `research/parameter_tuning/candidate_packs/`
-- runtime pack activation in [runtime.py](tuning/runtime.py)
+- runtime policy resolution in [policy_resolver.py](config/policy_resolver.py)
+- tuning-facing compatibility wrappers in [runtime.py](tuning/runtime.py)
 - objective evaluation and experiments in [objectives.py](tuning/objectives.py) and [experiments.py](tuning/experiments.py)
 - search, promotion, and ledger inspection in [search.py](tuning/search.py), [promotion.py](tuning/promotion.py), and [reporting.py](tuning/reporting.py)
 - automated group tuning campaigns in [campaigns.py](tuning/campaigns.py)
@@ -156,19 +158,26 @@ Important distinction:
 
 1. spot data and intraday context are loaded from `data/spot_downloader.py`
 2. option-chain data is routed through broker/public adapters in `data/`
-3. provider output is normalized and validated
-4. expiry selection is resolved before trade generation
-5. [signal_engine.py](engine/signal_engine.py) assembles:
+3. [engine_runner.py](app/engine_runner.py) now splits loading from evaluation:
+   - `run_engine_snapshot(...)` loads live/replay inputs
+   - `run_preloaded_engine_snapshot(...)` evaluates already-loaded snapshots
+4. provider output is normalized and validated
+5. expiry selection is resolved before trade generation
+6. [signal_engine.py](engine/signal_engine.py) assembles:
    - market state
    - probability state
    - directional vote
    - trade strength
    - strike selection
    - trade payload
-6. [trading_engine.py](engine/trading_engine.py) remains as a backward-compatible facade over the canonical signal engine
-7. helper domains are separated under `engine/trading_support/`
-8. overlay layers modify risk, ranking, confirmation, and overnight handling
-9. the result is rendered in the terminal or Streamlit and optionally written into the research dataset
+7. trade output is split into:
+   - `execution_trade` for operator/execution-facing fields
+   - `trade_audit` for research, diagnostics, and governance fields
+   - `trade` as the backward-compatible merged payload
+8. [trading_engine.py](engine/trading_engine.py) remains as a backward-compatible facade over the canonical signal engine
+9. helper domains are separated under `engine/trading_support/`
+10. overlay layers modify risk, ranking, confirmation, and overnight handling
+11. the result is rendered in the terminal or Streamlit and optionally written into the research dataset
 
 ### Overlay Stack
 
@@ -223,6 +232,8 @@ options_quant_engine/
 ## Key Files
 
 - [signal_engine.py](engine/signal_engine.py): canonical signal assembly
+- [policy_resolver.py](config/policy_resolver.py): runtime policy-resolution layer that breaks the config/tuning cycle
+- [engine_runner.py](app/engine_runner.py): loader wrapper plus shared preloaded snapshot orchestration
 - [trading_engine.py](engine/trading_engine.py): backward-compatible facade for signal generation imports
 - [trading_engine_support.py](engine/trading_engine_support.py): backward-compatible facade over `engine/trading_support/`
 - [strike_selector.py](strategy/strike_selector.py): strike ranking and optional candidate hooks

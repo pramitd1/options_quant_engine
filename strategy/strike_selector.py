@@ -1,8 +1,17 @@
 """
-Strike Selector
+Module: strike_selector.py
 
-Ranks candidate option strikes for the engine instead of choosing only the
-nearest strike mechanically.
+Purpose:
+    Rank option contracts and choose the strike that best expresses the current directional thesis.
+
+Role in the System:
+    Part of the strategy layer that converts directional intent into executable option trades.
+
+Key Outputs:
+    Ranked candidate strikes, factor-level score breakdowns, and the selected strike for trade construction.
+
+Downstream Usage:
+    Consumed by the signal engine during contract selection and by research tooling for diagnostics.
 """
 
 import numpy as np
@@ -12,6 +21,23 @@ from config.strike_selection_policy import get_strike_selection_score_config
 
 
 def _safe_float(x, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Used within the strike selector workflow. The module sits in the strategy layer that converts directional intent into executable option trades.
+
+    Inputs:
+        x (Any): Raw scalar input supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if x is None:
             return default
@@ -20,6 +46,22 @@ def _safe_float(x, default=0.0):
         return default
 
 def _to_python_number(x):
+    """
+    Purpose:
+        Convert numpy-style numeric scalars into plain Python numbers when possible.
+
+    Context:
+        Used within the strike selector workflow. The module sits in the strategy layer that converts directional intent into executable option trades.
+
+    Inputs:
+        x (Any): Raw scalar input supplied by the caller.
+
+    Returns:
+        Any: Native Python scalar when conversion succeeds, otherwise the original value.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if hasattr(x, "item"):
             return x.item()
@@ -36,6 +78,22 @@ def _to_python_number(x):
 
 
 def _infer_strike_step(rows):
+    """
+    Purpose:
+        Infer the minimum strike spacing present in the option-chain candidates.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        rows (Any): Candidate option-contract rows under evaluation.
+    
+    Returns:
+        float | None: Inferred strike interval, or `None` when the chain is too sparse to infer spacing.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     if rows is None or rows.empty or "strikePrice" not in rows.columns:
         return None
 
@@ -59,6 +117,24 @@ def _infer_strike_step(rows):
 
 
 def _apply_strike_window(rows, spot, window_steps):
+    """
+    Purpose:
+        Filter candidate rows to strikes within the configured distance from spot.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        rows (Any): Candidate option-contract rows under evaluation.
+        spot (Any): Current underlying spot price.
+        window_steps (Any): Number of strike intervals to retain on each side of spot.
+    
+    Returns:
+        Any: Filtered candidate rows when a strike window can be applied, otherwise the original rows.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     if rows is None or rows.empty:
         return rows
 
@@ -81,6 +157,22 @@ def _apply_strike_window(rows, spot, window_steps):
 
 
 def _normalize_candidate_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Normalize provider-specific strike columns into the common scoring schema.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        rows (pd.DataFrame): Candidate option-contract rows under evaluation.
+    
+    Returns:
+        pd.DataFrame: Candidate rows with normalized numeric helper columns used by scoring.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     normalized = rows.copy()
     normalized["_normalized_strike"] = pd.to_numeric(normalized.get("strikePrice"), errors="coerce")
     normalized["_normalized_last_price"] = pd.to_numeric(
@@ -103,6 +195,24 @@ def _normalize_candidate_rows(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
+    """
+    Purpose:
+        Score each strike by how closely it matches the preferred moneyness bucket.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        strikes (pd.Series): Strike-price series for the candidate option contracts.
+        spot (Any): Current underlying spot price.
+        cfg (Any): Configuration dictionary containing thresholds, weights, and score buckets.
+    
+    Returns:
+        pd.Series: Integer score for each strike based on distance from the preferred moneyness bucket.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     distance_pct = (strikes.astype(float) - float(spot)).abs() / max(float(spot), 1e-6) * 100.0
     scores = np.select(
         [
@@ -123,6 +233,25 @@ def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
 
 
 def _score_directional_side_series(strikes: pd.Series, *, direction, spot, cfg) -> pd.Series:
+    """
+    Purpose:
+        Reward strikes whose relative position to spot matches the requested call or put direction.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        strikes (pd.Series): Strike-price series for the candidate option contracts.
+        direction (Any): Directional side requested by the strategy, typically `CALL` or `PUT`.
+        spot (Any): Current underlying spot price.
+        cfg (Any): Configuration dictionary containing thresholds, weights, and score buckets.
+    
+    Returns:
+        pd.Series: Integer score for each strike based on whether it sits on the preferred side of spot.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     strikes = strikes.astype(float)
     if direction == "CALL":
         scores = np.where(
@@ -148,6 +277,25 @@ def _score_premium_series(
     max_capital=None,
     lot_size=None,
 ) -> pd.Series:
+    """
+    Purpose:
+        Score candidate strikes by premium affordability and contract efficiency.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        premiums (pd.Series): Option premium series used to judge affordability and contract quality.
+        cfg (Any): Configuration dictionary containing thresholds, weights, and score buckets.
+        max_capital (Any): Maximum capital budget available for the trade.
+        lot_size (Any): Lot size used to translate premium into per-trade capital usage.
+    
+    Returns:
+        pd.Series: Integer score for each strike based on affordability and premium quality.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     premium_series = premiums.astype(float)
     scores = np.select(
         [
@@ -184,6 +332,24 @@ def _score_premium_series(
 
 
 def _score_liquidity_series(volume: pd.Series, open_interest: pd.Series, *, cfg) -> pd.Series:
+    """
+    Purpose:
+        Score candidate strikes using traded volume and open-interest liquidity proxies.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        volume (pd.Series): Traded-volume series used as a liquidity proxy.
+        open_interest (pd.Series): Open-interest series used as a liquidity and crowding proxy.
+        cfg (Any): Configuration dictionary containing thresholds, weights, and score buckets.
+    
+    Returns:
+        pd.Series: Integer score for each strike based on volume and open-interest quality.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     vol = volume.astype(float)
     oi = open_interest.astype(float)
 
@@ -224,6 +390,26 @@ def _score_wall_distance_series(
     support_wall=None,
     resistance_wall=None,
 ) -> pd.Series:
+    """
+    Purpose:
+        Penalize strikes that sit too close to the most relevant structural wall.
+
+    Context:
+        Strike selection should avoid buying calls directly into nearby resistance or buying puts directly into nearby support. This helper converts that market-structure idea into an additive strike-ranking penalty.
+
+    Inputs:
+        strikes (pd.Series): Candidate strike prices.
+        direction (Any): Requested trade direction, typically `CALL` or `PUT`.
+        cfg (Any): Strike-selection configuration containing wall-distance thresholds and penalties.
+        support_wall (Any): Support level inferred from positioning or liquidity structure.
+        resistance_wall (Any): Resistance level inferred from positioning or liquidity structure.
+
+    Returns:
+        pd.Series: Integer wall-distance score for each strike.
+
+    Notes:
+        Only the wall that matters for the current direction is considered because that is the nearer execution obstacle.
+    """
     strikes = strikes.astype(float)
     score = pd.Series(0, index=strikes.index, dtype="int64")
     support = _safe_float(support_wall, None)
@@ -268,6 +454,24 @@ def _score_wall_distance_series(
 
 
 def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, cfg) -> pd.Series:
+    """
+    Purpose:
+        Score candidate strikes by their distance from known gamma concentration levels.
+
+    Context:
+        Gamma clusters can act as pinning magnets or acceleration triggers. The selector therefore penalizes strikes too close to those levels and can mildly reward contracts farther away.
+
+    Inputs:
+        strikes (pd.Series): Candidate strike prices.
+        gamma_clusters (Any): Gamma concentration levels inferred from the analytics layer.
+        cfg (Any): Strike-selection configuration containing cluster-distance thresholds and penalties.
+
+    Returns:
+        pd.Series: Integer gamma-cluster distance score for each strike.
+
+    Notes:
+        This is a structural heuristic meant to keep trade construction aligned with the surrounding dealer-positioning map.
+    """
     if not gamma_clusters:
         return pd.Series(0, index=strikes.index, dtype="int64")
 
@@ -299,6 +503,23 @@ def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, 
 
 
 def _score_iv_series(iv: pd.Series, *, cfg) -> pd.Series:
+    """
+    Purpose:
+        Score candidate strikes using implied-volatility fairness heuristics.
+    
+    Context:
+        Internal helper in the `strike selector` module. It isolates one strike-selection factor so candidate ranking remains explainable.
+    
+    Inputs:
+        iv (pd.Series): Implied-volatility series for the candidate contracts.
+        cfg (Any): Configuration dictionary containing thresholds, weights, and score buckets.
+    
+    Returns:
+        pd.Series: Integer score for each strike based on implied-volatility fairness.
+    
+    Notes:
+        Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
+    """
     iv_values = iv.astype(float)
     scores = np.select(
         [
@@ -330,7 +551,33 @@ def _score_candidate_frame(
     max_capital=None,
     lot_size=None,
 ) -> pd.DataFrame:
+    """
+    Purpose:
+        Compute the additive strike-ranking factors for every candidate contract.
+
+    Context:
+        The strike selector expresses trade construction as a weighted scorecard. This helper attaches each factor separately so live diagnostics and research can explain why one strike beat another.
+
+    Inputs:
+        rows (pd.DataFrame): Candidate option rows to score.
+        direction (Any): Requested trade direction, typically `CALL` or `PUT`.
+        spot (Any): Current underlying spot price.
+        cfg (Any): Strike-selection configuration with factor thresholds and score values.
+        support_wall (Any): Support level inferred from market structure.
+        resistance_wall (Any): Resistance level inferred from market structure.
+        gamma_clusters (Any): Gamma concentration levels from the analytics layer.
+        max_capital (Any): Maximum capital budget available for the trade.
+        lot_size (Any): Lot size used when translating premium into capital usage.
+
+    Returns:
+        pd.DataFrame: Candidate frame enriched with factor-level scores and total base score.
+
+    Notes:
+        The factor design is heuristic and intentionally transparent; each column becomes part of the strike-selection audit trail.
+    """
     scored = rows.copy()
+    # Each factor captures a different execution trade-off: directional fit,
+    # affordability, liquidity, structural levels, and volatility posture.
     scored["_moneyness_score"] = _score_moneyness_series(scored["_normalized_strike"], spot=spot, cfg=cfg)
     scored["_directional_side_score"] = _score_directional_side_series(
         scored["_normalized_strike"],
@@ -387,6 +634,32 @@ def rank_strike_candidates(
     strike_window_steps=None,
     candidate_score_hook=None,
 ):
+    """
+    Purpose:
+        Rank option contracts that could express the requested directional thesis.
+    
+    Context:
+        Public function in the `strike selector` module. It forms part of the strategy workflow exposed by this module.
+    
+    Inputs:
+        option_chain (Any): Option-chain snapshot used for scoring or signal generation.
+        direction (Any): Directional side requested by the strategy, typically `CALL` or `PUT`.
+        spot (Any): Current underlying spot price.
+        support_wall (Any): Nearest support wall inferred from positioning or open-interest structure.
+        resistance_wall (Any): Nearest resistance wall inferred from positioning or open-interest structure.
+        gamma_clusters (Any): Mapped gamma concentration levels that can pin or accelerate price action.
+        lot_size (Any): Lot size used to translate premium into per-trade capital usage.
+        max_capital (Any): Maximum capital budget available for the trade.
+        top_n (Any): Number of top-ranked contracts to retain after scoring.
+        strike_window_steps (Any): Strike-window width, measured in strike increments around spot.
+        candidate_score_hook (Any): Optional callback that adds custom candidate-level score adjustments.
+    
+    Returns:
+        list[dict]: Ranked contract candidates, including total scores and supporting diagnostics.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     if option_chain is None or len(option_chain) == 0:
         return []
 
@@ -418,6 +691,8 @@ def rank_strike_candidates(
         lot_size=lot_size,
     )
 
+    # Convert the scored dataframe into plain records because the final engine
+    # payload and downstream reporting stack work with JSON-friendly structures.
     candidates = []
     for row in rows.to_dict(orient="records"):
         strike = _safe_float(row.get("_normalized_strike", row.get("strikePrice")), None)
@@ -455,6 +730,8 @@ def rank_strike_candidates(
             except Exception:
                 hook_payload = {}
 
+        # The hook is used by option-efficiency scoring to reward contracts that
+        # fit the target/stop geometry better than the base heuristics alone.
         efficiency_score_adjustment = int(_safe_float(hook_payload.get("score_adjustment"), 0.0))
         if efficiency_score_adjustment:
             score_breakdown["option_efficiency_score_adjustment"] = efficiency_score_adjustment
@@ -498,6 +775,31 @@ def select_best_strike(
     strike_window_steps=None,
     candidate_score_hook=None,
 ):
+    """
+    Purpose:
+        Select the highest-ranked strike candidate for trade construction.
+    
+    Context:
+        Public function in the `strike selector` module. It forms part of the strategy workflow exposed by this module.
+    
+    Inputs:
+        option_chain (Any): Option-chain snapshot used for scoring or signal generation.
+        direction (Any): Directional side requested by the strategy, typically `CALL` or `PUT`.
+        spot (Any): Current underlying spot price.
+        support_wall (Any): Nearest support wall inferred from positioning or open-interest structure.
+        resistance_wall (Any): Nearest resistance wall inferred from positioning or open-interest structure.
+        gamma_clusters (Any): Mapped gamma concentration levels that can pin or accelerate price action.
+        lot_size (Any): Lot size used to translate premium into per-trade capital usage.
+        max_capital (Any): Maximum capital budget available for the trade.
+        strike_window_steps (Any): Strike-window width, measured in strike increments around spot.
+        candidate_score_hook (Any): Optional callback that adds custom candidate-level score adjustments.
+    
+    Returns:
+        Any: The highest-ranked strike candidate, or the module fallback when no candidate qualifies.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     ranked = rank_strike_candidates(
         option_chain=option_chain,
         direction=direction,

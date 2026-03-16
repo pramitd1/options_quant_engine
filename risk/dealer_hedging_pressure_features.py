@@ -1,5 +1,17 @@
 """
-Deterministic raw feature model for dealer hedging pressure.
+Module: dealer_hedging_pressure_features.py
+
+Purpose:
+    Build dealer hedging pressure features used by the risk overlay.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -8,10 +20,45 @@ from config.dealer_hedging_pressure_policy import get_dealer_hedging_pressure_po
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `dealer hedging pressure features` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `dealer hedging pressure features` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -21,6 +68,23 @@ def _safe_float(value, default=0.0):
 
 
 def _safe_int(value, default=0):
+    """
+    Purpose:
+        Safely coerce an input to `int` while preserving a fallback.
+
+    Context:
+        Function inside the `dealer hedging pressure features` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        int: Parsed integer value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -30,6 +94,23 @@ def _safe_int(value, default=0):
 
 
 def _holding_context(global_risk_state, holding_profile):
+    """
+    Purpose:
+        Process holding context for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        global_risk_state (Any): Structured state payload for global risk.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
     holding_context = global_risk_state.get("holding_context", {})
     holding_context = holding_context if isinstance(holding_context, dict) else {}
@@ -46,6 +127,23 @@ def _holding_context(global_risk_state, holding_profile):
 
 
 def _gamma_base_scores(gamma_regime, dealer_position):
+    """
+    Purpose:
+        Process gamma base scores for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        gamma_regime (Any): Input associated with gamma regime.
+        dealer_position (Any): Input associated with dealer position.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     gamma_regime = str(gamma_regime or "").upper().strip()
     dealer_position = str(dealer_position or "").upper().strip()
@@ -67,6 +165,23 @@ def _gamma_base_scores(gamma_regime, dealer_position):
 
 
 def _flip_proximity_score(gamma_flip_distance_pct, spot_vs_flip):
+    """
+    Purpose:
+        Process flip proximity score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        gamma_flip_distance_pct (Any): Input associated with gamma flip distance percentage.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     spot_vs_flip = str(spot_vs_flip or "").upper().strip()
     distance = _safe_float(gamma_flip_distance_pct, None)
@@ -89,6 +204,22 @@ def _flip_proximity_score(gamma_flip_distance_pct, spot_vs_flip):
 
 
 def _bias_scores(dealer_hedging_bias):
+    """
+    Purpose:
+        Process bias scores for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        dealer_hedging_bias (Any): Input associated with dealer hedging bias.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     bias = str(dealer_hedging_bias or "").upper().strip()
     upside = 0.0
@@ -108,6 +239,22 @@ def _bias_scores(dealer_hedging_bias):
 
 
 def _hedging_flow_scores(dealer_hedging_flow):
+    """
+    Purpose:
+        Process hedging flow scores for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        dealer_hedging_flow (Any): Input associated with dealer hedging flow.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     flow = str(dealer_hedging_flow or "").upper().strip()
     if flow == "BUY_FUTURES":
@@ -118,6 +265,22 @@ def _hedging_flow_scores(dealer_hedging_flow):
 
 
 def _intraday_gamma_scores(intraday_gamma_state):
+    """
+    Purpose:
+        Process intraday gamma scores for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        intraday_gamma_state (Any): Structured state payload for intraday gamma.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     state = str(intraday_gamma_state or "").upper().strip()
     if state == "VOL_EXPANSION":
@@ -130,6 +293,23 @@ def _intraday_gamma_scores(intraday_gamma_state):
 
 
 def _flow_confirmation_scores(flow_signal, smart_money_flow):
+    """
+    Purpose:
+        Process flow confirmation scores for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        flow_signal (Any): Input associated with flow signal.
+        smart_money_flow (Any): Input associated with smart money flow.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     bullish = 0.0
     bearish = 0.0
@@ -151,6 +331,23 @@ def _flow_confirmation_scores(flow_signal, smart_money_flow):
 
 
 def _nearest_level_distance_pct(spot, levels):
+    """
+    Purpose:
+        Process nearest level distance percentage for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        levels (Any): Input associated with levels.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     spot_value = _safe_float(spot, None)
     if spot_value in (None, 0):
         return None
@@ -167,6 +364,27 @@ def _nearest_level_distance_pct(spot, levels):
 
 
 def _structure_scores(spot, support_wall, resistance_wall, gamma_clusters, liquidity_levels, liquidity_vacuum_state):
+    """
+    Purpose:
+        Process structure scores for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+        gamma_clusters (Any): Input associated with gamma clusters.
+        liquidity_levels (Any): Input associated with liquidity levels.
+        liquidity_vacuum_state (Any): Structured state payload for liquidity vacuum.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     levels = []
     for level in [support_wall, resistance_wall]:
@@ -200,6 +418,25 @@ def _structure_scores(spot, support_wall, resistance_wall, gamma_clusters, liqui
 
 
 def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_explosion_probability, gamma_vol_acceleration_score):
+    """
+    Purpose:
+        Process macro global boost for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        global_risk_state (Any): Structured state payload for global risk.
+        volatility_explosion_probability (Any): Input associated with volatility explosion probability.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     macro_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     state = (
@@ -252,6 +489,43 @@ def build_dealer_hedging_pressure_features(
     gamma_vol_acceleration_score=None,
     holding_profile="AUTO",
 ):
+    """
+    Purpose:
+        Build the dealer hedging pressure features used by downstream components.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        gamma_regime (Any): Input associated with gamma regime.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        gamma_flip_distance_pct (Any): Input associated with gamma flip distance percentage.
+        dealer_position (Any): Input associated with dealer position.
+        dealer_hedging_bias (Any): Input associated with dealer hedging bias.
+        dealer_hedging_flow (Any): Input associated with dealer hedging flow.
+        market_gamma (Any): Input associated with market gamma.
+        gamma_clusters (Any): Input associated with gamma clusters.
+        liquidity_levels (Any): Input associated with liquidity levels.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+        liquidity_vacuum_state (Any): Structured state payload for liquidity vacuum.
+        intraday_gamma_state (Any): Structured state payload for intraday gamma.
+        intraday_range_pct (Any): Input associated with intraday range percentage.
+        flow_signal (Any): Input associated with flow signal.
+        smart_money_flow (Any): Input associated with smart money flow.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        global_risk_state (Any): Structured state payload for global risk.
+        volatility_explosion_probability (Any): Input associated with volatility explosion probability.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     holding_context = _holding_context(global_risk_state, holding_profile)
 

@@ -1,9 +1,17 @@
 """
-Historical IV Surface Loader
+Module: historical_iv_surface.py
 
-Truthful behavior:
-- loads real cached historical IV surface data if available
-- otherwise returns None so caller can fall back to synthetic IV
+Purpose:
+    Implement historical IV surface data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from pathlib import Path
@@ -13,6 +21,23 @@ from config.settings import IV_SURFACE_DIR
 
 
 def _candidate_paths(symbol: str, years: int):
+    """
+    Purpose:
+        Process candidate paths for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     symbol = symbol.upper().strip()
     base = Path(IV_SURFACE_DIR)
     return [

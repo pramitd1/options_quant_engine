@@ -1,5 +1,17 @@
 """
-Promotion workflow, state management, and audit trail for parameter packs.
+Module: promotion.py
+
+Purpose:
+    Implement promotion utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -35,10 +47,43 @@ DEFAULT_PROMOTION_CRITERIA = {
 
 
 def _utc_now_iso() -> str:
+    """
+    Purpose:
+        Process utc now iso for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return pd.Timestamp.utcnow().isoformat()
 
 
 def _default_assignment(pack_name: str | None, state: str) -> dict[str, Any]:
+    """
+    Purpose:
+        Process default assignment for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        pack_name (str | None): Human-readable name for pack.
+        state (str): Input associated with state.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return PackStateAssignment(
         pack_name=pack_name,
         state=state,
@@ -51,6 +96,22 @@ def _default_assignment(pack_name: str | None, state: str) -> dict[str, Any]:
 
 
 def _default_state() -> dict[str, Any]:
+    """
+    Purpose:
+        Process default state for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return {
         "baseline": "baseline_v1",
         "candidate": "candidate_v1",
@@ -67,6 +128,22 @@ def _default_state() -> dict[str, Any]:
 
 
 def _normalize_state(state: dict | None) -> dict[str, Any]:
+    """
+    Purpose:
+        Normalize state into the repository-standard form.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        state (dict | None): Input associated with state.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     normalized = _default_state()
     incoming = dict(state or {})
 
@@ -94,6 +171,22 @@ def _normalize_state(state: dict | None) -> dict[str, Any]:
 
 
 def load_promotion_state(path: str | Path = PROMOTION_STATE_PATH) -> dict:
+    """
+    Purpose:
+        Process load promotion state for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        dict: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state_path = Path(path)
     if not state_path.exists():
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +197,23 @@ def load_promotion_state(path: str | Path = PROMOTION_STATE_PATH) -> dict:
 
 
 def write_promotion_state(state: dict, path: str | Path = PROMOTION_STATE_PATH) -> Path:
+    """
+    Purpose:
+        Write promotion state to the appropriate output artifact.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        state (dict): Input associated with state.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        None: The function communicates through side effects such as terminal output or persisted artifacts.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state_path = Path(path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     normalized = _normalize_state(state)
@@ -112,11 +222,44 @@ def write_promotion_state(state: dict, path: str | Path = PROMOTION_STATE_PATH) 
 
 
 def append_promotion_event(event: PromotionLedgerEvent | dict[str, Any], path: str | Path = PROMOTION_LEDGER_PATH) -> Path:
+    """
+    Purpose:
+        Process append promotion event for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        event (PromotionLedgerEvent | dict[str, Any]): Input associated with event.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     event_payload = event.to_dict() if hasattr(event, "to_dict") else dict(event or {})
     return append_jsonl_record(event_payload, path)
 
 
 def _state_key(state_name: str) -> str:
+    """
+    Purpose:
+        Process state key for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        state_name (str): Human-readable name for state.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     normalized = str(state_name).strip().lower()
     if normalized not in PACK_STATES:
         raise ValueError(f"Unsupported pack state: {state_name}")
@@ -124,15 +267,63 @@ def _state_key(state_name: str) -> str:
 
 
 def get_active_live_pack(path: str | Path = PROMOTION_STATE_PATH) -> str:
+    """
+    Purpose:
+        Return active live pack for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return str(load_promotion_state(path).get("live") or "baseline_v1")
 
 
 def get_active_shadow_pack(path: str | Path = PROMOTION_STATE_PATH) -> str | None:
+    """
+    Purpose:
+        Return active shadow pack for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        str | None: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     shadow = load_promotion_state(path).get("shadow")
     return str(shadow) if shadow else None
 
 
 def get_promotion_runtime_context(path: str | Path = PROMOTION_STATE_PATH) -> dict[str, Any]:
+    """
+    Purpose:
+        Return promotion runtime context for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = load_promotion_state(path)
     return {
         "baseline_pack": state.get("baseline"),
@@ -158,6 +349,31 @@ def update_pack_state(
     path: str | Path = PROMOTION_STATE_PATH,
     ledger_path: str | Path = PROMOTION_LEDGER_PATH,
 ) -> dict:
+    """
+    Purpose:
+        Update pack state using the supplied inputs.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        state_name (str): Human-readable name for state.
+        pack_name (str | None): Human-readable name for pack.
+        reason (str): Input associated with reason.
+        assigned_by (str | None): Input associated with assigned by.
+        notes (str | None): Input associated with notes.
+        source_experiment_id (str | None): Input associated with source experiment identifier.
+        source_validation_experiment_id (str | None): Input associated with source validation experiment identifier.
+        metadata (dict[str, Any] | None): Input associated with metadata.
+        path (str | Path): Input associated with path.
+        ledger_path (str | Path): Input associated with ledger path.
+    
+    Returns:
+        dict: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = load_promotion_state(path)
     state_name = str(state_name).strip().lower()
     assignment_key = _state_key(state_name)
@@ -213,6 +429,29 @@ def record_manual_approval(
     path: str | Path = PROMOTION_STATE_PATH,
     ledger_path: str | Path = PROMOTION_LEDGER_PATH,
 ) -> dict:
+    """
+    Purpose:
+        Process record manual approval for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        pack_name (str): Human-readable name for pack.
+        approved (bool): Boolean flag associated with approved.
+        reviewer (str): Input associated with reviewer.
+        notes (str | None): Input associated with notes.
+        approval_type (str): Input associated with approval type.
+        required (bool): Boolean flag associated with required.
+        path (str | Path): Input associated with path.
+        ledger_path (str | Path): Input associated with ledger path.
+    
+    Returns:
+        dict: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = load_promotion_state(path)
     record = ManualApprovalRecord(
         required=required,
@@ -246,6 +485,23 @@ def get_manual_approval_record(
     *,
     path: str | Path = PROMOTION_STATE_PATH,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Return manual approval record for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        pack_name (str): Human-readable name for pack.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = load_promotion_state(path)
     return dict((state.get("manual_approvals") or {}).get(pack_name, {}))
 
@@ -265,6 +521,33 @@ def evaluate_promotion(
     require_manual_approval: bool = DEFAULT_PROMOTION_CRITERIA["require_manual_approval"],
     manual_approval: dict[str, Any] | None = None,
 ) -> PromotionDecision:
+    """
+    Purpose:
+        Process evaluate promotion for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        baseline_result (dict): Input associated with baseline result.
+        candidate_result (dict): Input associated with candidate result.
+        minimum_sample_count (int): Input associated with minimum sample count.
+        minimum_improvement (float): Input associated with minimum improvement.
+        maximum_stability_gap (float): Input associated with maximum stability gap.
+        minimum_frequency_ratio (float): Input associated with minimum frequency ratio.
+        minimum_out_of_sample_improvement (float): Input associated with minimum out of sample improvement.
+        minimum_robustness_score (float): Score value for minimum robustness.
+        maximum_drawdown_proxy_ratio (float): Input associated with maximum drawdown proxy ratio.
+        important_regime_max_collapse (float): Input associated with important regime max collapse.
+        require_manual_approval (bool): Boolean flag associated with require_manual_approval.
+        manual_approval (dict[str, Any] | None): Input associated with manual approval.
+    
+    Returns:
+        PromotionDecision: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     baseline_metrics = dict(baseline_result.get("objective_metrics", {}))
     candidate_metrics = dict(candidate_result.get("objective_metrics", {}))
     baseline_safeguards = dict(baseline_metrics.get("safeguards", {}))
@@ -391,6 +674,31 @@ def promote_candidate(
     path: str | Path = PROMOTION_STATE_PATH,
     ledger_path: str | Path = PROMOTION_LEDGER_PATH,
 ) -> Path:
+    """
+    Purpose:
+        Process promote candidate for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        candidate_pack_name (str): Human-readable name for candidate pack.
+        baseline_pack_name (str | None): Human-readable name for baseline pack.
+        approved_by (str | None): Input associated with approved by.
+        reason (str): Input associated with reason.
+        source_experiment_id (str | None): Input associated with source experiment identifier.
+        source_validation_experiment_id (str | None): Input associated with source validation experiment identifier.
+        require_manual_approval (bool): Boolean flag associated with require_manual_approval.
+        expected_improvement_summary (dict[str, Any] | None): Input associated with expected improvement summary.
+        path (str | Path): Input associated with path.
+        ledger_path (str | Path): Input associated with ledger path.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not approved_by:
         raise ValueError("Promotion requires an explicit approver via approved_by")
 
@@ -475,6 +783,28 @@ def move_candidate_to_shadow(
     path: str | Path = PROMOTION_STATE_PATH,
     ledger_path: str | Path = PROMOTION_LEDGER_PATH,
 ) -> dict:
+    """
+    Purpose:
+        Process move candidate to shadow for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        candidate_pack_name (str): Human-readable name for candidate pack.
+        assigned_by (str | None): Input associated with assigned by.
+        reason (str): Input associated with reason.
+        source_experiment_id (str | None): Input associated with source experiment identifier.
+        source_validation_experiment_id (str | None): Input associated with source validation experiment identifier.
+        path (str | Path): Input associated with path.
+        ledger_path (str | Path): Input associated with ledger path.
+    
+    Returns:
+        dict: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return update_pack_state(
         state_name="shadow",
         pack_name=candidate_pack_name,
@@ -495,6 +825,26 @@ def rollback_live_pack(
     path: str | Path = PROMOTION_STATE_PATH,
     ledger_path: str | Path = PROMOTION_LEDGER_PATH,
 ) -> dict:
+    """
+    Purpose:
+        Process rollback live pack for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        rollback_to_pack (str | None): Input associated with rollback to pack.
+        reason (str): Input associated with reason.
+        reviewer (str | None): Input associated with reviewer.
+        path (str | Path): Input associated with path.
+        ledger_path (str | Path): Input associated with ledger path.
+    
+    Returns:
+        dict: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     state = load_promotion_state(path)
     target_pack = rollback_to_pack or state.get("previous_live") or state.get("baseline")
     current_live = state.get("live")

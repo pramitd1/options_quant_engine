@@ -1,5 +1,17 @@
 """
-Named parameter pack loading and resolution.
+Module: packs.py
+
+Purpose:
+    Implement packs utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -18,6 +30,22 @@ DEFAULT_PARAMETER_PACK_DIRS = (PARAMETER_PACKS_DIR, RESEARCH_PARAMETER_PACKS_DIR
 
 
 def _iter_pack_dirs(packs_dir: str | Path | Iterable[str | Path] | None = None) -> list[Path]:
+    """
+    Purpose:
+        Process iter pack dirs for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        packs_dir (str | Path | Iterable[str | Path] | None): Input associated with packs dir.
+    
+    Returns:
+        list[Path]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if packs_dir is None:
         return [Path(path) for path in DEFAULT_PARAMETER_PACK_DIRS]
     if isinstance(packs_dir, (str, Path)):
@@ -26,6 +54,23 @@ def _iter_pack_dirs(packs_dir: str | Path | Iterable[str | Path] | None = None) 
 
 
 def _resolve_pack_path(name: str, packs_dir: str | Path | Iterable[str | Path] | None = None) -> Path:
+    """
+    Purpose:
+        Resolve pack path needed by downstream logic.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        name (str): Input associated with name.
+        packs_dir (str | Path | Iterable[str | Path] | None): Input associated with packs dir.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     for directory in _iter_pack_dirs(packs_dir):
         path = directory / f"{name}.json"
         if path.exists():
@@ -35,6 +80,22 @@ def _resolve_pack_path(name: str, packs_dir: str | Path | Iterable[str | Path] |
 
 
 def _coerce_pack(payload: dict) -> ParameterPack:
+    """
+    Purpose:
+        Coerce pack into a consistent representation.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        payload (dict): Input associated with payload.
+    
+    Returns:
+        ParameterPack: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return ParameterPack(
         name=str(payload.get("name") or "").strip(),
         version=str(payload.get("version") or "1.0.0").strip(),
@@ -48,6 +109,22 @@ def _coerce_pack(payload: dict) -> ParameterPack:
 
 
 def list_parameter_packs(packs_dir: str | Path | Iterable[str | Path] | None = None) -> list[str]:
+    """
+    Purpose:
+        List parameter packs available to the current workflow.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        packs_dir (str | Path | Iterable[str | Path] | None): Input associated with packs dir.
+    
+    Returns:
+        list[str]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     pack_names = set()
     for path in _iter_pack_dirs(packs_dir):
         if not path.exists():
@@ -57,6 +134,23 @@ def list_parameter_packs(packs_dir: str | Path | Iterable[str | Path] | None = N
 
 
 def load_parameter_pack(name: str, packs_dir: str | Path | Iterable[str | Path] | None = None) -> ParameterPack:
+    """
+    Purpose:
+        Process load parameter pack for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        name (str): Input associated with name.
+        packs_dir (str | Path | Iterable[str | Path] | None): Input associated with packs dir.
+    
+    Returns:
+        ParameterPack: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     path = _resolve_pack_path(name, packs_dir=packs_dir)
     payload = json.loads(path.read_text())
     pack = _coerce_pack(payload)
@@ -66,6 +160,23 @@ def load_parameter_pack(name: str, packs_dir: str | Path | Iterable[str | Path] 
 
 
 def resolve_parameter_pack(name: str, packs_dir: str | Path | Iterable[str | Path] | None = None) -> ParameterPack:
+    """
+    Purpose:
+        Resolve parameter pack needed by downstream logic.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        name (str): Input associated with name.
+        packs_dir (str | Path | Iterable[str | Path] | None): Input associated with packs dir.
+    
+    Returns:
+        ParameterPack: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     pack = load_parameter_pack(name, packs_dir=packs_dir)
     if not pack.parent:
         return pack

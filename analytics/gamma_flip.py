@@ -1,8 +1,17 @@
 """
-Gamma Flip Level Detection
+Module: gamma_flip.py
 
-Uses signed strike-wise gamma exposure so the flip and regime framework are
-consistent with the rest of the engine's Greek stack.
+Purpose:
+    Compute gamma flip analytics used by downstream signal and risk layers.
+
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import pandas as pd
@@ -12,6 +21,25 @@ from analytics.market_gamma_map import calculate_market_gamma
 
 
 def _interpolate_zero_crossing(left_strike, left_value, right_strike, right_value):
+    """
+    Purpose:
+        Linearly interpolate the point where a signed series crosses zero.
+
+    Context:
+        Used within the gamma flip workflow. The module sits in the analytics layer that turns option-chain structure into features for the signal engine and overlays.
+
+    Inputs:
+        left_strike (Any): Strike on the left side of the interpolation bracket.
+        left_value (Any): Signed metric value at the left interpolation boundary.
+        right_strike (Any): Strike on the right side of the interpolation bracket.
+        right_value (Any): Signed metric value at the right interpolation boundary.
+
+    Returns:
+        float | None: Interpolated crossing value, or `None` when interpolation is not possible.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         left_strike = float(left_strike)
         right_strike = float(right_strike)
@@ -31,6 +59,24 @@ def _interpolate_zero_crossing(left_strike, left_value, right_strike, right_valu
 
 
 def gamma_flip_level(option_chain, spot=None, strike_window_steps: int = 10):
+    """
+    Purpose:
+        Process gamma flip level for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        spot (Any): Input associated with spot.
+        strike_window_steps (int): Input associated with strike window steps.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if option_chain is None or option_chain.empty:
         return None
 
@@ -56,6 +102,8 @@ def gamma_flip_level(option_chain, spot=None, strike_window_steps: int = 10):
     prev_value = None
     for strike, value in gex.items():
         if prev_value is not None and prev_value * value < 0:
+            # Linear interpolation gives a smoother estimate than simply taking
+            # the midpoint between two neighboring strikes with opposite signs.
             interpolated = _interpolate_zero_crossing(prev_strike, prev_value, strike, value)
             if interpolated is None:
                 interpolated = (float(prev_strike) + float(strike)) / 2.0
@@ -68,6 +116,8 @@ def gamma_flip_level(option_chain, spot=None, strike_window_steps: int = 10):
             return round(float(sign_changes[0]), 2)
         return round(min(sign_changes, key=lambda x: abs(x - float(spot))), 2)
 
+    # If the signed series never crosses zero cleanly, fall back to the strike
+    # where cumulative gamma is closest to neutral.
     cumulative = gex.cumsum()
     if len(cumulative) == 0:
         return None
@@ -92,6 +142,23 @@ def gamma_flip_level(option_chain, spot=None, strike_window_steps: int = 10):
 
 def gamma_flip_distance(spot, flip):
 
+    """
+    Purpose:
+        Process gamma flip distance for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        flip (Any): Input associated with flip.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if flip is None:
         return None
 
@@ -100,6 +167,23 @@ def gamma_flip_distance(spot, flip):
 
 def gamma_regime(spot, flip):
 
+    """
+    Purpose:
+        Process gamma regime for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        flip (Any): Input associated with flip.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if flip is None:
         return "UNKNOWN"
 

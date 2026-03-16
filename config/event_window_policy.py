@@ -1,5 +1,17 @@
 """
-Centralized configuration for scheduled macro-event window handling.
+Module: event_window_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by event window.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -18,6 +30,40 @@ from config.settings import (
 
 @dataclass(frozen=True)
 class EventWindowPolicyConfig:
+    """
+    Purpose:
+        Dataclass representing EventWindowPolicyConfig within the repository.
+    
+    Context:
+        Used within the configuration layer that centralizes policy defaults and thresholds. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        pre_event_warning_minutes (int): Number of minutes used for pre event warning.
+        pre_event_lockdown_minutes (int): Number of minutes used for pre event lockdown.
+        event_duration_minutes (int): Number of minutes used for event duration.
+        post_event_cooldown_minutes (int): Number of minutes used for post event cooldown.
+        severity_risk_minor (int): Value supplied for severity risk minor.
+        severity_risk_medium (int): Value supplied for severity risk medium.
+        severity_risk_major (int): Value supplied for severity risk major.
+        severity_risk_critical (int): Value supplied for severity risk critical.
+        watch_risk_threshold (int): Threshold used to classify or trigger watch risk.
+        strong_watch_risk_threshold (int): Threshold used to classify or trigger strong watch risk.
+        pre_event_watch_penalty_high (int): Value supplied for pre event watch penalty high.
+        pre_event_watch_penalty_normal (int): Value supplied for pre event watch penalty normal.
+        post_event_cooldown_penalty_high (int): Value supplied for post event cooldown penalty high.
+        post_event_cooldown_penalty_normal (int): Value supplied for post event cooldown penalty normal.
+        lockdown_penalty (int): Penalty applied when lockdown is active.
+        pre_watch_base_multiplier (float): Multiplier applied to pre watch base.
+        pre_watch_proximity_multiplier (float): Multiplier applied to pre watch proximity.
+        pre_lockdown_base_multiplier (float): Multiplier applied to pre lockdown base.
+        pre_lockdown_proximity_multiplier (float): Multiplier applied to pre lockdown proximity.
+        post_cooldown_base_multiplier (float): Multiplier applied to post cooldown base.
+        post_cooldown_decay_multiplier (float): Multiplier applied to post cooldown decay.
+        live_event_risk_bonus (int): Bonus applied when live event risk is active.
+    
+    Notes:
+        Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
+    """
     pre_event_warning_minutes: int = MACRO_EVENT_PRE_EVENT_WARNING_MINUTES
     pre_event_lockdown_minutes: int = MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES
     event_duration_minutes: int = MACRO_EVENT_EVENT_DURATION_MINUTES
@@ -46,6 +92,22 @@ EVENT_WINDOW_POLICY_CONFIG = EventWindowPolicyConfig()
 
 
 def get_event_window_policy_config() -> EventWindowPolicyConfig:
-    from tuning.runtime import resolve_dataclass_config
+    """
+    Purpose:
+        Return the event-window policy bundle used by macro-event overlays.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        EventWindowPolicyConfig: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("event_windows.core", EventWindowPolicyConfig())

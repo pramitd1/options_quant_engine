@@ -1,3 +1,18 @@
+"""
+Module: smart_money_flow.py
+
+Purpose:
+    Compute smart money flow analytics used by downstream signal and risk layers.
+
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
+"""
 import pandas as pd
 
 from analytics.flow_utils import front_expiry_atm_slice
@@ -78,5 +93,22 @@ def classify_flow(spikes):
 
 
 def smart_money_signal(option_chain, spot=None):
+    """
+    Purpose:
+        Process smart money signal for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        spot (Any): Input associated with spot.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     spikes = detect_unusual_volume(option_chain, spot=spot)
     return classify_flow(spikes)

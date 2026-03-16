@@ -1,5 +1,17 @@
 """
-Capture policy helpers for signal evaluation persistence.
+Module: policy.py
+
+Purpose:
+    Implement policy utilities for signal evaluation, reporting, or research diagnostics.
+
+Role in the System:
+    Part of the research layer that records signal-evaluation datasets and diagnostic reports.
+
+Key Outputs:
+    Signal-evaluation datasets, reports, and comparison artifacts.
+
+Downstream Usage:
+    Consumed by tuning, governance reviews, and post-trade analysis.
 """
 
 from __future__ import annotations
@@ -17,6 +29,22 @@ VALID_CAPTURE_POLICIES = {
 
 
 def normalize_capture_policy(policy: str | None) -> str:
+    """
+    Purpose:
+        Normalize capture policy into the repository-standard form.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        policy (str | None): Input associated with policy.
+    
+    Returns:
+        str: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     normalized = str(policy or "").upper().strip()
     if normalized in VALID_CAPTURE_POLICIES:
         return normalized
@@ -24,6 +52,23 @@ def normalize_capture_policy(policy: str | None) -> str:
 
 
 def should_capture_signal(trade: dict | None, policy: str | None = None) -> bool:
+    """
+    Purpose:
+        Process should capture signal for downstream use.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade (dict | None): Input associated with trade.
+        policy (str | None): Input associated with policy.
+    
+    Returns:
+        bool: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not isinstance(trade, dict) or not trade:
         return False
 

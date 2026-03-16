@@ -1,7 +1,17 @@
 """
-Trade Strength Model
+Module: trade_strength.py
 
-Direction-aware scoring.
+Purpose:
+    Compute additive trade-strength scores from analytics and probability inputs.
+
+Role in the System:
+    Part of the strategy layer that converts directional intent into executable option trades.
+
+Key Outputs:
+    Strike rankings, trade-construction inputs, and exit or sizing recommendations.
+
+Downstream Usage:
+    Consumed by the signal engine and by research tooling that inspects trade construction choices.
 """
 
 from config.signal_policy import (
@@ -12,6 +22,26 @@ from config.signal_policy import (
 
 
 def _wall_proximity_score(spot, support_wall, resistance_wall, direction, proximity_buffer=50):
+    """
+    Purpose:
+        Process wall proximity score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        proximity_buffer (Any): Input associated with proximity buffer.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     score = 0
     proximity_buffer = abs(float(proximity_buffer or 0))
@@ -32,6 +62,23 @@ def _wall_proximity_score(spot, support_wall, resistance_wall, direction, proxim
 
 
 def _hedging_bias_score(hedging_bias, direction):
+    """
+    Purpose:
+        Process hedging bias score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        hedging_bias (Any): Input associated with hedging bias.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     if direction == "CALL":
         if hedging_bias == "UPSIDE_ACCELERATION":
@@ -49,6 +96,22 @@ def _hedging_bias_score(hedging_bias, direction):
 
 
 def _gamma_regime_score(gamma_regime):
+    """
+    Purpose:
+        Process gamma regime score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        gamma_regime (Any): Input associated with gamma regime.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     if gamma_regime in ["NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"]:
         return weights["gamma_regime_negative"]
@@ -63,6 +126,23 @@ def _gamma_regime_score(gamma_regime):
 
 
 def _spot_vs_flip_score(spot_vs_flip, direction):
+    """
+    Purpose:
+        Process spot vs flip score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     if direction == "CALL":
         if spot_vs_flip == "ABOVE_FLIP":
@@ -80,6 +160,23 @@ def _spot_vs_flip_score(spot_vs_flip, direction):
 
 
 def _flow_score(flow_signal_value, direction):
+    """
+    Purpose:
+        Process flow score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        flow_signal_value (Any): Input associated with flow signal value.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     if direction == "CALL":
         if flow_signal_value == "BULLISH_FLOW":
@@ -97,6 +194,23 @@ def _flow_score(flow_signal_value, direction):
 
 
 def _smart_money_score(smart_money_signal_value, direction):
+    """
+    Purpose:
+        Process smart money score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        smart_money_signal_value (Any): Input associated with smart money signal value.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     if direction == "CALL":
         if smart_money_signal_value == "BULLISH_FLOW":
@@ -114,6 +228,26 @@ def _smart_money_score(smart_money_signal_value, direction):
 
 
 def _liquidity_map_score(direction, spot, next_support, next_resistance, squeeze_zone):
+    """
+    Purpose:
+        Process liquidity map score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        spot (Any): Input associated with spot.
+        next_support (Any): Input associated with next support.
+        next_resistance (Any): Input associated with next resistance.
+        squeeze_zone (Any): Input associated with squeeze zone.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     score = 0
 
@@ -133,6 +267,26 @@ def _liquidity_map_score(direction, spot, next_support, next_resistance, squeeze
 
 
 def _directional_consensus_score(direction, flow_signal_value, smart_money_signal_value, hedging_bias, spot_vs_flip):
+    """
+    Purpose:
+        Process directional consensus score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        flow_signal_value (Any): Input associated with flow signal value.
+        smart_money_signal_value (Any): Input associated with smart money signal value.
+        hedging_bias (Any): Input associated with hedging bias.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_consensus_score_config()
     aligned = 0
     conflicts = 0
@@ -167,6 +321,23 @@ def _directional_consensus_score(direction, flow_signal_value, smart_money_signa
 
 
 def _probability_bucket_score(probability, buckets):
+    """
+    Purpose:
+        Process probability bucket score for downstream use.
+    
+    Context:
+        Internal helper within the strategy layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        probability (Any): Input associated with probability.
+        buckets (Any): Input associated with buckets.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if probability is None:
         return 0
 
@@ -243,6 +414,42 @@ def compute_trade_strength(
     ml_move_probability=None,
     proximity_buffer=50,
 ):
+    """
+    Purpose:
+        Compute trade strength from the supplied inputs.
+    
+    Context:
+        Public function within the strategy layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        flow_signal_value (Any): Input associated with flow signal value.
+        smart_money_signal_value (Any): Input associated with smart money signal value.
+        gamma_event (Any): Input associated with gamma event.
+        dealer_pos (Any): Input associated with dealer pos.
+        vol_regime (Any): Input associated with vol regime.
+        void_signal (Any): Input associated with void signal.
+        vacuum_state (Any): Structured state payload for vacuum.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        hedging_bias (Any): Input associated with hedging bias.
+        gamma_regime (Any): Input associated with gamma regime.
+        intraday_gamma_state (Any): Structured state payload for intraday gamma.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+        spot (Any): Input associated with spot.
+        next_support (Any): Input associated with next support.
+        next_resistance (Any): Input associated with next resistance.
+        squeeze_zone (Any): Input associated with squeeze zone.
+        large_move_probability (Any): Input associated with large move probability.
+        ml_move_probability (Any): Input associated with ML move probability.
+        proximity_buffer (Any): Input associated with proximity buffer.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     weights = get_trade_strength_weights()
     breakdown = {
         "flow_signal_score": 0,

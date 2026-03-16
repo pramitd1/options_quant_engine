@@ -1,5 +1,17 @@
 """
-Scenario runner for deterministic option efficiency validation.
+Module: option_efficiency_scenario_runner.py
+
+Purpose:
+    Implement option efficiency scenario runner logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
 """
 
 from __future__ import annotations
@@ -13,6 +25,22 @@ from risk.option_efficiency_layer import build_option_efficiency_state
 def load_option_efficiency_scenarios(
     path: str | Path = "config/option_efficiency_scenarios.json",
 ) -> list[dict]:
+    """
+    Purpose:
+        Process load option efficiency scenarios for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        list[dict]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return load_scenarios(path)
 
 
@@ -20,6 +48,23 @@ def run_option_efficiency_scenario(
     name: str,
     path: str | Path = "config/option_efficiency_scenarios.json",
 ) -> dict:
+    """
+    Purpose:
+        Process run option efficiency scenario for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        name (str): Input associated with name.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        dict: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     scenario = find_named_scenario(name, path=path)
     state = build_option_efficiency_state(**scenario.get("inputs", {}))
     return {

@@ -1,5 +1,17 @@
 """
-Signal evaluation and calibration research dataset builder.
+Module: evaluator.py
+
+Purpose:
+    Evaluate captured trade signals against realized spot paths and persist the resulting research dataset.
+
+Role in the System:
+    Part of the research layer that turns signal-engine outputs into scored signal-evaluation rows for reporting, tuning, and governance.
+
+Key Outputs:
+    Enriched signal-evaluation rows with realized outcomes, calibration buckets, and composite research scores.
+
+Downstream Usage:
+    Consumed by signal-evaluation reports, parameter-tuning workflows, and promotion reviews.
 """
 
 from __future__ import annotations
@@ -36,6 +48,23 @@ from research.signal_evaluation.market_data import (
 
 
 def _safe_float(value, default=None):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `evaluator` module. The module sits in the research layer that evaluates signals, curates datasets, and renders reports.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None or value == "":
             return default
@@ -45,10 +74,42 @@ def _safe_float(value, default=None):
 
 
 def _coerce_ts(value) -> pd.Timestamp:
+    """
+    Purpose:
+        Coerce a timestamp-like input into a `pd.Timestamp`.
+    
+    Context:
+        Internal helper in the signal-evaluation pipeline. The evaluator needs consistent timestamps before it can align captured signals with realized spot paths.
+    
+    Inputs:
+        value (Any): Timestamp-like value coming from captured signals, replay data, or realized market history.
+    
+    Returns:
+        pd.Timestamp: Normalized timestamp used by downstream evaluation logic.
+    
+    Notes:
+        Keeping timestamp normalization in one place helps live capture and delayed backfills behave identically.
+    """
     return coerce_market_timestamp(value)
 
 
 def _signal_direction_multiplier(direction: str | None) -> int:
+    """
+    Purpose:
+        Map direction labels such as `CALL` and `PUT` to signed multipliers.
+    
+    Context:
+        Internal helper in the evaluation pipeline. Later return calculations are direction-aware, so the evaluator converts bullish and bearish signals into a common signed-return convention.
+    
+    Inputs:
+        direction (str | None): Signal direction label, typically `CALL` or `PUT`.
+    
+    Returns:
+        int: `1` for bullish direction, `-1` for bearish direction, and `0` when direction is unavailable.
+    
+    Notes:
+        Using signed returns lets the evaluator score directional quality without modeling option payoff convexity or execution slippage.
+    """
     normalized = str(direction or "").upper().strip()
     if normalized == "CALL":
         return 1
@@ -58,11 +119,43 @@ def _signal_direction_multiplier(direction: str | None) -> int:
 
 
 def _bucket_trade_strength(value) -> str | None:
+    """
+    Purpose:
+        Bucket trade-strength scores into reporting ranges.
+    
+    Context:
+        Internal helper used when writing evaluation rows. Research reporting groups signals by strength bucket so hit rates can be compared across different confidence levels.
+    
+    Inputs:
+        value (Any): Trade-strength score to bucket.
+    
+    Returns:
+        str | None: Bucket label for the supplied trade-strength score.
+    
+    Notes:
+        The buckets are reporting-oriented and do not feed back into the live engine directly.
+    """
     value = _safe_float(value, None)
     return bucket_from_thresholds(value, TRADE_STRENGTH_BUCKETS, "0_34")
 
 
 def _bucket_probability(value) -> str | None:
+    """
+    Purpose:
+        Bucket probability estimates into reporting ranges.
+    
+    Context:
+        Internal helper used when writing evaluation rows. Probability buckets make calibration checks and report slices easier to interpret.
+    
+    Inputs:
+        value (Any): Probability estimate to bucket.
+    
+    Returns:
+        str | None: Bucket label for the supplied probability estimate.
+    
+    Notes:
+        This is a research convenience helper rather than a live trading decision rule.
+    """
     value = _safe_float(value, None)
     return bucket_from_thresholds(value, MOVE_PROBABILITY_BUCKETS, "0.00_0.34")
 
@@ -78,6 +171,29 @@ def build_signal_id(
     strike,
     option_type,
 ) -> str:
+    """
+    Purpose:
+        Build a stable identifier for a captured signal snapshot.
+    
+    Context:
+        The signal-evaluation dataset needs a deterministic key so repeated saves can upsert the same signal instead of creating duplicates. The identifier is derived from timestamp, symbol, contract metadata, and direction.
+    
+    Inputs:
+        signal_timestamp (Any): Timestamp recorded for the captured signal.
+        source (Any): Data-source label associated with the snapshot.
+        mode (Any): Execution mode label such as live, replay, or backtest.
+        symbol (Any): Underlying symbol or index identifier.
+        selected_expiry (Any): Expiry associated with the signaled contract.
+        direction (Any): Signal direction label, typically `CALL` or `PUT`.
+        strike (Any): Strike price associated with the signaled contract.
+        option_type (Any): Option side associated with the contract, typically `CE` or `PE`.
+    
+    Returns:
+        str: Stable short hash used as the primary identifier in the signal-evaluation dataset.
+    
+    Notes:
+        The identifier tracks the signal setup, not the realized outcome, so it remains stable across later backfills of market data.
+    """
     parts = [
         str(_coerce_ts(signal_timestamp).isoformat()),
         str(source or "").upper().strip(),
@@ -93,6 +209,23 @@ def build_signal_id(
 
 
 def build_regime_fingerprint(trade: dict, provider_health: dict | None = None) -> tuple[str, str]:
+    """
+    Purpose:
+        Build regime-fingerprint keys used to group similar signal environments.
+    
+    Context:
+        Research reporting often cares less about a single signal and more about recurring market environments. This helper collapses the signal's regime labels into a deterministic fingerprint for later aggregation.
+    
+    Inputs:
+        trade (dict): Trade or no-trade payload produced by the signal engine.
+        provider_health (dict | None): Optional provider-health diagnostics to include in the fingerprint.
+    
+    Returns:
+        tuple[str, str]: Full fingerprint string and a shorter hashed identifier suitable for grouping or display.
+    
+    Notes:
+        The fingerprint is descriptive rather than predictive; it is meant for slicing evaluation results by environment, not for making live trading decisions.
+    """
     provider_health = provider_health or {}
     components = {
         "signal_regime": trade.get("signal_regime") or "UNKNOWN",
@@ -119,6 +252,24 @@ def build_signal_evaluation_row(
     notes: str | None = None,
     captured_at=None,
 ) -> dict:
+    """
+    Purpose:
+        Convert one engine result payload into the canonical signal-evaluation dataset row.
+
+    Context:
+        This is the capture-side entry point for the research pipeline. It lifts the trade payload, regime diagnostics, provider-health fields, and calibration metadata into a flat row that can later be backfilled with realized outcomes.
+
+    Inputs:
+        result (dict): Engine result payload containing the captured trade and market snapshot metadata.
+        notes (str | None): Optional research note stored alongside the signal row.
+        captured_at (Any): Timestamp used for `created_at` and `updated_at` when persisting the row.
+
+    Returns:
+        dict: Serializable signal-evaluation row with pending outcome fields initialized.
+
+    Notes:
+        The row schema intentionally mirrors the live signal contract closely so researchers can connect ex-ante signal diagnostics with ex-post realized performance.
+    """
     if not result or not result.get("trade"):
         raise ValueError("Result payload must include a trade object")
 
@@ -259,6 +410,23 @@ def build_signal_evaluation_row(
 
 
 def _nearest_spot_at_or_after(path: pd.DataFrame, target_ts: pd.Timestamp):
+    """
+    Purpose:
+        Find the first realized spot observation at or after a target timestamp.
+    
+    Context:
+        Internal helper in the outcome-evaluation path. Captured signals are evaluated on discrete realized spot samples, so the evaluator needs a consistent rule for mapping horizons to observed prices.
+    
+    Inputs:
+        path (pd.DataFrame): Realized spot path sorted by timestamp.
+        target_ts (pd.Timestamp): Target timestamp for the requested evaluation horizon.
+    
+    Returns:
+        float | None: Spot value at the first observation on or after `target_ts`, or `None` when the path has not reached that horizon.
+    
+    Notes:
+        Using the first observation at or after the target avoids forward-filling prices into horizons the market has not actually reached yet.
+    """
     candidates = path[path["timestamp"] >= target_ts]
     if candidates.empty:
         return None
@@ -266,6 +434,26 @@ def _nearest_spot_at_or_after(path: pd.DataFrame, target_ts: pd.Timestamp):
 
 
 def _window_stats(path: pd.DataFrame, entry_ts: pd.Timestamp, end_ts: pd.Timestamp, direction_mult: int, entry_spot: float):
+    """
+    Purpose:
+        Compute MFE, MAE, and realized range statistics over a fixed evaluation window.
+    
+    Context:
+        Internal helper used for signal evaluation research. It summarizes how favorable, adverse, and volatile the realized spot path was after the signal fired.
+    
+    Inputs:
+        path (pd.DataFrame): Realized spot path sorted by timestamp.
+        entry_ts (pd.Timestamp): Timestamp at which the signal is considered active.
+        end_ts (pd.Timestamp): End of the evaluation window.
+        direction_mult (int): Signed direction multiplier used to measure movement from the trade's perspective.
+        entry_spot (float): Underlying spot price at signal entry.
+    
+    Returns:
+        dict | None: Window statistics containing MFE, MAE, and realized range in basis points, or `None` when no observations fall inside the window.
+    
+    Notes:
+        MFE and MAE are direction-signed, so positive values always mean movement favorable to the original signal thesis.
+    """
     window = path[(path["timestamp"] >= entry_ts) & (path["timestamp"] <= end_ts)].copy()
     if window.empty:
         return None
@@ -281,6 +469,23 @@ def _window_stats(path: pd.DataFrame, entry_ts: pd.Timestamp, end_ts: pd.Timesta
 
 
 def _session_close_spot(path: pd.DataFrame, signal_ts: pd.Timestamp):
+    """
+    Purpose:
+        Return the realized spot observed at the same-day session close.
+    
+    Context:
+        Internal helper in the evaluation pipeline. Same-day close is a useful checkpoint because many signals are intraday and may not be intended for overnight holding.
+    
+    Inputs:
+        path (pd.DataFrame): Realized spot path sorted by timestamp.
+        signal_ts (pd.Timestamp): Timestamp when the signal was captured.
+    
+    Returns:
+        float | None: Same-day closing spot, or `None` when the path does not contain that session.
+    
+    Notes:
+        This keeps intraday evaluation separate from next-day gap behavior, which is tracked through separate checkpoints.
+    """
     same_day = path[path["timestamp"].dt.date == signal_ts.date()]
     if same_day.empty:
         return None
@@ -288,6 +493,23 @@ def _session_close_spot(path: pd.DataFrame, signal_ts: pd.Timestamp):
 
 
 def _next_day_rows(path: pd.DataFrame, signal_ts: pd.Timestamp) -> pd.DataFrame:
+    """
+    Purpose:
+        Slice the realized spot path down to the first trading day after the signal date.
+    
+    Context:
+        Internal helper used by the overnight evaluation path. Next-day open and next-day close metrics should use a single coherent post-signal session.
+    
+    Inputs:
+        path (pd.DataFrame): Realized spot path sorted by timestamp.
+        signal_ts (pd.Timestamp): Timestamp when the signal was captured.
+    
+    Returns:
+        pd.DataFrame: Realized spot rows belonging to the first day after the signal date.
+    
+    Notes:
+        Keeping the next-day slice explicit avoids mixing later sessions into overnight gap or follow-through metrics.
+    """
     future_days = path[path["timestamp"].dt.date > signal_ts.date()].copy()
     if future_days.empty:
         return future_days
@@ -296,6 +518,23 @@ def _next_day_rows(path: pd.DataFrame, signal_ts: pd.Timestamp) -> pd.DataFrame:
 
 
 def _next_day_open_spot(path: pd.DataFrame, signal_ts: pd.Timestamp):
+    """
+    Purpose:
+        Return the first realized spot observed on the next trading day.
+    
+    Context:
+        Internal helper used to measure overnight gap behavior after a captured signal.
+    
+    Inputs:
+        path (pd.DataFrame): Realized spot path sorted by timestamp.
+        signal_ts (pd.Timestamp): Timestamp when the signal was captured.
+    
+    Returns:
+        float | None: Next-day opening spot, or `None` when no later session is available.
+    
+    Notes:
+        This isolates overnight gap behavior from intraday continuation within the same session.
+    """
     next_day = _next_day_rows(path, signal_ts)
     if next_day.empty:
         return None
@@ -303,6 +542,23 @@ def _next_day_open_spot(path: pd.DataFrame, signal_ts: pd.Timestamp):
 
 
 def _next_day_close_spot(path: pd.DataFrame, signal_ts: pd.Timestamp):
+    """
+    Purpose:
+        Return the final realized spot observed on the next trading day.
+    
+    Context:
+        Internal helper used to measure whether an overnight move persisted through the following session.
+    
+    Inputs:
+        path (pd.DataFrame): Realized spot path sorted by timestamp.
+        signal_ts (pd.Timestamp): Timestamp when the signal was captured.
+    
+    Returns:
+        float | None: Next-day closing spot, or `None` when no later session is available.
+    
+    Notes:
+        Pairing next-day open and next-day close helps separate pure gap behavior from next-session drift.
+    """
     next_day = _next_day_rows(path, signal_ts)
     if next_day.empty:
         return None
@@ -310,16 +566,65 @@ def _next_day_close_spot(path: pd.DataFrame, signal_ts: pd.Timestamp):
 
 
 def _raw_return(entry_spot: float, horizon_spot: float):
+    """
+    Purpose:
+        Compute the raw underlying return between entry and a later horizon.
+    
+    Context:
+        Internal helper in the research evaluator. The signal-evaluation dataset measures realized spot movement rather than option PnL, so returns are expressed on the underlying.
+    
+    Inputs:
+        entry_spot (float): Underlying spot at signal entry.
+        horizon_spot (float): Underlying spot at the later evaluation horizon.
+    
+    Returns:
+        float | None: Raw percentage return on the underlying, or `None` when inputs are incomplete.
+    
+    Notes:
+        Using spot returns keeps the evaluation focused on directional quality instead of execution details such as spread, slippage, or volatility decay.
+    """
     if entry_spot in (None, 0) or horizon_spot is None:
         return None
     return round(float((horizon_spot - entry_spot) / entry_spot), 6)
 
 
 def _clip_score(value: float) -> float:
+    """
+    Purpose:
+        Clip a research score into the canonical 0-100 range used by evaluation reporting.
+    
+    Context:
+        Internal helper in the evaluation pipeline. Several component scores are combined later, so the evaluator normalizes each of them into the same bounded scale.
+    
+    Inputs:
+        value (float): Score candidate to clamp into the reporting range.
+    
+    Returns:
+        float: Score clipped into the inclusive 0-100 range.
+    
+    Notes:
+        This keeps component scores comparable even when they originate from different heuristics or return horizons.
+    """
     return round(max(0.0, min(100.0, float(value))), 2)
 
 
 def compute_signal_evaluation_scores(row: dict) -> dict:
+    """
+    Purpose:
+        Compute composite research scores for one evaluated signal row.
+    
+    Context:
+        This function sits after realized-outcome calculation in the research pipeline. It converts directional correctness, move magnitude, timing, and tradeability into a comparable composite score used by reporting and governance.
+    
+    Inputs:
+        row (dict): Signal-evaluation row containing realized outcomes and captured signal metadata.
+    
+    Returns:
+        dict: Updated evaluation row with component scores and composite score fields added.
+    
+    Notes:
+        These scores are research artifacts. They do not feed back into the live trading engine directly.
+    """
     updated = dict(row)
     has_direction = _signal_direction_multiplier(updated.get("direction")) != 0
     direction_weights = get_signal_evaluation_direction_weights()
@@ -348,6 +653,8 @@ def compute_signal_evaluation_scores(row: dict) -> dict:
     if has_direction and mfe_points is not None and spot_at_signal not in (None, 0):
         favorable_move_pct = abs(mfe_points) / spot_at_signal * 100.0
         baseline_range_pct = lookback_avg_range_pct if lookback_avg_range_pct not in (None, 0) else 1.0
+        # Scale the best realized move by a recent "normal" session range so
+        # magnitude is comparable across quiet and volatile regimes.
         magnitude_vs_range = favorable_move_pct / max(baseline_range_pct, 0.1)
 
         weak = thresholds["magnitude_vs_range_weak"]
@@ -373,6 +680,8 @@ def compute_signal_evaluation_scores(row: dict) -> dict:
             value = _safe_float(updated.get(field_name), None)
             if value is None:
                 continue
+            # Early favorable returns get more credit because fast follow-through
+            # is more actionable than the same move arriving very late.
             horizon_score = max(0.0, min(1.0, value / max(return_floor, 1e-6)))
             timing_numerator += horizon_score * float(weight)
             timing_denominator += float(weight)
@@ -388,6 +697,8 @@ def compute_signal_evaluation_scores(row: dict) -> dict:
         if adverse_points == 0:
             tradeability_ratio = float("inf")
         else:
+            # This is a simple path-efficiency proxy: how much favorable move the
+            # signal earned for each unit of adverse excursion.
             tradeability_ratio = abs(mfe_points) / adverse_points
 
         floor = thresholds["tradeability_ratio_floor"]
@@ -431,6 +742,24 @@ def compute_signal_evaluation_scores(row: dict) -> dict:
 
 
 def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_of=None) -> dict:
+    """
+    Purpose:
+        Evaluate realized market outcomes for a captured signal against a realized spot path.
+    
+    Context:
+        This is the core realized-outcome step in the signal-evaluation pipeline. It lines up a captured signal with future spot observations, computes horizon returns and MFE/MAE style diagnostics, and marks whether the row is still pending or complete.
+    
+    Inputs:
+        row (dict): Signal-evaluation row to update with realized outcomes.
+        realized_spot_path (pd.DataFrame): Timestamped realized spot path for the underlying after the signal was captured.
+        as_of (Any): Timestamp representing how far the evaluator is allowed to look forward.
+    
+    Returns:
+        dict: Updated evaluation row containing realized outcome checkpoints and status fields.
+    
+    Notes:
+        Rows are marked `PENDING`, `PARTIAL`, or `COMPLETE` depending on which checkpoints are available at `as_of`, which lets the dataset be backfilled incrementally over time.
+    """
     updated = dict(row)
     if realized_spot_path is None or realized_spot_path.empty:
         updated["outcome_status"] = "PENDING"
@@ -556,6 +885,27 @@ def save_signal_evaluation(
     notes: str | None = None,
     return_frame: bool = True,
 ) -> pd.DataFrame | None:
+    """
+    Purpose:
+        Build and persist a signal-evaluation row for one engine result payload.
+    
+    Context:
+        Used by live runtime, replay tools, and research scripts to capture a common evaluation-row shape. It can optionally enrich the row immediately when realized spot data is already available.
+    
+    Inputs:
+        result (dict): Engine result payload containing the captured trade or no-trade state.
+        dataset_path (str | Path): Destination dataset path.
+        realized_spot_path (pd.DataFrame | None): Optional realized spot path used to compute outcomes immediately.
+        as_of (Any): Timestamp used when resolving capture time and outcome lookahead.
+        notes (str | None): Optional notes to persist with the evaluation row.
+        return_frame (bool): Whether the persistence helper should return the updated dataset frame.
+    
+    Returns:
+        pd.DataFrame | None: Updated dataset frame when requested, otherwise `None`.
+    
+    Notes:
+        This keeps the on-write schema identical across live trading, replay analysis, and research backfills.
+    """
     capture_default = (
         result.get("spot_summary", {}).get("timestamp")
         or result.get("trade", {}).get("valuation_time")
@@ -586,6 +936,25 @@ def update_signal_dataset_outcomes(
     fetch_spot_path_fn=None,
     fetch_spot_history_fn=fetch_realized_spot_history,
 ) -> pd.DataFrame:
+    """
+    Purpose:
+        Backfill realized outcomes for incomplete rows in the signal-evaluation dataset.
+    
+    Context:
+        Research and governance workflows often save rows before all horizons have elapsed. This helper revisits the dataset later, fetches the necessary realized spot paths, and updates any row that has become partially or fully observable.
+    
+    Inputs:
+        dataset_path (str | Path): Signal-evaluation dataset path to update.
+        as_of (Any): Timestamp that limits how far forward the backfill is allowed to look.
+        fetch_spot_path_fn (Any): Optional callback that returns a realized spot path for one row.
+        fetch_spot_history_fn (Any): History-fetch callback used to build realized spot paths when a row-level callback is not supplied.
+    
+    Returns:
+        pd.DataFrame: Updated signal-evaluation dataset after incomplete rows have been refreshed.
+    
+    Notes:
+        This helper supports delayed promotion and reporting workflows by letting the dataset mature as more realized market history becomes available.
+    """
     dataset_path = Path(dataset_path)
     if not dataset_path.exists():
         dataset_path.parent.mkdir(parents=True, exist_ok=True)

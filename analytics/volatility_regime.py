@@ -1,20 +1,17 @@
 """
-Volatility Regime Model
+Module: volatility_regime.py
 
-Identifies whether the market is in:
+Purpose:
+    Compute volatility regime analytics used by downstream signal and risk layers.
 
-LOW VOL
-NORMAL VOL
-EXPANSION
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
 
-Institutional desks use volatility regime
-to determine strategy type.
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
 
-Low Vol:
-    option selling
-
-Expansion:
-    option buying
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import pandas as pd
@@ -25,6 +22,22 @@ from config.analytics_feature_policy import get_volatility_regime_policy_config
 
 def compute_realized_volatility(option_chain):
 
+    """
+    Purpose:
+        Compute realized volatility from the supplied inputs.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if option_chain.empty:
         return 0
 
@@ -47,6 +60,22 @@ def compute_realized_volatility(option_chain):
 
 
 def detect_volatility_regime(option_chain):
+    """
+    Purpose:
+        Detect the volatility regime from the available market signals.
+
+    Context:
+        Function inside the `volatility regime` module. The module sits in the analytics layer that turns option-chain and market-structure data into tradable features.
+
+    Inputs:
+        option_chain (Any): Option-chain snapshot in dataframe form.
+
+    Returns:
+        str | Any: Classification label returned by the current logic.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     cfg = get_volatility_regime_policy_config()
 
     vol = compute_realized_volatility(option_chain)

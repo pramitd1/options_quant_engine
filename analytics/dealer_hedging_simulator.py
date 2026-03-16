@@ -1,7 +1,39 @@
+"""
+Module: dealer_hedging_simulator.py
+
+Purpose:
+    Compute dealer hedging simulator analytics used by downstream signal and risk layers.
+
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
+"""
 import pandas as pd
 
 
 def _to_numeric(series_or_value, default=0.0):
+    """
+    Purpose:
+        Convert numeric into the representation expected downstream.
+    
+    Context:
+        Internal helper within the analytics layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        series_or_value (Any): Input associated with series or value.
+        default (Any): Input associated with default.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if isinstance(series_or_value, pd.Series):
         return pd.to_numeric(series_or_value, errors="coerce").fillna(default)
     return pd.to_numeric(pd.Series([series_or_value]), errors="coerce").fillna(default).iloc[0]

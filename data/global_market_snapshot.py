@@ -1,5 +1,17 @@
 """
-Cross-asset market snapshot builder for the global risk layer.
+Module: global_market_snapshot.py
+
+Purpose:
+    Implement global market snapshot data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from __future__ import annotations
@@ -22,6 +34,22 @@ from config.settings import (
 
 
 def _coerce_timestamp(value):
+    """
+    Purpose:
+        Parse flexible timestamp inputs into timezone-aware timestamps.
+
+    Context:
+        Function inside the `global market snapshot` module. The module sits in the data layer that ingests, normalizes, and validates market inputs before analytics run.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+
+    Returns:
+        pd.Timestamp | None: Parsed timestamp or `None` when parsing fails.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     if value is None or value == "":
         return None
 
@@ -38,6 +66,23 @@ def _coerce_timestamp(value):
 
 
 def _safe_float(value, default=None):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `global market snapshot` module. The module sits in the data layer that ingests, normalizes, and validates market inputs before analytics run.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -47,10 +92,43 @@ def _safe_float(value, default=None):
 
 
 def _symbol_to_yfinance(symbol: str) -> str:
+    """
+    Purpose:
+        Process symbol to yfinance for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     return normalize_symbol_to_yfinance(symbol)
 
 
 def _download_history(ticker: str, *, lookback_days: int) -> pd.DataFrame:
+    """
+    Purpose:
+        Process download history for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        ticker (str): Input associated with ticker.
+        lookback_days (int): Input associated with lookback days.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     history = yf.download(
         ticker,
         period=f"{lookback_days}d",
@@ -63,6 +141,22 @@ def _download_history(ticker: str, *, lookback_days: int) -> pd.DataFrame:
 
 
 def _normalize_download_history(history: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Normalize download history into the repository-standard form.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        history (pd.DataFrame): Input associated with history.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if history is None or history.empty:
         return pd.DataFrame()
 
@@ -88,6 +182,23 @@ def _normalize_download_history(history: pd.DataFrame) -> pd.DataFrame:
 
 
 def _extract_batch_history(batch_history: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """
+    Purpose:
+        Extract batch history from the supplied payload.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        batch_history (pd.DataFrame): Input associated with batch history.
+        ticker (str): Input associated with ticker.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if batch_history is None or batch_history.empty:
         return pd.DataFrame()
 
@@ -99,6 +210,23 @@ def _extract_batch_history(batch_history: pd.DataFrame, ticker: str) -> pd.DataF
 
 
 def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[str, pd.DataFrame]:
+    """
+    Purpose:
+        Process download histories for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        tickers (dict[str, str]): Input associated with tickers.
+        lookback_days (int): Input associated with lookback days.
+    
+    Returns:
+        dict[str, pd.DataFrame]: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if not tickers:
         return {}
 
@@ -131,6 +259,22 @@ def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[
 
 
 def _daily_change_pct(history: pd.DataFrame):
+    """
+    Purpose:
+        Process daily change percentage for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        history (pd.DataFrame): Input associated with history.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if history is None or history.empty or len(history) < 2:
         return None
 
@@ -143,6 +287,22 @@ def _daily_change_pct(history: pd.DataFrame):
 
 
 def _us10y_change_bp(history: pd.DataFrame):
+    """
+    Purpose:
+        Process us10y change basis points for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        history (pd.DataFrame): Input associated with history.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if history is None or history.empty or len(history) < 2:
         return None
 
@@ -156,6 +316,23 @@ def _us10y_change_bp(history: pd.DataFrame):
 
 
 def _realized_volatility(history: pd.DataFrame, window: int):
+    """
+    Purpose:
+        Process realized volatility for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        history (pd.DataFrame): Input associated with history.
+        window (int): Input associated with window.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if history is None or history.empty or len(history) < (window + 1):
         return None
 
@@ -175,6 +352,26 @@ def _realized_volatility(history: pd.DataFrame, window: int):
 
 
 def _neutral_market_snapshot(symbol: str, as_of=None, issues=None, warnings=None, provider="YFINANCE"):
+    """
+    Purpose:
+        Process neutral market snapshot for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        as_of (Any): Input associated with as of.
+        issues (Any): Input associated with issues.
+        warnings (Any): Input associated with warnings.
+        provider (Any): Input associated with provider.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     return {
         "symbol": str(symbol or "").upper().strip(),
         "provider": provider,
@@ -190,6 +387,23 @@ def _neutral_market_snapshot(symbol: str, as_of=None, issues=None, warnings=None
 
 
 def build_global_market_snapshot(symbol: str, *, as_of=None) -> dict:
+    """
+    Purpose:
+        Build the global market snapshot used by downstream components.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        as_of (Any): Input associated with as of.
+    
+    Returns:
+        dict: Computed value returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if not GLOBAL_MARKET_DATA_ENABLED:
         return _neutral_market_snapshot(
             symbol,

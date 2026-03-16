@@ -1,3 +1,18 @@
+"""
+Module: trade_modifiers.py
+
+Purpose:
+    Provide trade modifiers helpers used during market-state, probability, or signal assembly.
+
+Role in the System:
+    Part of the signal engine that turns analytics, probability estimates, and overlays into final trade decisions.
+
+Key Outputs:
+    Trade decisions, intermediate state bundles, and signal diagnostics.
+
+Downstream Usage:
+    Consumed by the live runtime loop, backtests, shadow mode, and signal-evaluation logging.
+"""
 from __future__ import annotations
 
 from config.global_risk_policy import get_global_risk_policy_config
@@ -7,6 +22,22 @@ from .common import _clip, _safe_float
 
 
 def derive_global_risk_trade_modifiers(global_risk_state):
+    """
+    Purpose:
+        Derive global risk trade modifiers from the supplied inputs.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        global_risk_state (Any): Structured state payload for global risk.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_global_risk_policy_config()
     global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
     features = global_risk_state.get("global_risk_features", {})
@@ -19,6 +50,8 @@ def derive_global_risk_trade_modifiers(global_risk_state):
     volatility_explosion_probability = _safe_float(features.get("volatility_explosion_probability"), 0.0)
     oil_shock_score = _safe_float(features.get("oil_shock_score"), 0.0)
 
+    # These penalties sit on top of the base risk regime classification and
+    # capture specific catalysts that should further de-risk the trade.
     if volatility_explosion_probability > cfg.volatility_explosion_penalty_threshold:
         feature_adjustment_score += int(cfg.volatility_explosion_penalty_score)
         adjustment_reasons.append("volatility_explosion_probability_high")
@@ -48,6 +81,23 @@ def derive_global_risk_trade_modifiers(global_risk_state):
 
 
 def derive_gamma_vol_trade_modifiers(gamma_vol_state, direction=None):
+    """
+    Purpose:
+        Derive gamma vol trade modifiers from the supplied inputs.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        gamma_vol_state (Any): Structured state payload for gamma vol.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_trade_modifier_policy_config()
     gamma_vol_state = gamma_vol_state if isinstance(gamma_vol_state, dict) else {}
     base_adjustment_score = int(_safe_float(gamma_vol_state.get("gamma_vol_adjustment_score"), 0.0))
@@ -103,6 +153,23 @@ def derive_gamma_vol_trade_modifiers(gamma_vol_state, direction=None):
 
 
 def derive_dealer_pressure_trade_modifiers(dealer_pressure_state, direction=None):
+    """
+    Purpose:
+        Derive dealer pressure trade modifiers from the supplied inputs.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        dealer_pressure_state (Any): Structured state payload for dealer pressure.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_trade_modifier_policy_config()
     dealer_pressure_state = dealer_pressure_state if isinstance(dealer_pressure_state, dict) else {}
     base_adjustment_score = int(_safe_float(dealer_pressure_state.get("dealer_pressure_adjustment_score"), 0.0))
@@ -112,6 +179,8 @@ def derive_dealer_pressure_trade_modifiers(dealer_pressure_state, direction=None
     dealer_flow_state = str(dealer_pressure_state.get("dealer_flow_state", "HEDGING_NEUTRAL")).upper().strip()
     direction = str(direction or "").upper().strip()
 
+    # Pinning dampens long-option opportunities, while aligned acceleration is
+    # rewarded because dealer hedging can reinforce the directional move.
     if dealer_flow_state == "PINNING_DOMINANT":
         alignment_adjustment_score += cfg.dealer_pinning_penalty
         adjustment_reasons.append("pinning_dampens_option_buying")
@@ -154,6 +223,22 @@ def derive_dealer_pressure_trade_modifiers(dealer_pressure_state, direction=None
 
 
 def derive_option_efficiency_trade_modifiers(option_efficiency_state):
+    """
+    Purpose:
+        Derive option efficiency trade modifiers from the supplied inputs.
+    
+    Context:
+        Public function within the signal-engine layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_efficiency_state (Any): Structured state payload for option efficiency.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     option_efficiency_state = option_efficiency_state if isinstance(option_efficiency_state, dict) else {}
     adjustment_score = int(_safe_float(option_efficiency_state.get("option_efficiency_adjustment_score"), 0.0))
     return {

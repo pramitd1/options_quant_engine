@@ -1,3 +1,18 @@
+"""
+Module: market_state.py
+
+Purpose:
+    Provide market state helpers used during market-state, probability, or signal assembly.
+
+Role in the System:
+    Part of the signal engine that turns analytics, probability estimates, and overlays into final trade decisions.
+
+Key Outputs:
+    Trade decisions, intermediate state bundles, and signal diagnostics.
+
+Downstream Usage:
+    Consumed by the live runtime loop, backtests, shadow mode, and signal-evaluation logging.
+"""
 from __future__ import annotations
 
 import pandas as pd
@@ -26,6 +41,22 @@ from .signal_state import classify_spot_vs_flip_for_symbol, normalize_flow_signa
 
 
 def _summarize_market_gamma(market_gex):
+    """
+    Purpose:
+        Summarize market gamma into a compact diagnostic payload.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        market_gex (Any): Input associated with market gex.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if isinstance(market_gex, dict):
         summary = {}
         for key in ("total_gamma", "call_gamma", "put_gamma", "net_gamma"):
@@ -37,6 +68,32 @@ def _summarize_market_gamma(market_gex):
 
 
 def _collect_market_state(df, spot, symbol=None, prev_df=None):
+    """
+    Purpose:
+        Collect the cross-analytic market state for the current option-chain
+        snapshot.
+
+    Context:
+        This helper centralizes the analytics fan-out step. It keeps the signal
+        engine from knowing the details of each analytics module while still
+        returning a rich, explainable state payload.
+
+    Inputs:
+        df (Any): Normalized option-chain dataframe supplied to the routine.
+        spot (Any): Current underlying spot price.
+        symbol (Any): Trading symbol or index identifier.
+        prev_df (Any): Previous normalized dataframe used for comparison.
+
+    Returns:
+        dict: Consolidated market-state payload used by probability models,
+        trade-strength scoring, overlays, and final reporting.
+
+    Notes:
+        Each `_call_first` invocation preserves compatibility with legacy module
+        names so analytics can evolve without breaking the engine contract.
+    """
+    # The first block captures the market's structural gamma regime: net gamma,
+    # the flip level, and dealer positioning.
     gamma = _call_first(
         gamma_exposure_mod,
         ["calculate_gamma_exposure", "calculate_gex"],
@@ -92,6 +149,8 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
         default="NORMAL",
     )
 
+    # Flow combines transaction imbalance and "smart money" activity so the
+    # engine can separate broad flow from more selective institutional flow.
     flow_signal_value = _call_first(
         options_flow_imbalance_mod,
         ["flow_signal", "calculate_flow_signal"],
@@ -108,6 +167,8 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
     )
     final_flow_signal = normalize_flow_signal(flow_signal_value, smart_money_signal_value)
 
+    # Liquidity maps are reused later by the strike selector and by trade
+    # strength scoring to understand where dealer pinning or air pockets exist.
     liquidity_levels = _call_first(
         liquidity_heatmap_mod,
         ["strongest_liquidity_levels", "build_liquidity_heatmap"],
@@ -176,6 +237,8 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
     )
     gamma_clusters = [_to_python_number(x) for x in gamma_clusters] if gamma_clusters else []
 
+    # Greek exposures provide second-order context beyond plain gamma so the
+    # direction engine can reason about vanna/charm support and decay dynamics.
     greek_exposures = summarize_greek_exposures(df)
     if gamma_regime is None:
         if flip is None:
@@ -242,6 +305,8 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
         vacuum_zones=vacuum_zones,
     )
 
+    # The returned state is intentionally denormalized: downstream modules favor
+    # explicit fields over repeated recomputation during scoring and reporting.
     return {
         "gamma": gamma,
         "flip": flip,

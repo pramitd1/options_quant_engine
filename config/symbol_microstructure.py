@@ -1,5 +1,17 @@
 """
-Symbol-aware live trading thresholds for intraday microstructure logic.
+Module: symbol_microstructure.py
+
+Purpose:
+    Define symbol-specific microstructure assumptions used by analytics and probability models.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -34,6 +46,22 @@ SYMBOL_MICROSTRUCTURE_CONFIG = {
 
 
 def get_microstructure_config(symbol: str | None) -> dict:
+    """
+    Purpose:
+        Return the configuration bundle for microstructure.
+    
+    Context:
+        Public function within the configuration layer that centralizes policy defaults and thresholds. It exposes a reusable workflow step to other parts of the repository.
+    
+    Inputs:
+        symbol (str | None): Value supplied for symbol.
+    
+    Returns:
+        dict: Value resolved or fetched for downstream use.
+    
+    Notes:
+        Centralizing this policy contract keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
     normalized = str(symbol or "").upper().strip()
 
     config = dict(DEFAULT_MICROSTRUCTURE_CONFIG)

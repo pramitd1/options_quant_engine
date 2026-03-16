@@ -1,11 +1,17 @@
 """
-ICICI Breeze Option Chain Loader
+Module: icici_breeze_option_chain.py
 
-SDK-based version only.
-- Uses breeze.get_option_chain_quotes(...)
-- Tries configured expiry candidates one by one
-- Normalizes data into the engine's standard option-chain format
-- Protects against the local `config` package colliding with Breeze SDK imports
+Purpose:
+    Implement icici breeze option chain data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 import importlib
@@ -64,11 +70,40 @@ def _load_breeze_connect_class():
 
 
 class ICICIBreezeOptionChain:
+    """
+    Purpose:
+        Represent ICICIBreezeOptionChain within the repository.
+    
+    Context:
+        Used within the `icici breeze option chain` module. The class participates in the module's role within the trading system.
+    
+    Attributes:
+        None: The class primarily defines behavior or a protocol contract rather than stored fields.
+    
+    Notes:
+        The class groups behavior and state that need to stay explicit for maintainability and auditability.
+    """
     SECURITY_MASTER_URL = "https://directlink.icicidirect.com/NewSecurityMaster/SecurityMaster.zip"
     SECURITY_MASTER_MEMBER = "FONSEScripMaster.txt"
     INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
 
     def __init__(self, debug=None):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            debug (Any): Input associated with debug.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self.debug = ICICI_DEBUG if debug is None else debug
         self.breeze = None
         self._market_metadata_resolver = ICICIMarketMetadataResolver(
@@ -84,13 +119,61 @@ class ICICIBreezeOptionChain:
         self._init_client()
 
     def _log(self, *args):
+        """
+        Purpose:
+            Process log for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            args (Any): Input associated with args.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if self.debug:
             print("[ICICI DEBUG]", *args)
 
     def _format_expiry(self, dt: datetime) -> str:
+        """
+        Purpose:
+            Format expiry for display or serialization.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            dt (datetime): Input associated with dt.
+        
+        Returns:
+            str: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return dt.strftime("%Y-%m-%dT06:00:00.000Z")
 
     def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Purpose:
+            Normalize symbol into the repository-standard form.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            str: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         normalized = str(symbol or "").upper().strip()
         for prefix in ("NSE:", "NFO:"):
             if normalized.startswith(prefix):
@@ -101,6 +184,22 @@ class ICICIBreezeOptionChain:
         return normalized.strip()
 
     def _symbol_aliases(self, symbol: str) -> list[str]:
+        """
+        Purpose:
+            Process symbol aliases for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            list[str]: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         normalized = self._normalize_symbol(symbol)
         aliases = [normalized]
 
@@ -120,9 +219,43 @@ class ICICIBreezeOptionChain:
         return cleaned
 
     def _is_index_symbol(self, symbol: str) -> bool:
+        """
+        Purpose:
+            Process is index symbol for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            bool: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return self._normalize_symbol(symbol) in self.INDEX_SYMBOLS
 
     def _last_weekday_of_month(self, year: int, month: int, weekday: int) -> datetime:
+        """
+        Purpose:
+            Process last weekday of month for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            year (int): Input associated with year.
+            month (int): Input associated with month.
+            weekday (int): Input associated with weekday.
+        
+        Returns:
+            datetime: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if month == 12:
             next_month = datetime(year + 1, 1, 1)
         else:
@@ -135,9 +268,45 @@ class ICICIBreezeOptionChain:
         return candidate
 
     def _norm_cdf(self, x: float) -> float:
+        """
+        Purpose:
+            Process norm cdf for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            x (float): Input associated with x.
+        
+        Returns:
+            float: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
     def _black_scholes_price(self, spot, strike, t, sigma, option_type):
+        """
+        Purpose:
+            Process black scholes price for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            spot (Any): Input associated with spot.
+            strike (Any): Input associated with strike.
+            t (Any): Input associated with t.
+            sigma (Any): Input associated with sigma.
+            option_type (Any): Input associated with option type.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         spot = max(float(spot), 1e-6)
         strike = max(float(strike), 1e-6)
         sigma = max(float(sigma), 1e-6)
@@ -152,6 +321,26 @@ class ICICIBreezeOptionChain:
         return strike * self._norm_cdf(-d2) - spot * self._norm_cdf(-d1)
 
     def _estimate_implied_volatility(self, price, spot, strike, expiry_date, option_type):
+        """
+        Purpose:
+            Process estimate implied volatility for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            price (Any): Input associated with price.
+            spot (Any): Input associated with spot.
+            strike (Any): Input associated with strike.
+            expiry_date (Any): Input associated with expiry date.
+            option_type (Any): Input associated with option type.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         price = self._safe_float(price, None)
         spot = self._safe_float(spot, None)
         strike = self._safe_float(strike, None)
@@ -200,12 +389,44 @@ class ICICIBreezeOptionChain:
         return round(((low_sigma + high_sigma) / 2.0) * 100.0, 2)
 
     def _security_master_cache_path(self) -> Path:
+        """
+        Purpose:
+            Process security master cache path for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Path: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         project_root = Path(__file__).resolve().parents[1]
         cache_dir = project_root / "data_store" / "icici_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir / "SecurityMaster.zip"
 
     def _read_master_dataframe(self, raw_bytes: bytes) -> pd.DataFrame:
+        """
+        Purpose:
+            Process read master dataframe for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            raw_bytes (bytes): Input associated with raw bytes.
+        
+        Returns:
+            pd.DataFrame: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if not raw_bytes:
             return pd.DataFrame()
         if not zipfile.is_zipfile(io.BytesIO(raw_bytes)):
@@ -232,6 +453,22 @@ class ICICIBreezeOptionChain:
             return pd.DataFrame()
 
     def _load_security_master(self) -> pd.DataFrame:
+        """
+        Purpose:
+            Process load security master for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            pd.DataFrame: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         cache_path = self._security_master_cache_path()
 
         if cache_path.exists():
@@ -267,6 +504,22 @@ class ICICIBreezeOptionChain:
         return pd.DataFrame()
 
     def _normalize_master_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Purpose:
+            Normalize master columns into the repository-standard form.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            df (pd.DataFrame): Input associated with df.
+        
+        Returns:
+            pd.DataFrame: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         normalized = df.copy()
         normalized.columns = [
             str(col).strip().lower().replace(" ", "_").replace("-", "_")
@@ -275,6 +528,22 @@ class ICICIBreezeOptionChain:
         return normalized
 
     def _extract_expiry_from_master(self, row) -> Optional[str]:
+        """
+        Purpose:
+            Extract expiry from master from the supplied payload.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            row (Any): Input associated with row.
+        
+        Returns:
+            Optional[str]: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         for col in [
             "expiry_date", "expiry", "expirydate", "exp_date", "expiry_dt",
             "maturity_date", "contract_expiry", "securityexpirydate"
@@ -292,6 +561,23 @@ class ICICIBreezeOptionChain:
         return None
 
     def _match_symbol_in_master(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+        """
+        Purpose:
+            Process match symbol in master for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            df (pd.DataFrame): Input associated with df.
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            pd.DataFrame: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         aliases = self._symbol_aliases(symbol)
         symbol_columns = [
             "exchangecode", "exchange_code", "stock_code", "stockcode", "symbol", "underlying", "underlying_name",
@@ -326,6 +612,22 @@ class ICICIBreezeOptionChain:
         return df.loc[mask].copy()
 
     def _filter_option_rows_from_master(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Purpose:
+            Process filter option rows from master for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            df (pd.DataFrame): Input associated with df.
+        
+        Returns:
+            pd.DataFrame: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         filtered = df.copy()
 
         if "exchange_code" in filtered.columns:
@@ -347,6 +649,23 @@ class ICICIBreezeOptionChain:
         return filtered
 
     def _generate_dynamic_expiries(self, symbol: str, count: int = 6):
+        """
+        Purpose:
+            Process generate dynamic expiries for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+            count (int): Input associated with count.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         now_utc = datetime.utcnow()
         expiries = []
 
@@ -389,6 +708,23 @@ class ICICIBreezeOptionChain:
         return expiries
 
     def _extract_request_symbols_from_master(self, df: pd.DataFrame, input_symbol: str) -> list[str]:
+        """
+        Purpose:
+            Extract request symbols from master from the supplied payload.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            df (pd.DataFrame): Input associated with df.
+            input_symbol (str): Input associated with input symbol.
+        
+        Returns:
+            list[str]: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         candidates = []
 
         for symbol in self._symbol_aliases(input_symbol):
@@ -422,6 +758,22 @@ class ICICIBreezeOptionChain:
         return candidates
 
     def _fetch_market_metadata(self, symbol: str):
+        """
+        Purpose:
+            Fetch market metadata for the current evaluation step.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         metadata = self._market_metadata_resolver.resolve(symbol)
         if metadata.get("request_symbols"):
             return metadata
@@ -431,6 +783,22 @@ class ICICIBreezeOptionChain:
         }
 
     def _init_client(self):
+        """
+        Purpose:
+            Process init client for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         BreezeConnect = _load_breeze_connect_class()
         creds = get_icici_runtime_config()
 
@@ -456,6 +824,22 @@ class ICICIBreezeOptionChain:
         self._log("Breeze session initialized")
 
     def _resolve_expiry_candidates(self, symbol: str):
+        """
+        Purpose:
+            Resolve expiry candidates needed by downstream logic.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         symbol = self._normalize_symbol(symbol)
         cleaned = []
         metadata = self._fetch_market_metadata(symbol)
@@ -477,6 +861,22 @@ class ICICIBreezeOptionChain:
         return cleaned
 
     def _resolve_request_symbols(self, symbol: str) -> list[str]:
+        """
+        Purpose:
+            Resolve request symbols needed by downstream logic.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+        
+        Returns:
+            list[str]: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         symbol = self._normalize_symbol(symbol)
         metadata = self._fetch_market_metadata(symbol)
         request_symbols = metadata.get("request_symbols", [])
@@ -490,6 +890,23 @@ class ICICIBreezeOptionChain:
         return cleaned
 
     def _preview_response(self, response, label):
+        """
+        Purpose:
+            Process preview response for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            response (Any): Input associated with response.
+            label (Any): Input associated with label.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if not self.debug:
             return
 
@@ -506,6 +923,23 @@ class ICICIBreezeOptionChain:
             self._log(f"{label}_preview_failed", str(e))
 
     def _extract_success_rows(self, response, label="resp"):
+        """
+        Purpose:
+            Extract success rows from the supplied payload.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            response (Any): Input associated with response.
+            label (Any): Input associated with label.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self._preview_response(response, label)
 
         if response is None:
@@ -526,6 +960,22 @@ class ICICIBreezeOptionChain:
         return []
 
     def _normalize_side(self, side: str) -> str:
+        """
+        Purpose:
+            Normalize side into the repository-standard form.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            side (str): Input associated with side.
+        
+        Returns:
+            str: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         side = str(side).strip().lower()
         if side == "call":
             return "CE"
@@ -538,6 +988,23 @@ class ICICIBreezeOptionChain:
         return side.upper()
 
     def _safe_float(self, value, default=0.0):
+        """
+        Purpose:
+            Safely normalize float while preserving fallback behavior.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            value (Any): Input associated with value.
+            default (Any): Input associated with default.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         try:
             if value in [None, ""]:
                 return default
@@ -546,6 +1013,22 @@ class ICICIBreezeOptionChain:
             return default
 
     def _normalize_rows(self, rows):
+        """
+        Purpose:
+            Normalize rows into the repository-standard form.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            rows (Any): Input associated with rows.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         normalized = []
 
         for row in rows:
@@ -616,6 +1099,24 @@ class ICICIBreezeOptionChain:
         return df
 
     def _fetch_for_expiry(self, symbol: str, expiry_date: str, request_symbols: list[str]):
+        """
+        Purpose:
+            Fetch for expiry for the current evaluation step.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (str): Underlying symbol or index identifier.
+            expiry_date (str): Input associated with expiry date.
+            request_symbols (list[str]): Input associated with request symbols.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         for request_symbol in request_symbols:
             self._log(
                 "fetching option chain",
@@ -672,6 +1173,22 @@ class ICICIBreezeOptionChain:
         return pd.DataFrame()
 
     def fetch_option_chain(self, symbol="NIFTY"):
+        """
+        Purpose:
+            Fetch option chain for the current evaluation step.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            symbol (Any): Underlying symbol or index identifier.
+        
+        Returns:
+            Any: Computed value returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         symbol = self._normalize_symbol(symbol)
         expiry_candidates = self._resolve_expiry_candidates(symbol)
         request_symbols = self._resolve_request_symbols(symbol)
@@ -698,4 +1215,20 @@ class ICICIBreezeOptionChain:
         return pd.DataFrame()
 
     def close(self):
+        """
+        Purpose:
+            Process close for downstream use.
+        
+        Context:
+            Method on `ICICIBreezeOptionChain` within the data layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         return

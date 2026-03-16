@@ -1,3 +1,18 @@
+"""
+Module: probability.py
+
+Purpose:
+    Convert market-state features into rule-based, model-based, and blended move probabilities.
+
+Role in the System:
+    Part of the signal engine layer that assembles analytics, strategy logic, and overlays into trade decisions.
+
+Key Outputs:
+    Probability estimates plus the component features that explain those estimates.
+
+Downstream Usage:
+    Consumed by trade-strength scoring, confirmation filters, and research diagnostics.
+"""
 from __future__ import annotations
 
 from config.probability_feature_policy import get_probability_feature_policy_config
@@ -13,6 +28,24 @@ _MOVE_PREDICTOR = None
 
 
 def _map_vacuum_strength(vacuum_state, liquidity_voids=None, nearest_vacuum_gap_pct=None):
+    """
+    Purpose:
+        Convert liquidity-vacuum diagnostics into a bounded feature used by the move-probability model.
+
+    Context:
+        The probability layer treats nearby liquidity voids as a heuristic for one-sided price travel. A stronger vacuum score means price may move more freely once it leaves dense resting liquidity.
+
+    Inputs:
+        vacuum_state (Any): Categorical vacuum regime from market-state assembly.
+        liquidity_voids (Any): Optional collection of detected liquidity voids.
+        nearest_vacuum_gap_pct (Any): Distance from spot to the nearest vacuum gap, expressed as a percentage.
+
+    Returns:
+        float: Vacuum-strength feature clipped to the configured 0-1 range.
+
+    Notes:
+        This is a market-microstructure heuristic rather than a formal probability model; it gives more weight to nearby gaps and to markets with several voids.
+    """
     cfg = get_probability_feature_policy_config()
     base = {
         "BREAKOUT_ZONE": cfg.vacuum_breakout_strength,
@@ -35,6 +68,23 @@ def _map_vacuum_strength(vacuum_state, liquidity_voids=None, nearest_vacuum_gap_
 
 
 def _map_hedging_flow_ratio(hedging_bias, hedge_flow_value=None):
+    """
+    Purpose:
+        Convert dealer-hedging diagnostics into a signed flow feature for the probability model.
+
+    Context:
+        Probability estimation uses dealer flow as a directional accelerator or dampener. When a continuous hedge-flow value is available it takes precedence; otherwise categorical hedging bias is mapped into a signed proxy.
+
+    Inputs:
+        hedging_bias (Any): Categorical dealer-hedging state from market-state assembly.
+        hedge_flow_value (Any): Optional continuous hedge-flow estimate already normalized upstream.
+
+    Returns:
+        float: Signed hedging-flow feature in the configured `[-1, 1]` range.
+
+    Notes:
+        Positive values represent upside-supportive hedging pressure and negative values represent downside-supportive pressure.
+    """
     cfg = get_probability_feature_policy_config()
     if hedge_flow_value is not None:
         return round(_clip(_safe_float(hedge_flow_value), -1.0, 1.0), 3)
@@ -50,6 +100,23 @@ def _map_hedging_flow_ratio(hedging_bias, hedge_flow_value=None):
 
 
 def _map_smart_money_flow_score(smart_money_flow, flow_imbalance=None):
+    """
+    Purpose:
+        Map categorical or numeric flow signals into a bounded smart-money score.
+    
+    Context:
+        Internal helper in the `probability` module. It supports market-state or probability assembly without cluttering the top-level signal flow.
+    
+    Inputs:
+        smart_money_flow (Any): Categorical flow label summarizing directional institutional activity.
+        flow_imbalance (Any): Signed flow imbalance used as a continuous confirmation signal.
+    
+    Returns:
+        float | int: Signed flow score clipped to the configured smart-money range.
+    
+    Notes:
+        The output is kept bounded so additive scoring and downstream calibration remain stable across symbols and sessions.
+    """
     cfg = get_probability_feature_policy_config()
     base = {
         "BULLISH_FLOW": cfg.smart_money_bullish_score,
@@ -68,6 +135,23 @@ def _map_smart_money_flow_score(smart_money_flow, flow_imbalance=None):
 
 
 def _compute_gamma_flip_distance_pct(spot_price, gamma_flip):
+    """
+    Purpose:
+        Measure how far spot is from the estimated gamma-flip level.
+    
+    Context:
+        Internal helper in the `probability` module. It supports market-state or probability assembly without cluttering the top-level signal flow.
+    
+    Inputs:
+        spot_price (Any): Current underlying spot price.
+        gamma_flip (Any): Estimated gamma-flip level where dealer hedging behavior changes sign.
+    
+    Returns:
+        float | None: Percentage distance between spot and the gamma-flip level, or `None` when unavailable.
+    
+    Notes:
+        The output is kept bounded so additive scoring and downstream calibration remain stable across symbols and sessions.
+    """
     if gamma_flip is None:
         return None
 
@@ -88,6 +172,28 @@ def _compute_intraday_range_pct(
     prev_close=None,
     lookback_avg_range_pct=None,
 ):
+    """
+    Purpose:
+        Normalize the session range relative to the symbol's typical intraday movement.
+    
+    Context:
+        Internal helper in the `probability` module. It supports market-state or probability assembly without cluttering the top-level signal flow.
+    
+    Inputs:
+        symbol (Any): Underlying symbol or index identifier.
+        spot_price (Any): Current underlying spot price.
+        day_high (Any): Session high used to measure realized intraday range.
+        day_low (Any): Session low used to measure realized intraday range.
+        day_open (Any): Session open used as an early-session anchor.
+        prev_close (Any): Previous session close used as a contextual anchor.
+        lookback_avg_range_pct (Any): Historical average range percentage used to normalize today's move.
+    
+    Returns:
+        float | None: Realized intraday range normalized by the symbol's typical range, or `None` when insufficient data is available.
+    
+    Notes:
+        The output is kept bounded so additive scoring and downstream calibration remain stable across symbols and sessions.
+    """
     cfg = get_probability_feature_policy_config()
     micro_cfg = get_microstructure_config(symbol)
     spot = _safe_float(spot_price, None)
@@ -104,6 +210,8 @@ def _compute_intraday_range_pct(
     if high is not None and low is not None and high >= low:
         realized_range_pct = ((high - low) / spot) * 100.0
     else:
+        # Early in the session we may not have a meaningful full range yet, so
+        # anchor the estimate to the strongest observed move from open/close.
         anchor_moves = []
         if open_px not in (None, 0):
             anchor_moves.append(abs(spot - open_px) / spot * 100.0)
@@ -126,6 +234,22 @@ def _compute_intraday_range_pct(
 
 
 def _compute_atm_iv_percentile(atm_iv):
+    """
+    Purpose:
+        Compute ATM IV percentile from the supplied inputs.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        atm_iv (Any): Input associated with ATM IV.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_probability_feature_policy_config()
     iv = _safe_float(atm_iv, None)
     if iv is None:
@@ -136,6 +260,23 @@ def _compute_atm_iv_percentile(atm_iv):
 
 
 def _blend_move_probability(rule_prob, ml_prob):
+    """
+    Purpose:
+        Process blend move probability for downstream use.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        rule_prob (Any): Input associated with rule prob.
+        ml_prob (Any): Input associated with ML prob.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_probability_feature_policy_config()
     rule_prob = _safe_float(rule_prob, cfg.probability_default_rule)
     if ml_prob is None:
@@ -148,6 +289,22 @@ def _blend_move_probability(rule_prob, ml_prob):
 
 
 def _get_move_predictor():
+    """
+    Purpose:
+        Return move predictor for downstream use.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     global _MOVE_PREDICTOR
 
     predictor_class = getattr(ml_move_predictor_mod, "MovePredictor", None)
@@ -166,6 +323,23 @@ def _get_move_predictor():
 
 
 def _extract_nearest_vacuum_gap_pct(spot, vacuum_zones):
+    """
+    Purpose:
+        Extract nearest vacuum gap percentage from the supplied payload.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        vacuum_zones (Any): Input associated with vacuum zones.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_probability_feature_policy_config()
     if not vacuum_zones:
         return None
@@ -192,6 +366,22 @@ def _extract_nearest_vacuum_gap_pct(spot, vacuum_zones):
 
 
 def _extract_hedge_flow_value(hedging_flow):
+    """
+    Purpose:
+        Extract hedge flow value from the supplied payload.
+    
+    Context:
+        Internal helper within the signal-engine layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        hedging_flow (Any): Input associated with hedging flow.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if hedging_flow is None:
         return None
     if isinstance(hedging_flow, dict):
@@ -206,6 +396,22 @@ def _extract_hedge_flow_value(hedging_flow):
 
 
 def _categorical_flow_score(value):
+    """
+    Purpose:
+        Compute the categorical flow score used by the surrounding model.
+
+    Context:
+        Used within the trading support probability workflow. The module sits in the signal-engine layer that combines analytics, strategy rules, and overlays into final decisions.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     return {
         "BULLISH_FLOW": 1.0,
         "BEARISH_FLOW": -1.0,
@@ -215,6 +421,22 @@ def _categorical_flow_score(value):
 
 
 def _extract_probability(result):
+    """
+    Purpose:
+        Extract a scalar probability from a model result payload.
+    
+    Context:
+        Internal helper in the `probability` module. It supports market-state or probability assembly without cluttering the top-level signal flow.
+    
+    Inputs:
+        result (Any): Structured result payload produced by an earlier computation or evaluation step.
+    
+    Returns:
+        float: Scalar probability extracted from the supplied result payload.
+    
+    Notes:
+        The output is kept bounded so additive scoring and downstream calibration remain stable across symbols and sessions.
+    """
     cfg = get_probability_feature_policy_config()
     if result is None:
         return None
@@ -243,7 +465,38 @@ def _compute_probability_state(
     prev_close=None,
     lookback_avg_range_pct=None,
 ):
+    """
+    Purpose:
+        Build the probability-state payload for the current market snapshot.
+
+    Context:
+        This helper is the feature-assembly step between market-state analytics
+        and the downstream trade-strength model. It keeps both the raw features
+        and the blended probability estimates available for diagnostics.
+
+    Inputs:
+        df (Any): Normalized option-chain dataframe supplied to the routine.
+        spot (Any): Current underlying spot price.
+        symbol (Any): Trading symbol or index identifier.
+        market_state (Any): State payload for market state.
+        day_high (Any): Session high used for intraday context.
+        day_low (Any): Session low used for intraday context.
+        day_open (Any): Session open used for intraday context.
+        prev_close (Any): Previous close used as a reference anchor.
+        lookback_avg_range_pct (Any): Historical average range percentage used as a baseline.
+
+    Returns:
+        dict: Rule, ML, and blended move probabilities plus the component
+        features used to explain those estimates.
+
+    Notes:
+        Component values are returned alongside probabilities so research and
+        promotion workflows can trace which features actually drove an edge.
+    """
     cfg = get_probability_feature_policy_config()
+
+    # Reuse the feature-builder contract when available so the ML model sees
+    # the same structured inputs during live runs and offline evaluation.
     model_features = _call_first(
         feature_builder_mod,
         ["build_features"],
@@ -317,6 +570,8 @@ def _compute_probability_state(
     predictor = _get_move_predictor()
     if predictor is not None:
         try:
+            # The ML leg is optional by design. Any failure here should degrade
+            # gracefully back to the deterministic rule-based estimate.
             if model_features is not None:
                 ml_move_probability = predictor.predict_probability(model_features)
             ml_move_probability = _extract_probability(ml_move_probability)
@@ -328,6 +583,23 @@ def _compute_probability_state(
         except Exception:
             ml_move_probability = None
 
+    components = {
+        "gamma_flip_distance_pct": gamma_flip_distance_pct,
+        "nearest_vacuum_gap_pct": nearest_vacuum_gap_pct,
+        "vacuum_strength": vacuum_strength,
+        "hedging_flow_ratio": hedging_flow_ratio,
+        "smart_money_flow_score": smart_money_flow_score,
+        "atm_iv_percentile": atm_iv_percentile,
+        "intraday_range_pct": intraday_range_pct,
+        "flow_imbalance": round(flow_imbalance, 3),
+        "hedge_flow_value": hedge_flow_value,
+        "day_high": day_high,
+        "day_low": day_low,
+        "day_open": day_open,
+        "prev_close": prev_close,
+        "lookback_avg_range_pct": lookback_avg_range_pct,
+    }
+
     return {
         "rule_move_probability": rule_move_probability,
         "ml_move_probability": ml_move_probability,
@@ -336,20 +608,5 @@ def _compute_probability_state(
             ml_prob=ml_move_probability,
         ),
         "model_features": model_features,
-        "components": {
-            "gamma_flip_distance_pct": gamma_flip_distance_pct,
-            "nearest_vacuum_gap_pct": nearest_vacuum_gap_pct,
-            "vacuum_strength": vacuum_strength,
-            "hedging_flow_ratio": hedging_flow_ratio,
-            "smart_money_flow_score": smart_money_flow_score,
-            "atm_iv_percentile": atm_iv_percentile,
-            "intraday_range_pct": intraday_range_pct,
-            "flow_imbalance": round(flow_imbalance, 3),
-            "hedge_flow_value": hedge_flow_value,
-            "day_high": day_high,
-            "day_low": day_low,
-            "day_open": day_open,
-            "prev_close": prev_close,
-            "lookback_avg_range_pct": lookback_avg_range_pct,
-        },
+        "components": components,
     }

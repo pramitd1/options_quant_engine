@@ -1,27 +1,56 @@
 """
-Historical bar-based backtester.
+Module: intraday_backtester.py
 
-The default historical builder creates one synthetic snapshot per trading
-day, so persistence and holding periods are measured in bars unless a
-finer-grained dataset is supplied.
+Purpose:
+    Implement intraday backtester logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
 """
 
+from app.engine_runner import run_preloaded_engine_snapshot
 from config.settings import (
     BACKTEST_SIGNAL_PERSISTENCE,
     BACKTEST_MAX_HOLD_BARS,
     BACKTEST_ENABLE_BUDGET,
     BACKTEST_STARTING_CAPITAL,
+    LOT_SIZE,
+    MAX_CAPITAL_PER_TRADE,
+    NUMBER_OF_LOTS,
     TARGET_PROFIT_PERCENT,
     STOP_LOSS_PERCENT,
 )
 from data.historical_option_chain import load_option_chain
 from data.expiry_resolver import filter_option_chain_by_expiry, resolve_selected_expiry
-from engine.signal_engine import generate_trade
 from backtest.pnl_engine import calculate_trade_pnl
 from backtest.performance_metrics import compute_performance_metrics
 
 
 def _finalize_open_trade(open_trade, exit_snapshot, exit_ts):
+    """
+    Purpose:
+        Process finalize open trade for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        open_trade (Any): Input associated with open trade.
+        exit_snapshot (Any): Input associated with exit snapshot.
+        exit_ts (Any): Timestamp associated with exit.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     pnl_result = calculate_trade_pnl(open_trade["trade"], exit_snapshot)
     trade = open_trade["trade"]
 
@@ -47,6 +76,94 @@ def _finalize_open_trade(open_trade, exit_snapshot, exit_ts):
     }
 
 
+def _build_backtest_spot_snapshot(symbol, ts, snapshot_chain, previous_chain=None):
+    """
+    Purpose:
+        Synthesize the spot snapshot contract expected by the shared runtime
+        orchestration path.
+
+    Context:
+        Internal backtest helper that adapts historical option-chain bars into
+        the same spot-summary shape used by the live engine runner.
+
+    Inputs:
+        symbol (Any): Underlying symbol or index identifier.
+        ts (Any): Timestamp associated with the current historical bar.
+        snapshot_chain (Any): Current option-chain snapshot.
+        previous_chain (Any): Previous snapshot used to approximate
+            `prev_close` when available.
+
+    Returns:
+        dict: Spot snapshot shaped for `run_preloaded_engine_snapshot`.
+
+    Notes:
+        Daily synthetic backtest bars do not carry true intraday OHLC data, so
+        the current spot is reused as a neutral proxy for open, high, and low.
+        This preserves runner parity while making the approximation explicit.
+    """
+
+    spot = (
+        float(snapshot_chain["spot"].iloc[0])
+        if snapshot_chain is not None and not snapshot_chain.empty and "spot" in snapshot_chain.columns
+        else float(snapshot_chain["strikePrice"].median())
+    )
+    previous_spot = None
+    if previous_chain is not None and not previous_chain.empty:
+        if "spot" in previous_chain.columns:
+            previous_spot = float(previous_chain["spot"].iloc[0])
+        else:
+            previous_spot = float(previous_chain["strikePrice"].median())
+
+    timestamp = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+    return {
+        "symbol": str(symbol or "").upper().strip(),
+        "spot": spot,
+        "day_open": spot,
+        "day_high": spot,
+        "day_low": spot,
+        "prev_close": previous_spot if previous_spot is not None else spot,
+        "timestamp": timestamp,
+        "lookback_avg_range_pct": None,
+    }
+
+
+def _backtest_global_market_snapshot(symbol, ts):
+    """
+    Purpose:
+        Provide a neutral global-market snapshot for historical parity runs.
+
+    Context:
+        Internal helper used when backtests reuse the live orchestration path
+        but do not have point-in-time cross-asset data aligned with the replayed
+        option-chain bar.
+
+    Inputs:
+        symbol (Any): Underlying symbol or index identifier.
+        ts (Any): Timestamp associated with the current historical bar.
+
+    Returns:
+        dict: Neutral global-market snapshot shaped like the live payload.
+
+    Notes:
+        Using an explicit neutral snapshot is preferable to implicitly pulling
+        present-day cross-asset data into historical evaluations.
+    """
+
+    timestamp = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+    return {
+        "symbol": str(symbol or "").upper().strip(),
+        "provider": "BACKTEST_NEUTRAL",
+        "as_of": timestamp,
+        "data_available": False,
+        "neutral_fallback": True,
+        "issues": [],
+        "warnings": ["historical_global_market_snapshot_unavailable"],
+        "stale": False,
+        "lookback_days": None,
+        "market_inputs": {},
+    }
+
+
 def run_intraday_backtest(
     symbol: str,
     years: int = 1,
@@ -55,6 +172,27 @@ def run_intraday_backtest(
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
 ):
+    """
+    Purpose:
+        Process run intraday backtest for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+        signal_persistence (int): Input associated with signal persistence.
+        max_hold_bars (int): Input associated with max hold bars.
+        target_profit_percent (float): Input associated with target profit percent.
+        stop_loss_percent (float): Input associated with stop loss percent.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     historical_df = load_option_chain(symbol=symbol, years=years)
 
     if historical_df is None or historical_df.empty:
@@ -87,7 +225,12 @@ def run_intraday_backtest(
         if signal_chain is None or signal_chain.empty:
             continue
 
-        spot = float(signal_chain["spot"].iloc[0]) if "spot" in signal_chain.columns else float(signal_chain["strikePrice"].median())
+        spot_snapshot = _build_backtest_spot_snapshot(
+            symbol,
+            ts,
+            signal_chain,
+            previous_chain=previous_chain,
+        )
 
         if open_trade is not None:
             open_trade["bars_held"] += 1
@@ -117,22 +260,31 @@ def run_intraday_backtest(
             previous_chain = signal_chain.copy()
             continue
 
-        trade = generate_trade(
+        signal_result = run_preloaded_engine_snapshot(
             symbol=symbol,
-            spot=spot,
+            mode="BACKTEST",
+            source="HISTORICAL",
+            spot_snapshot=spot_snapshot,
             option_chain=signal_chain,
             previous_chain=previous_chain,
             apply_budget_constraint=BACKTEST_ENABLE_BUDGET,
-            backtest_mode=True,
+            requested_lots=NUMBER_OF_LOTS,
+            lot_size=LOT_SIZE,
+            max_capital=MAX_CAPITAL_PER_TRADE,
+            capture_signal_evaluation=False,
+            enable_shadow_logging=False,
+            global_market_snapshot=_backtest_global_market_snapshot(symbol, ts),
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
         )
+        if not signal_result.get("ok", False):
+            raise ValueError(signal_result.get("error") or "Backtest snapshot evaluation failed")
+
+        trade = signal_result.get("execution_trade") or signal_result.get("trade")
 
         if trade is None:
             previous_chain = signal_chain.copy()
             continue
-
-        trade["selected_expiry"] = signal_expiry
 
         direction = trade.get("direction")
 
@@ -178,4 +330,21 @@ def run_intraday_backtest(
 
 
 def intraday_backtester(symbol: str, years: int = 1):
+    """
+    Purpose:
+        Process intraday backtester for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return run_intraday_backtest(symbol, years)

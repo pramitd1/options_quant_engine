@@ -1,5 +1,17 @@
 """
-Black-Scholes Greeks engine for per-contract and aggregate Greek calculations.
+Module: greeks_engine.py
+
+Purpose:
+    Compute greeks analytics from option-chain inputs.
+
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -13,6 +25,23 @@ from config.settings import DIVIDEND_YIELD, RISK_FREE_RATE
 
 
 def _safe_float(value, default=None):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `greeks engine` module. The module sits in the analytics layer that turns option-chain and market-structure data into tradable features.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -22,14 +51,62 @@ def _safe_float(value, default=None):
 
 
 def _norm_pdf(x: float) -> float:
+    """
+    Purpose:
+        Evaluate the standard normal probability density used by the Black-Scholes Greeks formulas.
+    
+    Context:
+        Internal helper in the Greeks engine. The closed-form Greeks calculation uses the standard normal density when converting option inputs into delta, gamma, vega, vanna, and charm.
+    
+    Inputs:
+        x (float): Standard-normal z-score at which the density should be evaluated.
+    
+    Returns:
+        float: Standard normal PDF evaluated at `x`.
+    
+    Notes:
+        This helper keeps the analytical formula explicit and avoids re-deriving the density inside each Greek expression.
+    """
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
 
 def _norm_cdf(x: float) -> float:
+    """
+    Purpose:
+        Evaluate the standard normal cumulative distribution function.
+
+    Context:
+        Function inside the `greeks engine` module. The module sits in the analytics layer that turns option-chain and market-structure data into tradable features.
+
+    Inputs:
+        x (float): Raw scalar input supplied by the caller.
+
+    Returns:
+        float: Cumulative probability for the supplied z-score.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 def _coerce_valuation_timestamp(value):
+    """
+    Purpose:
+        Normalize the valuation timestamp used when converting expiry dates into time-to-expiry.
+    
+    Context:
+        Internal helper in the analytics layer. Greek calculations require a consistent valuation timestamp so the same option chain produces stable time-to-expiry values across providers and replay workflows.
+    
+    Inputs:
+        value (Any): Timestamp-like input supplied by live runtime, replay mode, or ad hoc research code.
+    
+    Returns:
+        pd.Timestamp: UTC timestamp used as the valuation anchor for time-to-expiry calculations.
+    
+    Notes:
+        Invalid or missing timestamps fall back to the current UTC time so the helper stays usable even when providers omit explicit valuation metadata.
+    """
     if value is None:
         return pd.Timestamp.utcnow()
 
@@ -42,6 +119,23 @@ def _coerce_valuation_timestamp(value):
 
 
 def _parse_expiry_years(expiry_value, valuation_time=None):
+    """
+    Purpose:
+        Convert expiry metadata into fractional years so closed-form Greeks can be evaluated.
+    
+    Context:
+        Internal helper in the Greeks engine. The pricing formulas expect continuous time in years, while exchange data may provide calendar dates or short `T+N` style offsets.
+    
+    Inputs:
+        expiry_value (Any): Raw expiry representation from the option chain, typically a date-like value or a `T+N` shorthand.
+        valuation_time (Any): Timestamp used as the start of the expiry interval.
+    
+    Returns:
+        float | None: Time to expiry in years, floored to a small positive value, or `None` when the expiry cannot be parsed.
+    
+    Notes:
+        The floor prevents division-by-zero explosions in near-expiry Greeks while still treating expiring contracts as extremely short-dated.
+    """
     if isinstance(expiry_value, str):
         raw = expiry_value.strip().upper()
         match = re.fullmatch(r"T\+(\d+)", raw)
@@ -72,6 +166,28 @@ def compute_option_greeks(
     risk_free_rate=RISK_FREE_RATE,
     dividend_yield=DIVIDEND_YIELD,
 ):
+    """
+    Purpose:
+        Compute Black-Scholes style option sensitivities for a single contract snapshot.
+    
+    Context:
+        This function sits in the analytics layer beneath market-state assembly. It is used when providers do not supply Greeks directly or when the engine wants a consistent cross-provider approximation.
+    
+    Inputs:
+        spot (Any): Underlying spot price.
+        strike (Any): Option strike price.
+        time_to_expiry_years (Any): Time to expiry expressed in fractional years.
+        volatility_pct (Any): Annualized implied volatility expressed in percentage points, for example `18.5` for 18.5%.
+        option_type (Any): Option side, expected to be `CE` or `PE`.
+        risk_free_rate (Any): Annualized risk-free rate used by the approximation.
+        dividend_yield (Any): Annualized dividend yield applied to the underlying.
+    
+    Returns:
+        dict | None: Dictionary containing delta, gamma, theta, vega, rho, vanna, charm, and the normalized time-to-expiry, or `None` when inputs are not usable.
+    
+    Notes:
+        The formulas are Black-Scholes approximations. They assume European-style dynamics and are used here as a consistent sensitivity proxy rather than a perfect microstructure model.
+    """
     spot = _safe_float(spot, None)
     strike = _safe_float(strike, None)
     t = _safe_float(time_to_expiry_years, None)
@@ -147,6 +263,26 @@ def enrich_chain_with_greeks(
     risk_free_rate=RISK_FREE_RATE,
     dividend_yield=DIVIDEND_YIELD,
 ):
+    """
+    Purpose:
+        Populate an option chain with internally computed Greeks when provider data is missing or inconsistent.
+    
+    Context:
+        This function bridges raw option-chain ingestion and downstream analytics. It ensures later layers can rely on a uniform Greek schema regardless of which broker or replay source supplied the chain.
+    
+    Inputs:
+        option_chain (pd.DataFrame): Option-chain snapshot to enrich.
+        spot (Any): Underlying spot price used in the Greeks calculation.
+        valuation_time (Any): Timestamp used as the valuation anchor for time-to-expiry.
+        risk_free_rate (Any): Annualized risk-free rate supplied to the pricing approximation.
+        dividend_yield (Any): Annualized dividend yield supplied to the pricing approximation.
+    
+    Returns:
+        pd.DataFrame: Copy of the option chain with normalized Greek columns added or refreshed.
+    
+    Notes:
+        Existing provider Greeks are preserved when the approximation cannot be computed, which keeps the enrichment path robust for partially populated chains.
+    """
     if option_chain is None or option_chain.empty:
         return option_chain
 
@@ -214,6 +350,26 @@ def enrich_chain_with_greeks(
 
 
 def _exposure_regime(value: float | None, gross: float | None, *, positive_label: str, negative_label: str, neutral_label: str):
+    """
+    Purpose:
+        Classify a signed exposure into positive, negative, neutral, or unknown regime labels.
+    
+    Context:
+        Internal helper used after exposure aggregation. The signal engine does not need the raw number alone; it also needs a compact regime label that can be carried into diagnostics and rule-based logic.
+    
+    Inputs:
+        value (float | None): Signed aggregate exposure for one Greek.
+        gross (float | None): Gross absolute exposure used to decide whether the signed value is materially different from zero.
+        positive_label (str): Label returned when exposure is materially positive.
+        negative_label (str): Label returned when exposure is materially negative.
+        neutral_label (str): Label returned when exposure is near flat relative to gross exposure.
+    
+    Returns:
+        str: Exposure regime label.
+    
+    Notes:
+        The neutral band is proportional to gross exposure so thin chains are not over-classified into strong positive or negative regimes.
+    """
     if value is None or gross is None or gross <= 0:
         return "UNKNOWN"
     if abs(value) <= gross * 0.05:
@@ -224,6 +380,22 @@ def _exposure_regime(value: float | None, gross: float | None, *, positive_label
 
 
 def summarize_greek_exposures(option_chain: pd.DataFrame):
+    """
+    Purpose:
+        Aggregate chain-level Greek exposures into compact diagnostics used by market-state assembly.
+    
+    Context:
+        This function converts contract-level Greeks into book-level exposure proxies. The signal engine later uses these diagnostics to reason about dealer positioning, convexity, and time-decay regimes.
+    
+    Inputs:
+        option_chain (pd.DataFrame): Option-chain snapshot whose Greeks should be aggregated.
+    
+    Returns:
+        dict: Aggregated exposure values and high-level vanna/charm regime labels.
+    
+    Notes:
+        Exposures are weighted by open interest, so the output is a positioning proxy rather than a theoretical portfolio Greek for a tradable strategy.
+    """
     if option_chain is None or option_chain.empty:
         return {
             "delta_exposure": None,
@@ -241,6 +413,27 @@ def summarize_greek_exposures(option_chain: pd.DataFrame):
     oi = pd.to_numeric(df.get("OPEN_INT", df.get("openInterest")), errors="coerce").fillna(0.0)
 
     def _series(name):
+        """
+        Purpose:
+            Return a numeric series for the requested Greek or sensitivity column.
+
+        Context:
+            Internal helper inside the exposure-aggregation path. It keeps the
+            Greeks rollup compact while ensuring every requested column is
+            coerced into the same numeric representation before weighted sums
+            are computed.
+
+        Inputs:
+            name (Any): Column name for the requested Greek or derived sensitivity.
+
+        Returns:
+            pd.Series: Numeric series aligned with the option-chain rows and
+            defaulted to zero where the provider omitted values.
+
+        Notes:
+            Missing or malformed provider values are treated as zero so the
+            aggregate exposure calculation stays robust across data sources.
+        """
         return pd.to_numeric(df.get(name), errors="coerce").fillna(0.0)
 
     delta_exposure = float((_series("DELTA") * oi).sum())

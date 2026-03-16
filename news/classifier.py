@@ -1,5 +1,17 @@
 """
-Deterministic headline classification and scoring.
+Module: classifier.py
+
+Purpose:
+    Implement classifier logic used to classify headlines and derive news context.
+
+Role in the System:
+    Part of the news context layer that scores headline risk and directional news pressure.
+
+Key Outputs:
+    Headline state, news sentiment features, and risk flags.
+
+Downstream Usage:
+    Consumed by macro/news overlays, the signal engine, and research logging.
 """
 
 from __future__ import annotations
@@ -24,11 +36,55 @@ from news.models import HeadlineRecord
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `classifier` module. The module sits in the news layer that converts provider headlines into structured macro state.
+
+    Inputs:
+        value (float): Raw value supplied by the caller.
+        lo (float): Inclusive lower bound for the returned value.
+        hi (float): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 @dataclass(frozen=True)
 class HeadlineClassification:
+    """
+    Purpose:
+        Dataclass representing HeadlineClassification within the repository.
+    
+    Context:
+        Used within the news layer that classifies headlines and derives risk context. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        timestamp (str): Value supplied for timestamp.
+        source (str): Value supplied for source.
+        headline (str): Value supplied for headline.
+        url_or_identifier (str): Value supplied for url or identifier.
+        primary_category (str): Value supplied for primary category.
+        matched_categories (list[str]): Collection of matched categories.
+        matched_rules (list[str]): Collection of matched rules.
+        matched_keywords (list[str]): Collection of matched keywords.
+        macro_sentiment_score (float): Score value for macro sentiment.
+        volatility_shock_score (float): Score value for volatility shock.
+        headline_impact_score (float): Score value for headline impact.
+        india_macro_bias (float): Value supplied for india macro bias.
+        global_risk_bias (float): Value supplied for global risk bias.
+        debug (dict[str, Any]): Structured mapping for debug.
+    
+    Notes:
+        The structured record keeps important state explicit, serializable, and easy to audit across live, replay, and research workflows.
+    """
     timestamp: str
     source: str
     headline: str
@@ -45,10 +101,42 @@ class HeadlineClassification:
     debug: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Purpose:
+            Serialize the object into a plain dictionary for persistence and review.
+        
+        Context:
+            Method on `HeadlineClassification` that makes the object easy to persist in tuning artifacts, logs, or serialized payloads.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            dict[str, Any]: Dictionary representation of the object suitable for serialization or persistence.
+        
+        Notes:
+            The serialized shape is kept stable so artifacts can be diffed, persisted, and inspected outside Python.
+        """
         return asdict(self)
 
 
 def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
+    """
+    Purpose:
+        Classify headline into the appropriate regime or label.
+    
+    Context:
+        Public function within the news layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        record (HeadlineRecord): Input associated with record.
+    
+    Returns:
+        HeadlineClassification: Bucket or regime label returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_headline_classification_config()
     headline_rules = get_headline_rules()
     positive_keywords = get_positive_keywords()
@@ -142,4 +230,20 @@ def classify_headline(record: HeadlineRecord) -> HeadlineClassification:
 
 
 def classify_headlines(records: list[HeadlineRecord]) -> list[HeadlineClassification]:
+    """
+    Purpose:
+        Classify the current headlines regime or label.
+    
+    Context:
+        Public function in the `classifier` module. It forms part of the news workflow exposed by this module.
+    
+    Inputs:
+        records (list[HeadlineRecord]): Collection of records.
+    
+    Returns:
+        list[HeadlineClassification]: Classification label produced by the heuristic.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     return [classify_headline(record) for record in records]

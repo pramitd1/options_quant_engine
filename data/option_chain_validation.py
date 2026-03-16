@@ -1,5 +1,17 @@
 """
-Reusable option-chain validation helpers for live engine entry points.
+Module: option_chain_validation.py
+
+Purpose:
+    Implement option chain validation data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from __future__ import annotations
@@ -19,6 +31,23 @@ COLUMN_ALIASES = {
 
 
 def _resolve_column_name(option_chain, canonical_name: str) -> str | None:
+    """
+    Purpose:
+        Resolve column name needed by downstream logic.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        canonical_name (str): Human-readable name for canonical.
+    
+    Returns:
+        str | None: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     candidates = [canonical_name] + COLUMN_ALIASES.get(canonical_name, [])
     for column in candidates:
         if column in option_chain.columns:
@@ -27,6 +56,23 @@ def _resolve_column_name(option_chain, canonical_name: str) -> str | None:
 
 
 def _series_or_empty(option_chain, canonical_name: str) -> pd.Series:
+    """
+    Purpose:
+        Process series or empty for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        canonical_name (str): Human-readable name for canonical.
+    
+    Returns:
+        pd.Series: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     column = _resolve_column_name(option_chain, canonical_name)
     if column is None:
         return pd.Series(dtype="object")
@@ -34,6 +80,22 @@ def _series_or_empty(option_chain, canonical_name: str) -> pd.Series:
 
 
 def validate_option_chain(option_chain):
+    """
+    Purpose:
+        Process validate option chain for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     issues = []
     warnings = []
 

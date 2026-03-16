@@ -1,5 +1,17 @@
 """
-Feature Builder
+Module: feature_builder.py
+
+Purpose:
+    Implement feature builder modeling logic used by predictive or heuristic components.
+
+Role in the System:
+    Part of the modeling layer that builds statistical features and predictive estimates.
+
+Key Outputs:
+    Model-ready feature sets, fitted estimators, or predictive outputs.
+
+Downstream Usage:
+    Consumed by analytics, the probability stack, and research workflows.
 """
 
 import numpy as np
@@ -16,6 +28,30 @@ def build_features(
     vacuum_state=None,
     atm_iv=None
 ):
+    """
+    Purpose:
+        Build the features used by downstream components.
+    
+    Context:
+        Public function within the modeling layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        spot (Any): Input associated with spot.
+        gamma_regime (Any): Input associated with gamma regime.
+        final_flow_signal (Any): Input associated with final flow signal.
+        vol_regime (Any): Input associated with vol regime.
+        hedging_bias (Any): Input associated with hedging bias.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        vacuum_state (Any): Structured state payload for vacuum.
+        atm_iv (Any): Input associated with ATM IV.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     gamma_sign = 0.0
     if gamma_regime in ["NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"]:
         gamma_sign = 1.0

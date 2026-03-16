@@ -1,5 +1,17 @@
 """
-Interpretable regime classifier for the gamma-vol acceleration overlay.
+Module: gamma_vol_acceleration_regime.py
+
+Purpose:
+    Classify gamma vol acceleration states and actions from risk features.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -9,10 +21,45 @@ from risk.gamma_vol_acceleration_models import GammaVolAccelerationState
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `gamma vol acceleration regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `gamma vol acceleration regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -22,6 +69,22 @@ def _safe_float(value, default=0.0):
 
 
 def _classify_squeeze_risk_state(score):
+    """
+    Purpose:
+        Classify squeeze risk state into the appropriate regime or label.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        score (Any): Input associated with score.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     if score >= cfg.extreme_risk_threshold:
         return "EXTREME_ACCELERATION_RISK"
@@ -33,6 +96,24 @@ def _classify_squeeze_risk_state(score):
 
 
 def _directional_state(upside_squeeze_risk, downside_airpocket_risk, gamma_vol_acceleration_score):
+    """
+    Purpose:
+        Process directional state for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        upside_squeeze_risk (Any): Input associated with upside squeeze risk.
+        downside_airpocket_risk (Any): Input associated with downside airpocket risk.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     upside = _clip(_safe_float(upside_squeeze_risk, 0.0), 0.0, 1.0)
     downside = _clip(_safe_float(downside_airpocket_risk, 0.0), 0.0, 1.0)
@@ -60,6 +141,24 @@ def _directional_state(upside_squeeze_risk, downside_airpocket_risk, gamma_vol_a
 
 
 def _adjustment_score(squeeze_risk_state, directional_convexity_state, gamma_regime_score):
+    """
+    Purpose:
+        Compute the adjustment score used by the surrounding model.
+
+    Context:
+        Function inside the `gamma vol acceleration regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        squeeze_risk_state (Any): State payload for squeeze risk.
+        directional_convexity_state (Any): State payload for directional convexity.
+        gamma_regime_score (Any): Normalized score for gamma regime.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
 
     if gamma_regime_score < 0 and squeeze_risk_state == "LOW_ACCELERATION_RISK":
@@ -87,6 +186,30 @@ def _evaluate_overnight_convexity(
     macro_event_risk_score,
     overnight_relevant,
 ):
+    """
+    Purpose:
+        Process evaluate overnight convexity for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        squeeze_risk_state (Any): Structured state payload for squeeze risk.
+        directional_convexity_state (Any): Structured state payload for directional convexity.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+        upside_squeeze_risk (Any): Input associated with upside squeeze risk.
+        downside_airpocket_risk (Any): Input associated with downside airpocket risk.
+        overnight_convexity_risk (Any): Input associated with overnight convexity risk.
+        global_risk_state (Any): Structured state payload for global risk.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        overnight_relevant (Any): Input associated with overnight relevant.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
 
     if not overnight_relevant:
@@ -152,6 +275,22 @@ def _evaluate_overnight_convexity(
 
 
 def classify_gamma_vol_acceleration_state(features: dict | None) -> GammaVolAccelerationState:
+    """
+    Purpose:
+        Classify gamma vol acceleration state into the appropriate regime or label.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        features (dict | None): Input associated with features.
+    
+    Returns:
+        GammaVolAccelerationState: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     features = features if isinstance(features, dict) else {}
 
     gamma_vol_acceleration_score = int(round(_clip(_safe_float(features.get("normalized_acceleration"), 0.0) * 100.0, 0.0, 100.0)))

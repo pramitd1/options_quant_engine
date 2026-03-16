@@ -1,5 +1,17 @@
 """
-Interpretable regime classifier for the global risk layer.
+Module: global_risk_regime.py
+
+Purpose:
+    Classify global risk states and actions from risk features.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -9,10 +21,45 @@ from risk.global_risk_models import GlobalRiskState, HoldingContext
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `global risk regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `global risk regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -22,6 +69,23 @@ def _safe_float(value, default=0.0):
 
 
 def _scaled_score(value, full_scale):
+    """
+    Purpose:
+        Process scaled score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+        full_scale (Any): Input associated with full scale.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     value = _safe_float(value, 0.0)
     if full_scale <= 0:
         return 0.0
@@ -29,6 +93,24 @@ def _scaled_score(value, full_scale):
 
 
 def _legacy_state(global_risk_score, volatility_expansion_risk_score, event_window_status):
+    """
+    Purpose:
+        Process legacy state for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        global_risk_score (Any): Score value for global risk.
+        volatility_expansion_risk_score (Any): Score value for volatility expansion risk.
+        event_window_status (Any): Status label for event window.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_global_risk_policy_config()
     if event_window_status in {"PRE_EVENT_WATCH", "POST_EVENT_COOLDOWN"} and _safe_float(global_risk_score, 0.0) >= cfg.event_risk_state_threshold:
         return "EVENT_RISK"
@@ -51,6 +133,27 @@ def _evaluate_overnight_risk(
     us_equity_risk_score,
     overnight_relevant,
 ):
+    """
+    Purpose:
+        Process evaluate overnight risk for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        global_risk_state (Any): Structured state payload for global risk.
+        volatility_explosion_probability (Any): Input associated with volatility explosion probability.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        oil_shock_score (Any): Score value for oil shock.
+        us_equity_risk_score (Any): Score value for us equity risk.
+        overnight_relevant (Any): Input associated with overnight relevant.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_global_risk_policy_config()
     penalty = 0
     reasons = []
@@ -101,6 +204,22 @@ def _evaluate_overnight_risk(
 
 
 def classify_global_risk_state(features: dict | None) -> GlobalRiskState:
+    """
+    Purpose:
+        Classify global risk state into the appropriate regime or label.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        features (dict | None): Input associated with features.
+    
+    Returns:
+        GlobalRiskState: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_global_risk_policy_config()
     features = features if isinstance(features, dict) else {}
 

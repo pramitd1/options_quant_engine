@@ -1,11 +1,17 @@
 """
-Expiry resolver utilities.
+Module: expiry_resolver.py
 
-Provides a single place to:
-- normalize expiry labels coming from different providers
-- sort expiries when possible
-- pick the selected/front expiry for the engine
-- optionally filter a mixed-expiry chain down to one expiry
+Purpose:
+    Implement expiry resolver data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from __future__ import annotations
@@ -23,6 +29,22 @@ KNOWN_EXPIRY_FORMATS = (
 
 
 def normalize_expiry_value(value) -> str | None:
+    """
+    Purpose:
+        Normalize expiry value into the repository-standard representation.
+    
+    Context:
+        Public function in the `expiry resolver` module. It forms part of the data workflow exposed by this module.
+    
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+    
+    Returns:
+        str | None: Value returned by the current workflow step.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     if value is None:
         return None
 
@@ -34,6 +56,22 @@ def normalize_expiry_value(value) -> str | None:
 
 
 def _parse_expiry(value: str):
+    """
+    Purpose:
+        Process parse expiry for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (str): Input associated with value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     for fmt in KNOWN_EXPIRY_FORMATS:
         try:
             return datetime.strptime(value, fmt)
@@ -51,6 +89,22 @@ def _parse_expiry(value: str):
 
 
 def ordered_expiries(option_chain) -> list[str]:
+    """
+    Purpose:
+        Process ordered expiries for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+    
+    Returns:
+        list[str]: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if option_chain is None or len(option_chain) == 0 or "EXPIRY_DT" not in option_chain.columns:
         return []
 
@@ -79,11 +133,44 @@ def ordered_expiries(option_chain) -> list[str]:
 
 
 def resolve_selected_expiry(option_chain) -> str | None:
+    """
+    Purpose:
+        Resolve selected expiry needed by downstream logic.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+    
+    Returns:
+        str | None: Computed value returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     expiries = ordered_expiries(option_chain)
     return expiries[0] if expiries else None
 
 
 def filter_option_chain_by_expiry(option_chain, selected_expiry: str | None):
+    """
+    Purpose:
+        Process filter option chain by expiry for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        selected_expiry (str | None): Expiry associated with the contract referenced by the signal.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if (
         option_chain is None
         or len(option_chain) == 0

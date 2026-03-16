@@ -1,10 +1,17 @@
 """
-Dealer Gamma Path Simulator
+Module: dealer_gamma_path.py
 
-Simulates how dealer hedging flows change
-as price moves across strikes.
+Purpose:
+    Compute dealer gamma path analytics used by downstream signal and risk layers.
 
-This helps detect large potential moves.
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import numpy as np
@@ -12,6 +19,25 @@ import pandas as pd
 
 
 def simulate_gamma_path(option_chain, spot, step=25, range_points=None):
+    """
+    Purpose:
+        Simulate gamma path across the requested scenario space.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        spot (Any): Input associated with spot.
+        step (Any): Input associated with step.
+        range_points (Any): Input associated with range points.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if option_chain is None or len(option_chain) == 0 or spot is None:
         return np.array([]), []
 
@@ -89,6 +115,23 @@ def simulate_gamma_path(option_chain, spot, step=25, range_points=None):
 
 def detect_gamma_squeeze(prices, gamma_curve):
 
+    """
+    Purpose:
+        Detect gamma squeeze from the available inputs.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        prices (Any): Input associated with prices.
+        gamma_curve (Any): Input associated with gamma curve.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if len(gamma_curve) < 2:
         return None
 

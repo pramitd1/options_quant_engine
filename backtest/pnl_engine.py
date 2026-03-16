@@ -1,3 +1,18 @@
+"""
+Module: pnl_engine.py
+
+Purpose:
+    Implement pnl engine logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
+"""
 from config.settings import (
     BACKTEST_ENTRY_SLIPPAGE_BPS,
     BACKTEST_EXIT_SLIPPAGE_BPS,
@@ -7,6 +22,24 @@ from config.settings import (
 
 
 def _bps_adjust(price: float, bps: float, side: str) -> float:
+    """
+    Purpose:
+        Process bps adjust for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        price (float): Input associated with price.
+        bps (float): Input associated with bps.
+        side (str): Input associated with side.
+    
+    Returns:
+        float: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     mult = bps / 10000.0
     if side == "BUY":
         return price * (1 + mult)
@@ -16,6 +49,24 @@ def _bps_adjust(price: float, bps: float, side: str) -> float:
 
 
 def _find_option_row(option_chain, strike, option_type):
+    """
+    Purpose:
+        Process find option row for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        strike (Any): Input associated with strike.
+        option_type (Any): Input associated with option type.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     rows = option_chain[
         (option_chain["strikePrice"] == strike) &
         (option_chain["OPTION_TYP"] == option_type)
@@ -24,6 +75,23 @@ def _find_option_row(option_chain, strike, option_type):
 
 
 def calculate_trade_pnl(trade: dict, exit_snapshot):
+    """
+    Purpose:
+        Calculate trade pnl from the supplied inputs.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade (dict): Input associated with trade.
+        exit_snapshot (Any): Input associated with exit snapshot.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not trade:
         return {
             "pnl": 0.0,
@@ -102,4 +170,21 @@ def calculate_trade_pnl(trade: dict, exit_snapshot):
 
 
 def pnl_engine(trade: dict, exit_snapshot):
+    """
+    Purpose:
+        Process pnl engine for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade (dict): Input associated with trade.
+        exit_snapshot (Any): Input associated with exit snapshot.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return calculate_trade_pnl(trade, exit_snapshot)

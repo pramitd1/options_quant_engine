@@ -1,5 +1,17 @@
 """
-Governed research-to-production workflow orchestration.
+Module: governance.py
+
+Purpose:
+    Orchestrate governed candidate generation, evidence capture, and production-vs-candidate review workflows.
+
+Role in the System:
+    Part of the tuning layer that connects research tuning results to the parameter registry and promotion workflow.
+
+Key Outputs:
+    Candidate parameter packs, supporting evidence maps, comparison reports, and review context.
+
+Downstream Usage:
+    Consumed by promotion tooling, governance reviews, and operator approval workflows.
 """
 
 from __future__ import annotations
@@ -40,6 +52,22 @@ TUNING_REPORTS_DIR = PROJECT_ROOT / "research" / "parameter_tuning" / "reports"
 
 
 def _coerce_walk_forward_config(walk_forward_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """
+    Purpose:
+        Normalize walk-forward configuration inputs into the governance-ready schema.
+    
+    Context:
+        Internal helper in the tuning layer. It keeps candidate generation and governance transformations deterministic and easy to test.
+    
+    Inputs:
+        walk_forward_config (dict[str, Any] | None): Configuration mapping for walk forward.
+    
+    Returns:
+        dict[str, Any]: Walk-forward configuration normalized into the schema expected by governance checks.
+    
+    Notes:
+        This helper exists to keep surrounding orchestration readable without hiding important assumptions.
+    """
     config = {
         "split_type": "rolling",
         "train_window_days": 180,
@@ -54,6 +82,22 @@ def _coerce_walk_forward_config(walk_forward_config: dict[str, Any] | None = Non
 
 
 def _pack_values(pack_name: str) -> dict[str, Any]:
+    """
+    Purpose:
+        Resolve a parameter pack into a full key-value mapping across the registry.
+
+    Context:
+        Governance comparisons need effective values, not just the sparse override set stored in a pack file.
+
+    Inputs:
+        pack_name (str): Parameter-pack name to resolve.
+
+    Returns:
+        dict[str, Any]: Effective parameter values for every registry key.
+
+    Notes:
+        Missing overrides fall back to registry defaults so the returned mapping is complete.
+    """
     registry = get_parameter_registry()
     resolved_pack = resolve_parameter_pack(pack_name)
     values = {}
@@ -63,6 +107,23 @@ def _pack_values(pack_name: str) -> dict[str, Any]:
 
 
 def _delta_overrides(base_pack_name: str, effective_overrides: dict[str, Any]) -> dict[str, Any]:
+    """
+    Purpose:
+        Reduce a candidate's effective values down to the true differences versus the baseline pack.
+
+    Context:
+        Candidate packs should only store meaningful deltas from production so review artifacts stay concise and auditable.
+
+    Inputs:
+        base_pack_name (str): Baseline or production pack used as the reference.
+        effective_overrides (dict[str, Any]): Candidate values after tuning.
+
+    Returns:
+        dict[str, Any]: Sparse override mapping containing only changed keys.
+
+    Notes:
+        This keeps generated candidate packs readable and prevents no-op overrides from polluting governance history.
+    """
     baseline_values = _pack_values(base_pack_name)
     deltas = {}
     for key, candidate_value in dict(effective_overrides or {}).items():
@@ -72,6 +133,23 @@ def _delta_overrides(base_pack_name: str, effective_overrides: dict[str, Any]) -
 
 
 def _candidate_pack_name(production_pack_name: str, explicit_name: str | None = None) -> str:
+    """
+    Purpose:
+        Generate the stable name used for a newly materialized candidate pack.
+
+    Context:
+        Governed tuning needs traceable candidate names so reports, ledgers, and approval records can all refer to the same pack.
+
+    Inputs:
+        production_pack_name (str): Current production or baseline pack name.
+        explicit_name (str | None): Optional caller-supplied candidate name.
+
+    Returns:
+        str: Candidate pack name.
+
+    Notes:
+        When no explicit name is supplied, the helper appends a UTC timestamp to the production pack name.
+    """
     if explicit_name:
         return explicit_name
     stamp = pd.Timestamp.utcnow().strftime("%Y%m%dT%H%M%SZ").lower()
@@ -79,10 +157,42 @@ def _candidate_pack_name(production_pack_name: str, explicit_name: str | None = 
 
 
 def _recommendation_report_name(candidate_pack_name: str) -> str:
+    """
+    Purpose:
+        Normalize a candidate pack name into a filesystem-friendly report stem.
+
+    Context:
+        Governance reports are persisted to disk, so pack names need a simple normalization step before they become directory or file names.
+
+    Inputs:
+        candidate_pack_name (str): Candidate pack name.
+
+    Returns:
+        str: Filesystem-safe report name stem.
+
+    Notes:
+        The helper is intentionally minimal because the pack naming scheme is already controlled elsewhere.
+    """
     return candidate_pack_name.replace(".", "_")
 
 
 def build_parameter_evidence_map(campaign: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """
+    Purpose:
+        Build a per-parameter evidence map from a governed tuning campaign.
+
+    Context:
+        Reviewers need to know not just which parameters changed, but which campaign step produced the recommendation and what supporting metrics came with it.
+
+    Inputs:
+        campaign (dict[str, Any]): Governed tuning campaign payload.
+
+    Returns:
+        dict[str, dict[str, Any]]: Evidence keyed by parameter name.
+
+    Notes:
+        The evidence is intentionally compact so it can be embedded into comparison reports and approval records.
+    """
     evidence_map: dict[str, dict[str, Any]] = {}
     for step in campaign.get("steps", []):
         plan = dict(step.get("plan", {}))
@@ -123,6 +233,29 @@ def materialize_candidate_parameter_pack(
     output_dir: str | Path = RESEARCH_PARAMETER_PACKS_DIR,
     overwrite: bool = False,
 ) -> Path:
+    """
+    Purpose:
+        Materialize a candidate parameter pack on disk.
+
+    Context:
+        Governed tuning produces candidate overrides in memory; this function turns that result into a versioned pack artifact that can enter the promotion workflow.
+
+    Inputs:
+        candidate_pack_name (str): Name for the new candidate pack.
+        parent_pack_name (str): Baseline pack from which the candidate was derived.
+        overrides (dict[str, Any]): Sparse override mapping to persist.
+        description (str | None): Optional human-readable description.
+        notes (str | None): Optional review notes.
+        metadata (dict[str, Any] | None): Additional metadata to persist with the pack.
+        output_dir (str | Path): Destination directory for candidate packs.
+        overwrite (bool): Whether an existing file may be replaced.
+
+    Returns:
+        Path: Path to the written candidate pack.
+
+    Notes:
+        The pack is stored as JSON so it can be inspected and reviewed outside Python tooling.
+    """
     candidate_dir = Path(output_dir)
     candidate_dir.mkdir(parents=True, exist_ok=True)
     candidate_path = candidate_dir / f"{candidate_pack_name}.json"
@@ -157,6 +290,27 @@ def evaluate_current_production_signal_quality(
     top_n: int = 10,
     state_path: str | Path = PROMOTION_STATE_PATH,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Generate a fresh signal-evaluation report for the currently active production pack.
+
+    Context:
+        Governance decisions compare candidate packs against the latest production baseline, so the workflow begins by refreshing the production-quality report from the signal-evaluation dataset.
+
+    Inputs:
+        dataset_path (str | Path): Signal-evaluation dataset to analyze.
+        production_pack_name (str | None): Production pack to evaluate. Falls back to the active live pack.
+        output_dir (str | Path | None): Output directory for the generated report.
+        report_name (str | None): Optional report name override.
+        top_n (int): Number of top slices or regimes to surface in the report.
+        state_path (str | Path): Promotion state path used to resolve the live pack when needed.
+
+    Returns:
+        dict[str, Any]: Written report metadata and summary information.
+
+    Notes:
+        This function does not tune anything; it snapshots the current production baseline for comparison.
+    """
     production_pack_name = production_pack_name or get_active_live_pack(state_path)
     frame = load_signals_dataset(dataset_path)
     return write_signal_evaluation_report(
@@ -188,6 +342,37 @@ def run_controlled_tuning_workflow(
     reports_dir: str | Path = TUNING_REPORTS_DIR,
     candidate_packs_dir: str | Path = RESEARCH_PARAMETER_PACKS_DIR,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Run the governed end-to-end tuning workflow from baseline evaluation to candidate artifact creation.
+
+    Context:
+        This is the highest-level orchestration entry point in the tuning governance layer. It refreshes production diagnostics, runs grouped tuning, materializes a candidate pack, records workflow state, and writes the candidate-vs-production report bundle.
+
+    Inputs:
+        dataset_path (str | Path): Signal-evaluation dataset used for tuning and validation.
+        production_pack_name (str | None): Baseline production pack. Falls back to the active live pack.
+        candidate_pack_name (str | None): Optional explicit name for the generated candidate pack.
+        groups (list[str] | None): Parameter groups to include in the governed campaign.
+        allow_live_unsafe (bool): Whether to allow tuning changes marked unsafe for live deployment.
+        walk_forward_config (dict[str, Any] | None): Walk-forward validation configuration.
+        objective_weights (dict[str, float] | None): Objective-score weights for candidate selection.
+        selection_thresholds (dict[str, Any] | None): Trade-selection thresholds applied during experiments.
+        seed (int): Random seed for reproducible search behavior.
+        created_by (str | None): Operator or workflow identifier recorded in metadata.
+        notes (str | None): Optional notes attached to the candidate workflow.
+        persist (bool): Whether experiment artifacts should be persisted.
+        state_path (str | Path): Promotion state path.
+        ledger_path (str | Path): Promotion ledger path.
+        reports_dir (str | Path): Output directory for candidate-vs-production reports.
+        candidate_packs_dir (str | Path): Output directory for generated candidate packs.
+
+    Returns:
+        dict[str, Any]: Full workflow payload containing the candidate pack, reports, and experiment results.
+
+    Notes:
+        The workflow intentionally stops at candidate creation and evidence capture. Manual review and promotion remain separate steps.
+    """
     production_pack_name = production_pack_name or get_active_live_pack(state_path)
     walk_forward_config = _coerce_walk_forward_config(walk_forward_config)
 
@@ -316,6 +501,22 @@ def get_candidate_review_context(
     *,
     state_path: str | Path = PROMOTION_STATE_PATH,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Return the current production/candidate pairing needed for a review decision.
+
+    Context:
+        Approval UIs and governance scripts need a small, stable snapshot of the promotion state rather than the full state document.
+
+    Inputs:
+        state_path (str | Path): Promotion state file to read.
+
+    Returns:
+        dict[str, Any]: Current production pack, candidate pack, and any recorded manual approval.
+
+    Notes:
+        This is a read-only convenience helper for review tooling.
+    """
     state = load_promotion_state(state_path)
     return {
         "production_pack_name": state.get("live"),

@@ -1,5 +1,17 @@
 """
-Configurable scoring policy for realized signal evaluation.
+Module: signal_evaluation_scoring.py
+
+Purpose:
+    Define configuration values used by signal evaluation scoring.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 SIGNAL_EVALUATION_SCORE_WEIGHTS = {
@@ -46,30 +58,110 @@ SIGNAL_EVALUATION_SELECTION_POLICY = {
 
 
 def get_signal_evaluation_score_weights():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return signal evaluation score weights for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("evaluation_thresholds.score_weights", SIGNAL_EVALUATION_SCORE_WEIGHTS)
 
 
 def get_signal_evaluation_direction_weights():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return signal evaluation direction weights for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("evaluation_thresholds.direction_weights", SIGNAL_EVALUATION_DIRECTION_WEIGHTS)
 
 
 def get_signal_evaluation_timing_weights():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return signal evaluation timing weights for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("evaluation_thresholds.timing_weights", SIGNAL_EVALUATION_TIMING_WEIGHTS)
 
 
 def get_signal_evaluation_thresholds():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return signal evaluation thresholds for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("evaluation_thresholds.core", SIGNAL_EVALUATION_THRESHOLDS)
 
 
 def get_signal_evaluation_selection_policy():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return signal evaluation selection policy for downstream use.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("evaluation_thresholds.selection", SIGNAL_EVALUATION_SELECTION_POLICY)

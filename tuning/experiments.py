@@ -1,5 +1,17 @@
 """
-Experiment runner for parameter pack evaluation.
+Module: experiments.py
+
+Purpose:
+    Implement experiments utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -26,10 +38,42 @@ EXPERIMENT_LEDGER_PATH = TUNING_RESEARCH_DIR / "experiment_ledger.jsonl"
 
 
 def _ensure_tuning_dir() -> None:
+    """
+    Purpose:
+        Ensure tuning dir exists and is ready for use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     TUNING_RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _evaluation_date_range(frame: pd.DataFrame) -> dict[str, str | None]:
+    """
+    Purpose:
+        Process evaluation date range for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        dict[str, str | None]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or "signal_timestamp" not in frame.columns:
         return {"start": None, "end": None}
     ts = pd.to_datetime(frame["signal_timestamp"], errors="coerce").dropna()
@@ -39,6 +83,23 @@ def _evaluation_date_range(frame: pd.DataFrame) -> dict[str, str | None]:
 
 
 def append_experiment_result(result: ExperimentResult, path: str | Path = EXPERIMENT_LEDGER_PATH) -> Path:
+    """
+    Purpose:
+        Process append experiment result for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        result (ExperimentResult): Input associated with result.
+        path (str | Path): Input associated with path.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return append_jsonl_record(result.to_dict(), path)
 
 
@@ -56,6 +117,32 @@ def run_parameter_experiment(
     search_metadata: dict | None = None,
     persist: bool = True,
 ) -> ExperimentResult:
+    """
+    Purpose:
+        Process run parameter experiment for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        parameter_pack_name (str): Human-readable name for parameter pack.
+        dataset_path (str | Path): Input associated with dataset path.
+        pack_overrides (dict | None): Input associated with pack overrides.
+        selection_thresholds (dict | None): Input associated with selection thresholds.
+        objective_weights (dict | None): Input associated with objective weights.
+        walk_forward_config (dict | None): Input associated with walk forward config.
+        comparison_baseline_pack (str | None): Input associated with comparison baseline pack.
+        notes (str | None): Input associated with notes.
+        assumptions (list[str] | None): Input associated with assumptions.
+        search_metadata (dict | None): Input associated with search metadata.
+        persist (bool): Boolean flag associated with persist.
+    
+    Returns:
+        ExperimentResult: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     _ensure_tuning_dir()
     resolved_pack = resolve_parameter_pack(parameter_pack_name)
     effective_overrides = dict(resolved_pack.overrides)

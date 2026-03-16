@@ -1,5 +1,17 @@
 """
-Deterministic raw feature model for the gamma-vol acceleration overlay.
+Module: gamma_vol_acceleration_features.py
+
+Purpose:
+    Build gamma vol acceleration features used by the risk overlay.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -8,10 +20,45 @@ from config.gamma_vol_acceleration_policy import get_gamma_vol_acceleration_poli
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if value is None:
             return default
@@ -21,6 +68,23 @@ def _safe_float(value, default=0.0):
 
 
 def _safe_int(value, default=0):
+    """
+    Purpose:
+        Safely coerce an input to `int` while preserving a fallback.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        int: Parsed integer value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if value is None:
             return default
@@ -30,6 +94,23 @@ def _safe_int(value, default=0):
 
 
 def _holding_context(global_risk_state, holding_profile):
+    """
+    Purpose:
+        Process holding context for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        global_risk_state (Any): Structured state payload for global risk.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
     holding_context = global_risk_state.get("holding_context", {})
     holding_context = holding_context if isinstance(holding_context, dict) else {}
@@ -46,6 +127,22 @@ def _holding_context(global_risk_state, holding_profile):
 
 
 def _gamma_regime_score(gamma_regime):
+    """
+    Purpose:
+        Compute the gamma regime score used by the surrounding model.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        gamma_regime (Any): Regime label for gamma.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     gamma_regime = str(gamma_regime or "").upper().strip()
     if gamma_regime in {"SHORT_GAMMA_ZONE", "NEGATIVE_GAMMA"}:
@@ -56,6 +153,23 @@ def _gamma_regime_score(gamma_regime):
 
 
 def _flip_proximity_score(gamma_flip_distance_pct, spot_vs_flip):
+    """
+    Purpose:
+        Process flip proximity score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        gamma_flip_distance_pct (Any): Input associated with gamma flip distance percentage.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     spot_vs_flip = str(spot_vs_flip or "").upper().strip()
     distance = _safe_float(gamma_flip_distance_pct, None)
@@ -80,6 +194,24 @@ def _flip_proximity_score(gamma_flip_distance_pct, spot_vs_flip):
 
 
 def _volatility_transition_score(volatility_compression_score, volatility_shock_score, volatility_explosion_probability):
+    """
+    Purpose:
+        Compute the volatility transition score used by the surrounding model.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        volatility_compression_score (Any): Compression score describing how suppressed recent realized volatility is.
+        volatility_shock_score (Any): Shock score describing how abruptly volatility is expanding.
+        volatility_explosion_probability (Any): Probability-like score for a sharp volatility expansion.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     compression = _clip(_safe_float(volatility_compression_score, 0.0), 0.0, 1.0)
     shock = _clip(_safe_float(volatility_shock_score, 0.0), 0.0, 1.0)
@@ -94,6 +226,22 @@ def _volatility_transition_score(volatility_compression_score, volatility_shock_
 
 
 def _liquidity_vacuum_score(liquidity_vacuum_state):
+    """
+    Purpose:
+        Compute the liquidity vacuum score used by the surrounding model.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        liquidity_vacuum_state (Any): State payload for liquidity vacuum.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     mapping = {
         "BREAKOUT_ZONE": cfg.liquidity_breakout_score,
@@ -106,6 +254,22 @@ def _liquidity_vacuum_score(liquidity_vacuum_state):
 
 
 def _hedging_bias_score(dealer_hedging_bias):
+    """
+    Purpose:
+        Process hedging bias score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        dealer_hedging_bias (Any): Input associated with dealer hedging bias.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     bias = str(dealer_hedging_bias or "").upper().strip()
     if bias == "UPSIDE_ACCELERATION":
@@ -122,6 +286,22 @@ def _hedging_bias_score(dealer_hedging_bias):
 
 
 def _pinning_dampener(dealer_hedging_bias):
+    """
+    Purpose:
+        Process pinning dampener for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        dealer_hedging_bias (Any): Input associated with dealer hedging bias.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     bias = str(dealer_hedging_bias or "").upper().strip()
     if bias == "PINNING":
@@ -132,6 +312,22 @@ def _pinning_dampener(dealer_hedging_bias):
 
 
 def _intraday_extension_score(intraday_range_pct):
+    """
+    Purpose:
+        Compute the intraday extension score used by the surrounding model.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        intraday_range_pct (Any): Realized intraday range normalized by the expected baseline range.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     value = _safe_float(intraday_range_pct, None)
     if value is None:
@@ -146,6 +342,26 @@ def _intraday_extension_score(intraday_range_pct):
 
 
 def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_explosion_probability):
+    """
+    Purpose:
+        Compute the macro/global contribution to acceleration risk.
+
+    Context:
+        Used within the gamma vol acceleration features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        macro_event_risk_score (Any): Normalized score for macro event risk.
+        global_risk_state (Any): Global-risk state produced by the risk overlay pipeline.
+        volatility_explosion_probability (Any): Probability-like score for a sharp volatility expansion.
+
+    Returns:
+        float: Normalized macro/global boost applied to acceleration and
+        directional-convexity scores.
+
+    Notes:
+        This term blends scheduled-event risk, broad global-risk state, and the
+        probability of volatility expansion into one normalized boost.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     event_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     state = str(global_risk_state or "").upper().strip()
@@ -183,6 +399,35 @@ def build_gamma_vol_acceleration_features(
     support_wall=None,
     resistance_wall=None,
 ):
+    """
+    Purpose:
+        Build the gamma vol acceleration features used by downstream components.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        gamma_regime (Any): Input associated with gamma regime.
+        spot_vs_flip (Any): Input associated with spot vs flip.
+        gamma_flip_distance_pct (Any): Input associated with gamma flip distance percentage.
+        dealer_hedging_bias (Any): Input associated with dealer hedging bias.
+        liquidity_vacuum_state (Any): Structured state payload for liquidity vacuum.
+        intraday_range_pct (Any): Input associated with intraday range percentage.
+        volatility_compression_score (Any): Score value for volatility compression.
+        volatility_shock_score (Any): Score value for volatility shock.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        global_risk_state (Any): Structured state payload for global risk.
+        volatility_explosion_probability (Any): Input associated with volatility explosion probability.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_gamma_vol_acceleration_policy_config()
     holding_context = _holding_context(global_risk_state, holding_profile)
     global_state_label = (
@@ -228,6 +473,8 @@ def build_gamma_vol_acceleration_features(
         volatility_explosion_probability,
     )
 
+    # Positive values here mean structurally unstable, acceleration-prone
+    # conditions. Negative values instead contribute to dampening.
     positive_gamma_pressure = max(gamma_regime_score, 0.0)
     gamma_dampener = max(-gamma_regime_score, 0.0)
     acceleration_core = _clip(
@@ -247,6 +494,8 @@ def build_gamma_vol_acceleration_features(
         0.0,
         1.0,
     )
+    # Feature confidence scales the result down when the overlay is operating
+    # on partial context rather than a fully populated feature set.
     normalized_acceleration = _clip((acceleration_core - (cfg.acceleration_dampening_weight * dampening_core)) * feature_confidence, 0.0, 1.0)
 
     spot_vs_flip_label = str(spot_vs_flip or "").upper().strip()
@@ -265,6 +514,9 @@ def build_gamma_vol_acceleration_features(
     elif hedging_bias_score < 0:
         downside_alignment += min(cfg.alignment_bias_cap, abs(hedging_bias_score) * cfg.alignment_bias_weight)
 
+    # Directional risks reuse the same structural ingredients but add side-
+    # specific alignment terms so the overlay can distinguish upside squeezes
+    # from downside air-pocket behavior.
     upside_squeeze_risk = round(_clip(
         (cfg.directional_gamma_weight * positive_gamma_pressure)
         + (cfg.directional_flip_weight * flip_proximity_score)
@@ -290,6 +542,9 @@ def build_gamma_vol_acceleration_features(
         1.0,
     ) * feature_confidence, 4)
     overnight_convexity_risk = round(_clip(
+        # Overnight convexity risk combines structural acceleration, expected
+        # volatility expansion, event pressure, and whether the holding horizon
+        # actually crosses the close.
         (cfg.overnight_acceleration_weight * normalized_acceleration)
         + (cfg.overnight_explosion_weight * _clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0))
         + (cfg.overnight_macro_event_weight * _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0))

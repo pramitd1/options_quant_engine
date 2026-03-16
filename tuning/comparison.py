@@ -1,5 +1,17 @@
 """
-Candidate-vs-production comparison helpers for governed tuning workflows.
+Module: comparison.py
+
+Purpose:
+    Implement comparison utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -15,6 +27,23 @@ from tuning.registry import get_parameter_registry
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `comparison` module. The module sits in the tuning layer that searches, validates, and promotes parameter packs.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (float | None): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None or value == "":
             return default
@@ -24,6 +53,23 @@ def _safe_float(value: Any, default: float | None = None) -> float | None:
 
 
 def _round_or_none(value: Any, digits: int = 6) -> float | None:
+    """
+    Purpose:
+        Process round or none for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+        digits (int): Input associated with digits.
+    
+    Returns:
+        float | None: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     coerced = _safe_float(value, None)
     if coerced is None or pd.isna(coerced):
         return None
@@ -31,6 +77,22 @@ def _round_or_none(value: Any, digits: int = 6) -> float | None:
 
 
 def _resolved_parameter_values(pack_name: str) -> dict[str, Any]:
+    """
+    Purpose:
+        Process resolved parameter values for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        pack_name (str): Human-readable name for pack.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     registry = get_parameter_registry()
     resolved_pack = resolve_parameter_pack(pack_name)
     values = {}
@@ -40,6 +102,23 @@ def _resolved_parameter_values(pack_name: str) -> dict[str, Any]:
 
 
 def _absolute_change(current_value: Any, candidate_value: Any) -> Any:
+    """
+    Purpose:
+        Process absolute change for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        current_value (Any): Input associated with current value.
+        candidate_value (Any): Input associated with candidate value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     current_numeric = _safe_float(current_value, None)
     candidate_numeric = _safe_float(candidate_value, None)
     if current_numeric is None or candidate_numeric is None:
@@ -48,6 +127,23 @@ def _absolute_change(current_value: Any, candidate_value: Any) -> Any:
 
 
 def _relative_change_pct(current_value: Any, candidate_value: Any) -> float | None:
+    """
+    Purpose:
+        Process relative change percentage for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        current_value (Any): Input associated with current value.
+        candidate_value (Any): Input associated with candidate value.
+    
+    Returns:
+        float | None: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     current_numeric = _safe_float(current_value, None)
     candidate_numeric = _safe_float(candidate_value, None)
     if current_numeric in (None, 0) or candidate_numeric is None:
@@ -62,6 +158,25 @@ def build_parameter_change_table(
     parameter_evidence: dict[str, dict[str, Any]] | None = None,
     changed_only: bool = True,
 ) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Build the parameter change table used by downstream components.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        production_pack_name (str): Human-readable name for production pack.
+        candidate_pack_name (str): Human-readable name for candidate pack.
+        parameter_evidence (dict[str, dict[str, Any]] | None): Input associated with parameter evidence.
+        changed_only (bool): Boolean flag associated with changed_only.
+    
+    Returns:
+        list[dict[str, Any]]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     registry = get_parameter_registry()
     current_values = _resolved_parameter_values(production_pack_name)
     candidate_values = _resolved_parameter_values(candidate_pack_name)
@@ -94,6 +209,22 @@ def build_parameter_change_table(
 
 
 def _metric_snapshot(result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Purpose:
+        Process metric snapshot for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        result (dict[str, Any]): Input associated with result.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     result = dict(result or {})
     objective_metrics = dict(result.get("objective_metrics", {}))
     core_metrics = dict(objective_metrics.get("metrics", {}))
@@ -121,6 +252,23 @@ def _metric_snapshot(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _delta_row(current_value: Any, candidate_value: Any) -> dict[str, Any]:
+    """
+    Purpose:
+        Process delta row for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        current_value (Any): Input associated with current value.
+        candidate_value (Any): Input associated with candidate value.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return {
         "current": current_value,
         "candidate": candidate_value,
@@ -140,6 +288,26 @@ def build_candidate_vs_production_report(
     candidate_result: dict[str, Any],
     parameter_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Build the candidate vs production report used by downstream components.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        production_pack_name (str): Human-readable name for production pack.
+        candidate_pack_name (str): Human-readable name for candidate pack.
+        production_result (dict[str, Any]): Input associated with production result.
+        candidate_result (dict[str, Any]): Input associated with candidate result.
+        parameter_evidence (dict[str, dict[str, Any]] | None): Input associated with parameter evidence.
+    
+    Returns:
+        dict[str, Any]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     production_snapshot = _metric_snapshot(production_result)
     candidate_snapshot = _metric_snapshot(candidate_result)
     comparison_summary = dict(candidate_result.get("comparison_summary", {}))
@@ -229,6 +397,22 @@ def build_candidate_vs_production_report(
 
 
 def render_candidate_vs_production_markdown(report: dict[str, Any]) -> str:
+    """
+    Purpose:
+        Render candidate vs production markdown for operator-facing or report output.
+    
+    Context:
+        Public function within the tuning layer that searches, validates, and governs parameter packs. It exposes a reusable workflow step to other parts of the repository.
+    
+    Inputs:
+        report (dict[str, Any]): Structured mapping for report.
+    
+    Returns:
+        str: Side-effect-oriented result returned by the current workflow.
+    
+    Notes:
+        Presentation logic is kept separate from the trading logic so operator-facing formatting does not leak into signal generation.
+    """
     comparison = report.get("experiment_comparison", {})
     lines = [
         "# Tuning Recommendation Report",
@@ -283,6 +467,23 @@ def write_candidate_vs_production_report(
     *,
     output_dir: str | Path,
 ) -> dict[str, str]:
+    """
+    Purpose:
+        Write candidate vs production report to the appropriate output artifact.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        report (dict[str, Any]): Input associated with report.
+        output_dir (str | Path): Input associated with output dir.
+    
+    Returns:
+        None: The function communicates through side effects such as terminal output or persisted artifacts.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     base_dir = Path(output_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -309,6 +510,22 @@ def write_candidate_vs_production_report(
 
 
 def format_parameter_evidence_for_csv(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Format parameter evidence for csv for display or serialization.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        rows (list[dict[str, Any]]): Input associated with rows.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     formatted = []
     for row in rows:
         updated = dict(row)

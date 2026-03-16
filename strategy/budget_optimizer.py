@@ -1,7 +1,17 @@
 """
-Budget Optimizer
+Module: budget_optimizer.py
 
-Optimizes number of lots under a capital constraint.
+Purpose:
+    Adjust lot counts so candidate trades fit the configured capital budget.
+
+Role in the System:
+    Part of the strategy layer that converts directional intent into executable option trades.
+
+Key Outputs:
+    Strike rankings, trade-construction inputs, and exit or sizing recommendations.
+
+Downstream Usage:
+    Consumed by the signal engine and by research tooling that inspects trade construction choices.
 """
 
 import math

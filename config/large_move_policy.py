@@ -1,5 +1,17 @@
 """
-Centralized configuration for the bounded large-move probability model.
+Module: large_move_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by large move.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -30,6 +42,22 @@ LARGE_MOVE_PROBABILITY_CONFIG = {
 
 
 def get_large_move_probability_config():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return the large-move probability policy bundle used by heuristic models.
+    
+    Context:
+        Public function in the configuration layer. It exposes a stable policy bundle for runtime, research, or governance code.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Configuration object used by downstream runtime, research, or governance code.
+    
+    Notes:
+        Centralizing policy access behind getters keeps live, replay, research, and tuning workflows aligned on the same defaults.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("large_move_probability.core", LARGE_MOVE_PROBABILITY_CONFIG)

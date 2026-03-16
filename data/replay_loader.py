@@ -1,5 +1,17 @@
 """
-Replay snapshot helpers for after-hours engine validation.
+Module: replay_loader.py
+
+Purpose:
+    Load replay artifacts for replay or research workflows.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from __future__ import annotations
@@ -13,6 +25,22 @@ from data.spot_downloader import validate_spot_snapshot
 
 
 def load_spot_snapshot(path: str) -> dict:
+    """
+    Purpose:
+        Process load spot snapshot for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str): Input associated with path.
+    
+    Returns:
+        dict: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     snapshot_path = Path(path)
     with open(snapshot_path, "r", encoding="utf-8") as handle:
         snapshot = json.load(handle)
@@ -24,6 +52,22 @@ def load_spot_snapshot(path: str) -> dict:
 
 
 def load_option_chain_snapshot(path: str) -> pd.DataFrame:
+    """
+    Purpose:
+        Process load option chain snapshot for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        path (str): Input associated with path.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     snapshot_path = Path(path)
     suffix = snapshot_path.suffix.lower()
 
@@ -47,6 +91,25 @@ def save_option_chain_snapshot(
     source: str,
     output_dir: str = "debug_samples",
 ) -> str:
+    """
+    Purpose:
+        Process save option chain snapshot for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (pd.DataFrame): Input associated with option chain.
+        symbol (str): Underlying symbol or index identifier.
+        source (str): Data-source label associated with the current snapshot.
+        output_dir (str): Input associated with output dir.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,6 +122,23 @@ def save_option_chain_snapshot(
 
 
 def latest_replay_snapshot_paths(symbol: str, replay_dir: str = "debug_samples") -> tuple[str | None, str | None]:
+    """
+    Purpose:
+        Process latest replay snapshot paths for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        replay_dir (str): Input associated with replay dir.
+    
+    Returns:
+        tuple[str | None, str | None]: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     directory = Path(replay_dir)
     if not directory.exists():
         return None, None

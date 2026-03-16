@@ -1,5 +1,17 @@
 """
-Central parameter registry with metadata-rich definitions.
+Module: registry.py
+
+Purpose:
+    Implement registry utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from __future__ import annotations
@@ -152,25 +164,134 @@ GROUP_TUNING_METADATA = {
 
 
 class ParameterRegistry:
+    """
+    Purpose:
+        Represent ParameterRegistry within the repository.
+    
+    Context:
+        Used within the `registry` module. The class standardizes records that move through search, validation, shadow mode, and promotion.
+    
+    Attributes:
+        None: The class primarily defines behavior or a protocol contract rather than stored fields.
+    
+    Notes:
+        The class groups behavior and state that need to stay explicit for maintainability and auditability.
+    """
     def __init__(self, definitions: list[ParameterDefinition]):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `ParameterRegistry` within the tuning layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            definitions (list[ParameterDefinition]): Input associated with definitions.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+        """
         self._definitions = {definition.key: definition for definition in definitions}
 
     def get(self, key: str) -> ParameterDefinition:
+        """
+        Purpose:
+            Process get for downstream use.
+        
+        Context:
+            Method on `ParameterRegistry` within the tuning layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            key (str): Input associated with key.
+        
+        Returns:
+            ParameterDefinition: Result returned by the helper.
+        
+        Notes:
+            The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+        """
         return self._definitions[key]
 
     def items(self):
+        """
+        Purpose:
+            Process items for downstream use.
+        
+        Context:
+            Method on `ParameterRegistry` within the tuning layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+        """
         return self._definitions.items()
 
     def keys(self):
+        """
+        Purpose:
+            Process keys for downstream use.
+        
+        Context:
+            Method on `ParameterRegistry` within the tuning layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+        """
         return self._definitions.keys()
 
     def defaults(self) -> dict[str, Any]:
+        """
+        Purpose:
+            Process defaults for downstream use.
+        
+        Context:
+            Method on `ParameterRegistry` within the tuning layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            dict[str, Any]: Result returned by the helper.
+        
+        Notes:
+            The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+        """
         return {
             key: definition.default_value
             for key, definition in self._definitions.items()
         }
 
     def serialize(self, current_values: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        Purpose:
+            Process serialize for downstream use.
+        
+        Context:
+            Method on `ParameterRegistry` within the tuning layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            current_values (dict[str, Any] | None): Input associated with current values.
+        
+        Returns:
+            dict[str, Any]: Result returned by the helper.
+        
+        Notes:
+            The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+        """
         current_values = current_values or {}
         return {
             key: definition.to_dict(current_values.get(key))
@@ -179,6 +300,22 @@ class ParameterRegistry:
 
 
 def _value_type_name(value: Any) -> str:
+    """
+    Purpose:
+        Process value type name for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int) and not isinstance(value, bool):
@@ -204,6 +341,32 @@ def _parameter_definition(
     max_value: float | int | None = None,
     allowed_values: tuple[Any, ...] | None = None,
 ) -> ParameterDefinition:
+    """
+    Purpose:
+        Process parameter definition for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        key (str): Input associated with key.
+        module (str): Input associated with module.
+        group (str): Input associated with group.
+        category (str): Input associated with category.
+        default_value (Any): Input associated with default value.
+        description (str): Input associated with description.
+        tunable (bool): Boolean flag associated with tunable.
+        live_safe (bool): Boolean flag associated with live_safe.
+        min_value (float | int | None): Input associated with min value.
+        max_value (float | int | None): Input associated with max value.
+        allowed_values (tuple[Any, ...] | None): Input associated with allowed values.
+    
+    Returns:
+        ParameterDefinition: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     metadata = GROUP_TUNING_METADATA.get(group, {})
     return ParameterDefinition(
         key=key,
@@ -239,6 +402,30 @@ def _from_mapping(
     max_value: float | int | None = None,
     live_safe: bool = True,
 ) -> list[ParameterDefinition]:
+    """
+    Purpose:
+        Process from mapping for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        prefix (str): Input associated with prefix.
+        module (str): Input associated with module.
+        group (str): Input associated with group.
+        category (str): Input associated with category.
+        mapping (dict[str, Any]): Input associated with mapping.
+        description_prefix (str): Input associated with description prefix.
+        min_value (float | int | None): Input associated with min value.
+        max_value (float | int | None): Input associated with max value.
+        live_safe (bool): Boolean flag associated with live_safe.
+    
+    Returns:
+        list[ParameterDefinition]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return [
         _parameter_definition(
             key=f"{prefix}.{name}",
@@ -265,6 +452,28 @@ def _from_dataclass(
     description_prefix: str,
     live_safe: bool = True,
 ) -> list[ParameterDefinition]:
+    """
+    Purpose:
+        Process from dataclass for downstream use.
+    
+    Context:
+        Internal helper within the tuning layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        prefix (str): Input associated with prefix.
+        module (str): Input associated with module.
+        group (str): Input associated with group.
+        category (str): Input associated with category.
+        config_obj (Any): Input associated with config obj.
+        description_prefix (str): Input associated with description prefix.
+        live_safe (bool): Boolean flag associated with live_safe.
+    
+    Returns:
+        list[ParameterDefinition]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     definitions = []
     for field in fields(config_obj):
         value = getattr(config_obj, field.name)
@@ -283,6 +492,22 @@ def _from_dataclass(
 
 
 def build_default_parameter_registry() -> ParameterRegistry:
+    """
+    Purpose:
+        Build the default parameter registry used by downstream components.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        ParameterRegistry: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     definitions: list[ParameterDefinition] = []
 
     definitions.extend(
@@ -732,6 +957,22 @@ _REGISTRY: ParameterRegistry | None = None
 
 
 def get_parameter_registry() -> ParameterRegistry:
+    """
+    Purpose:
+        Return parameter registry for downstream use.
+    
+    Context:
+        Public function within the tuning layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        ParameterRegistry: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     global _REGISTRY
     if _REGISTRY is None:
         _REGISTRY = build_default_parameter_registry()

@@ -1,5 +1,17 @@
 """
-Interpretable regime classifier for dealer hedging pressure.
+Module: dealer_hedging_pressure_regime.py
+
+Purpose:
+    Classify dealer hedging pressure states and actions from risk features.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -9,10 +21,45 @@ from risk.dealer_hedging_pressure_models import DealerHedgingPressureState
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `dealer hedging pressure regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `dealer hedging pressure regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -22,6 +69,24 @@ def _safe_float(value, default=0.0):
 
 
 def _state(upside_hedging_pressure, downside_hedging_pressure, pinning_pressure_score):
+    """
+    Purpose:
+        Process state for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        upside_hedging_pressure (Any): Input associated with upside hedging pressure.
+        downside_hedging_pressure (Any): Input associated with downside hedging pressure.
+        pinning_pressure_score (Any): Score value for pinning pressure.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
     upside = _clip(_safe_float(upside_hedging_pressure, 0.0), 0.0, 1.0)
     downside = _clip(_safe_float(downside_hedging_pressure, 0.0), 0.0, 1.0)
@@ -46,6 +111,23 @@ def _state(upside_hedging_pressure, downside_hedging_pressure, pinning_pressure_
 
 
 def _adjustment_score(dealer_flow_state, dealer_hedging_pressure_score):
+    """
+    Purpose:
+        Compute the adjustment score used by the surrounding model.
+
+    Context:
+        Function inside the `dealer hedging pressure regime` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        dealer_flow_state (Any): State payload for dealer flow.
+        dealer_hedging_pressure_score (Any): Normalized score for dealer hedging pressure.
+
+    Returns:
+        float | int: Score produced by the current heuristic.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
 
     if dealer_flow_state == "PINNING_DOMINANT":
@@ -68,6 +150,26 @@ def _overnight_evaluation(
     macro_event_risk_score,
     overnight_relevant,
 ):
+    """
+    Purpose:
+        Process overnight evaluation for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        dealer_flow_state (Any): Structured state payload for dealer flow.
+        overnight_hedging_risk (Any): Input associated with overnight hedging risk.
+        global_risk_state (Any): Structured state payload for global risk.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        overnight_relevant (Any): Input associated with overnight relevant.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_dealer_hedging_pressure_policy_config()
 
     if not overnight_relevant:
@@ -122,6 +224,22 @@ def _overnight_evaluation(
 
 
 def classify_dealer_hedging_pressure_state(features: dict | None) -> DealerHedgingPressureState:
+    """
+    Purpose:
+        Classify dealer hedging pressure state into the appropriate regime or label.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        features (dict | None): Input associated with features.
+    
+    Returns:
+        DealerHedgingPressureState: Bucket or regime label returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     features = features if isinstance(features, dict) else {}
 
     dealer_hedging_pressure_score = int(round(_clip(_safe_float(features.get("normalized_pressure"), 0.0) * 100.0, 0.0, 100.0)))

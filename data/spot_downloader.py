@@ -1,3 +1,18 @@
+"""
+Module: spot_downloader.py
+
+Purpose:
+    Download spot market data for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
+"""
 import json
 from pathlib import Path
 
@@ -9,10 +24,42 @@ IST_TIMEZONE = "Asia/Kolkata"
 
 
 def normalize_underlying_symbol(symbol: str) -> str:
+    """
+    Purpose:
+        Normalize underlying symbol into the repository-standard representation.
+    
+    Context:
+        Public function in the `spot downloader` module. It forms part of the data workflow exposed by this module.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+    
+    Returns:
+        str: Value returned by the current workflow step.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     return str(symbol or "").upper().strip()
 
 
 def _normalize_symbol(symbol: str) -> str:
+    """
+    Purpose:
+        Normalize symbol into the repository-standard form.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     normalized = normalize_underlying_symbol(symbol)
     ticker_map = {
         "NIFTY": "^NSEI",
@@ -31,6 +78,22 @@ def _normalize_symbol(symbol: str) -> str:
 
 
 def _to_ist_timestamp(index_value):
+    """
+    Purpose:
+        Convert ist timestamp into the representation expected downstream.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        index_value (Any): Input associated with index value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     ts = pd.Timestamp(index_value)
 
     if ts.tzinfo is None:
@@ -48,6 +111,23 @@ def _to_ist_timestamp(index_value):
 
 
 def _safe_float(value, default=None):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `spot downloader` module. The module sits in the data layer that ingests, normalizes, and validates market inputs before analytics run.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -57,6 +137,23 @@ def _safe_float(value, default=None):
 
 
 def _compute_lookback_avg_range_pct(daily_hist: pd.DataFrame, completed_days: int = 10):
+    """
+    Purpose:
+        Compute lookback avg range percentage from the supplied inputs.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        daily_hist (pd.DataFrame): Input associated with daily hist.
+        completed_days (int): Input associated with completed days.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if daily_hist is None or daily_hist.empty:
         return None
 

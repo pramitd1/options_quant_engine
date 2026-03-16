@@ -1,5 +1,17 @@
 """
-Cross-asset feature builder for the global risk layer.
+Module: global_risk_features.py
+
+Purpose:
+    Build global risk features used by the risk overlay.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -26,6 +38,23 @@ MARKET_INPUT_KEYS = [
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Used within the global risk features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if value is None:
             return default
@@ -35,6 +64,23 @@ def _safe_float(value, default=0.0):
 
 
 def _safe_int(value, default=0):
+    """
+    Purpose:
+        Safely coerce an input to `int` while preserving a fallback.
+
+    Context:
+        Used within the global risk features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        int: Parsed integer value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         return int(value)
     except Exception:
@@ -42,10 +88,44 @@ def _safe_int(value, default=0):
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Used within the global risk features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     return max(lo, min(hi, value))
 
 
 def _coerce_timestamp(value):
+    """
+    Purpose:
+        Parse flexible timestamp inputs into timezone-aware timestamps.
+
+    Context:
+        Used within the global risk features workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+
+    Returns:
+        pd.Timestamp | None: Parsed timestamp or `None` when parsing fails.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     if value is None or value == "":
         return None
 
@@ -62,6 +142,23 @@ def _coerce_timestamp(value):
 
 
 def _market_session_context(*, cfg, as_of=None):
+    """
+    Purpose:
+        Process market session context for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        cfg (Any): Input associated with cfg.
+        as_of (Any): Input associated with as of.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     ts = _coerce_timestamp(as_of)
     if ts is None:
         ts = pd.Timestamp.now(tz=IST_TIMEZONE)
@@ -108,11 +205,44 @@ def _market_session_context(*, cfg, as_of=None):
 
 
 def _normalize_holding_profile(value) -> str:
+    """
+    Purpose:
+        Normalize holding profile into the repository-standard representation.
+    
+    Context:
+        Internal helper in the `global risk features` module. It isolates one overlay heuristic so risk adjustments remain auditable.
+    
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+    
+    Returns:
+        str: Value returned by the current workflow step.
+    
+    Notes:
+        The helper intentionally produces bounded, serializable values so overlays can be inspected alongside the final trade decision.
+    """
     normalized = str(value or "AUTO").upper().strip()
     return normalized or "AUTO"
 
 
 def _oil_shock_score(change_24h, *, cfg):
+    """
+    Purpose:
+        Process oil shock score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        change_24h (Any): Input associated with change 24h.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     change_24h = _safe_float(change_24h, 0.0)
     if change_24h > cfg.oil_shock_extreme_change_pct:
         return cfg.oil_shock_extreme_score
@@ -124,6 +254,23 @@ def _oil_shock_score(change_24h, *, cfg):
 
 
 def _gold_risk_score(change_24h, *, cfg):
+    """
+    Purpose:
+        Process gold risk score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        change_24h (Any): Input associated with change 24h.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     change_24h = _safe_float(change_24h, 0.0)
     if change_24h > cfg.gold_risk_extreme_change_pct:
         return cfg.gold_risk_extreme_score
@@ -133,6 +280,23 @@ def _gold_risk_score(change_24h, *, cfg):
 
 
 def _copper_growth_signal(change_24h, *, cfg):
+    """
+    Purpose:
+        Process copper growth signal for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        change_24h (Any): Input associated with change 24h.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     change_24h = _safe_float(change_24h, 0.0)
     if change_24h < cfg.copper_growth_severe_drop_pct:
         return cfg.copper_growth_severe_score
@@ -142,6 +306,23 @@ def _copper_growth_signal(change_24h, *, cfg):
 
 
 def _volatility_shock_score(vix_change_24h, *, cfg):
+    """
+    Purpose:
+        Process volatility shock score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        vix_change_24h (Any): Input associated with vix change 24h.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     vix_change_24h = _safe_float(vix_change_24h, 0.0)
     if vix_change_24h > cfg.vix_shock_extreme_change_pct:
         return cfg.vix_shock_extreme_score
@@ -153,6 +334,24 @@ def _volatility_shock_score(vix_change_24h, *, cfg):
 
 
 def _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h, *, cfg):
+    """
+    Purpose:
+        Process us equity risk score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        sp500_change_24h (Any): Input associated with sp500 change 24h.
+        nasdaq_change_24h (Any): Input associated with nasdaq change 24h.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     worst_move = min(
         _safe_float(sp500_change_24h, 0.0),
         _safe_float(nasdaq_change_24h, 0.0),
@@ -165,14 +364,66 @@ def _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h, *, cfg):
 
 
 def _rates_shock_score(us10y_change_bp, *, cfg):
+    """
+    Purpose:
+        Process rates shock score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        us10y_change_bp (Any): Input associated with us10y change basis points.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     return cfg.rates_shock_score if _safe_float(us10y_change_bp, 0.0) > cfg.rates_shock_threshold_bp else 0.0
 
 
 def _currency_shock_score(usdinr_change_24h, *, cfg):
+    """
+    Purpose:
+        Process currency shock score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        usdinr_change_24h (Any): Input associated with usdinr change 24h.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     return cfg.currency_shock_score_base if _safe_float(usdinr_change_24h, 0.0) > cfg.currency_shock_threshold_pct else 0.0
 
 
 def _volatility_compression_score(realized_vol_5d, realized_vol_30d, *, cfg):
+    """
+    Purpose:
+        Process volatility compression score for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        realized_vol_5d (Any): Input associated with realized vol 5d.
+        realized_vol_30d (Any): Input associated with realized vol 30d.
+        cfg (Any): Input associated with cfg.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     realized_vol_5d = _safe_float(realized_vol_5d, 0.0)
     realized_vol_30d = _safe_float(realized_vol_30d, 0.0)
     if realized_vol_30d <= 0:
@@ -189,6 +440,22 @@ def _volatility_compression_score(realized_vol_5d, realized_vol_30d, *, cfg):
 
 
 def _market_snapshot_details(global_market_snapshot):
+    """
+    Purpose:
+        Process market snapshot details for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        global_market_snapshot (Any): Cross-asset market snapshot used by the global-risk overlay.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     snapshot = global_market_snapshot if isinstance(global_market_snapshot, dict) else {}
     market_inputs = snapshot.get("market_inputs", {}) if isinstance(snapshot.get("market_inputs", {}), dict) else {}
     data_available = bool(snapshot.get("data_available", False))
@@ -199,6 +466,24 @@ def _market_snapshot_details(global_market_snapshot):
 
 
 def _market_input_state(market_inputs, *, market_data_usable, market_data_stale):
+    """
+    Purpose:
+        Process market input state for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        market_inputs (Any): Input associated with market inputs.
+        market_data_usable (Any): Input associated with market data usable.
+        market_data_stale (Any): Input associated with market data stale.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     raw_market_inputs = {
         key: _safe_float(market_inputs.get(key), None)
         for key in MARKET_INPUT_KEYS
@@ -239,6 +524,26 @@ def build_global_risk_features(
     holding_profile: str = "AUTO",
     as_of=None,
 ):
+    """
+    Purpose:
+        Build the global risk features used by downstream components.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        macro_event_state (Any): Scheduled-event state produced by the macro-event layer.
+        macro_news_state (Any): Headline-driven macro state produced by the news layer.
+        global_market_snapshot (Any): Cross-asset market snapshot used by the global-risk overlay.
+        holding_profile (str): Holding intent that determines whether overnight rules should be considered.
+        as_of (Any): Input associated with as of.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_global_risk_policy_config()
     macro_event_state = macro_event_state if isinstance(macro_event_state, dict) else {}
     macro_news_state = macro_news_state if isinstance(macro_news_state, dict) else {}
@@ -276,6 +581,8 @@ def build_global_risk_features(
     realized_vol_5d = _safe_float(effective_market_inputs.get("realized_vol_5d"), None)
     realized_vol_30d = _safe_float(effective_market_inputs.get("realized_vol_30d"), None)
 
+    # These components capture different ways global conditions can leak into
+    # local option behavior: commodities, volatility, rates, FX, and events.
     oil_shock_score = _oil_shock_score(oil_change_24h, cfg=cfg)
     gold_risk_score = _gold_risk_score(gold_change_24h, cfg=cfg)
     copper_growth_signal = _copper_growth_signal(copper_change_24h, cfg=cfg)
@@ -299,6 +606,8 @@ def build_global_risk_features(
         0.0,
         1.0,
     )
+    # `risk_off_intensity` is the broad stress score, while
+    # `volatility_explosion_probability` focuses on compression plus shock.
     risk_off_intensity = round(
         _clip(
             (cfg.risk_off_intensity_vol_weight * volatility_shock_score)

@@ -1,5 +1,17 @@
 """
-Walk-forward and regime-aware validation framework.
+Module: validation.py
+
+Purpose:
+    Run walk-forward and regime-aware validation for candidate parameter packs.
+
+Role in the System:
+    Part of the tuning layer that tests whether research candidates remain robust outside their fitting sample.
+
+Key Outputs:
+    Walk-forward split summaries, robustness metrics, and baseline-vs-candidate validation comparisons.
+
+Downstream Usage:
+    Consumed by governed tuning campaigns, candidate-vs-production reports, and promotion decisions.
 """
 
 from __future__ import annotations
@@ -15,6 +27,23 @@ from tuning.walk_forward import DEFAULT_WALK_FORWARD_CONFIG, apply_walk_forward_
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `validation` module. The module sits in the tuning layer that searches, validates, and promotes parameter packs.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (float): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None or value == "":
             return default
@@ -24,6 +53,22 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def _selection_penalty(metrics: dict[str, Any]) -> float:
+    """
+    Purpose:
+        Penalize parameter packs that produce too few signals to be operationally useful.
+
+    Context:
+        Tuning should not reward a candidate solely for looking good on a tiny number of trades. This helper converts low signal frequency into an explicit objective penalty.
+
+    Inputs:
+        metrics (dict[str, Any]): Metric summary for the selected trades.
+
+    Returns:
+        float: Frequency penalty added to validation components.
+
+    Notes:
+        The penalty rises only when signal frequency falls below the minimum operating band implied by the selection policy.
+    """
     return max(0.0, 0.12 - _safe_float(metrics.get("signal_frequency"), 0.0)) * 4.0
 
 
@@ -33,6 +78,24 @@ def _validation_components(
     validation_metrics: dict[str, Any],
     parameter_count: int,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Build the penalty-aware metric bundle used by the validation objective.
+
+    Context:
+        The tuning objective weighs raw out-of-sample quality alongside stability, selectivity, and parameter-count discipline. This helper assembles those components in one place.
+
+    Inputs:
+        train_metrics (dict[str, Any]): Metrics computed on the training slice.
+        validation_metrics (dict[str, Any]): Metrics computed on the out-of-sample validation slice.
+        parameter_count (int): Number of tuned parameters in the candidate pack.
+
+    Returns:
+        dict[str, Any]: Validation metrics augmented with penalty terms.
+
+    Notes:
+        The penalties are heuristic rather than statistical; they are governance guardrails intended to discourage overfit or operationally thin candidates.
+    """
     return {
         **validation_metrics,
         "selectivity_penalty": _selection_penalty(validation_metrics),
@@ -56,6 +119,24 @@ def summarize_metrics_by_regime(
     regime_columns: list[str] | None = None,
     minimum_regime_sample_count: int = 5,
 ) -> dict[str, list[dict[str, Any]]]:
+    """
+    Purpose:
+        Slice selected signals by regime and summarize performance within each slice.
+
+    Context:
+        Regime-aware validation matters because a candidate can look strong in aggregate while collapsing in a specific volatility, flow, or macro environment.
+
+    Inputs:
+        frame (pd.DataFrame): Evaluation frame containing signal outcomes.
+        regime_columns (list[str] | None): Regime columns to summarize.
+        minimum_regime_sample_count (int): Minimum sample count required before a regime slice is treated as sufficiently populated.
+
+    Returns:
+        dict[str, list[dict[str, Any]]]: Per-regime summaries including sample counts and computed metrics.
+
+    Notes:
+        The summaries stay fully serializable so they can be embedded into experiment artifacts and governance reports.
+    """
     labeled = label_validation_regimes(frame)
     regime_columns = list(regime_columns or REGIME_COLUMNS)
     summaries: dict[str, list[dict[str, Any]]] = {}
@@ -87,6 +168,24 @@ def compute_robustness_metrics(
     regime_summary: dict[str, list[dict[str, Any]]],
     minimum_regime_sample_count: int = 5,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Quantify how stable validation quality remains across time splits and regime slices.
+
+    Context:
+        Governed tuning cares about more than the mean validation score. This helper measures dispersion, weak regime pockets, and low-frequency behavior so promotion decisions can penalize fragile candidates.
+
+    Inputs:
+        split_results (list[dict[str, Any]]): Per-split walk-forward validation records.
+        regime_summary (dict[str, list[dict[str, Any]]]): Per-regime validation summaries.
+        minimum_regime_sample_count (int): Minimum regime sample count required before collapse checks are applied.
+
+    Returns:
+        dict[str, Any]: Robustness diagnostics and a bounded robustness score.
+
+    Notes:
+        The resulting score is heuristic. It is designed as a governance filter, not a statistically pure confidence interval.
+    """
     validation_scores = [_safe_float(item.get("validation_objective_score"), 0.0) for item in split_results]
     validation_frequencies = [
         _safe_float(item.get("validation_metrics", {}).get("signal_frequency"), 0.0)
@@ -146,6 +245,28 @@ def run_walk_forward_validation(
     regime_columns: list[str] | None = None,
     minimum_regime_sample_count: int = 5,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Run the repo's standard walk-forward validation workflow on a signal dataset.
+
+    Context:
+        This is the main validation entry point used by tuning experiments. It applies time-based splits, re-runs the selection policy on each split, and returns both aggregate and regime-aware out-of-sample diagnostics.
+
+    Inputs:
+        frame (pd.DataFrame): Signal-evaluation dataset to validate.
+        selection_thresholds (dict[str, Any] | None): Selection-policy thresholds used to filter trades inside each split.
+        objective_weights (dict[str, float] | None): Weights for the objective-score calculation.
+        parameter_count (int): Number of tuned parameters in the candidate pack.
+        walk_forward_config (dict[str, Any] | None): Split configuration for the walk-forward process.
+        regime_columns (list[str] | None): Regime columns to summarize in the out-of-sample slice.
+        minimum_regime_sample_count (int): Minimum regime sample count required for regime-level collapse checks.
+
+    Returns:
+        dict[str, Any]: Full walk-forward validation payload with split details, aggregate scores, and robustness diagnostics.
+
+    Notes:
+        The workflow is deliberately time-based only. It avoids random shuffles so the validation path better matches how the strategy would have evolved in production.
+    """
     ordered = frame.copy() if frame is not None else pd.DataFrame()
     config = dict(DEFAULT_WALK_FORWARD_CONFIG)
     if walk_forward_config:
@@ -263,6 +384,25 @@ def compare_validation_results(
     baseline_pack_name: str = "baseline_v1",
     candidate_pack_name: str = "candidate_v1",
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Compare validation results for governance or diagnostic purposes.
+    
+    Context:
+        Public function in the `validation` module. It forms part of the tuning workflow exposed by this module.
+    
+    Inputs:
+        baseline_validation (dict[str, Any]): Structured mapping for baseline validation.
+        candidate_validation (dict[str, Any]): Structured mapping for candidate validation.
+        baseline_pack_name (str): Production or baseline parameter pack used as the comparison reference.
+        candidate_pack_name (str): Human-readable or stable name for candidate pack.
+    
+    Returns:
+        dict[str, Any]: Structured mapping returned by the current workflow step.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     baseline_validation = dict(baseline_validation or {})
     candidate_validation = dict(candidate_validation or {})
 

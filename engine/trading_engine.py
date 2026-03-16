@@ -1,8 +1,17 @@
 """
-Backward-compatible trading engine facade.
+Module: trading_engine.py
 
-Signal assembly now lives in `engine.signal_engine`, while helper logic lives in
-`engine.trading_support`.
+Purpose:
+    Implement trading engine logic used by the signal engine.
+
+Role in the System:
+    Part of the signal engine that turns analytics, probability estimates, and overlays into final trade decisions.
+
+Key Outputs:
+    Trade decisions, intermediate state bundles, and signal diagnostics.
+
+Downstream Usage:
+    Consumed by the live runtime loop, backtests, shadow mode, and signal-evaluation logging.
 """
 
 from __future__ import annotations

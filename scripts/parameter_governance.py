@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """
-Governed parameter research workflow entrypoint.
+Module: parameter_governance.py
+
+Purpose:
+    Implement the parameter governance script used for repeatable operational or research tasks.
+
+Role in the System:
+    Part of the operational scripting layer that supports repeatable maintenance and research tasks.
+
+Key Outputs:
+    CLI side effects, maintenance artifacts, and repeatable batch jobs.
+
+Downstream Usage:
+    Consumed by operators and by repeatable development or research workflows.
 """
 
 from __future__ import annotations
@@ -30,6 +42,22 @@ from tuning.promotion import (
 
 
 def _add_common_dataset_argument(parser: argparse.ArgumentParser) -> None:
+    """
+    Purpose:
+        Process add common dataset argument for downstream use.
+    
+    Context:
+        Internal helper within the operational scripting layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        parser (argparse.ArgumentParser): Input associated with parser.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     parser.add_argument(
         "--dataset-path",
         default=str(SIGNAL_DATASET_PATH),
@@ -38,6 +66,22 @@ def _add_common_dataset_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """
+    Purpose:
+        Build the parser used by downstream components.
+    
+    Context:
+        Public function within the operational scripting layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        argparse.ArgumentParser: Computed value returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     parser = argparse.ArgumentParser(
         description="Controlled research-to-production workflow for parameter tuning."
     )
@@ -104,10 +148,42 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_json(payload: dict) -> None:
+    """
+    Purpose:
+        Render json for operator-facing or report output.
+    
+    Context:
+        Internal helper within the operational scripting layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        payload (dict): Input associated with payload.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 def main() -> None:
+    """
+    Purpose:
+        Run the module entry point for command-line or operational execution.
+
+    Context:
+        Function inside the `parameter governance` module. The module sits in the operations layer that exposes reporting, maintenance, and governance entry points.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Exit status or workflow result returned by the implementation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     parser = build_parser()
     args = parser.parse_args()
 

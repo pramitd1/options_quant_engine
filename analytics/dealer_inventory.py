@@ -1,13 +1,40 @@
 """
-Dealer Inventory Model
+Module: dealer_inventory.py
 
-Prefers OI-change-based positioning when available, with static OI as fallback.
+Purpose:
+    Compute dealer inventory analytics used by downstream signal and risk layers.
+
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import pandas as pd
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `dealer inventory` module. The module sits in the analytics layer that turns option-chain and market-structure data into tradable features.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -17,6 +44,22 @@ def _safe_float(value, default=0.0):
 
 
 def dealer_inventory_metrics(option_chain: pd.DataFrame):
+    """
+    Purpose:
+        Compute dealer inventory metrics from the supplied inputs.
+
+    Context:
+        Function inside the `dealer inventory` module. The module sits in the analytics layer that turns option-chain and market-structure data into tradable features.
+
+    Inputs:
+        option_chain (pd.DataFrame): Option-chain snapshot in dataframe form.
+
+    Returns:
+        dict: Metric bundle returned by the current calculation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     if option_chain is None or option_chain.empty:
         return {
             "position": "Unknown",
@@ -68,4 +111,20 @@ def dealer_inventory_metrics(option_chain: pd.DataFrame):
 
 
 def dealer_inventory_position(option_chain: pd.DataFrame):
+    """
+    Purpose:
+        Process dealer inventory position for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (pd.DataFrame): Input associated with option chain.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     return dealer_inventory_metrics(option_chain)["position"]

@@ -1,9 +1,17 @@
 """
-Lightweight smoke harness for the scheduled-event + headline macro/news stack.
+Module: smoke_macro_news.py
 
-Usage:
-    python smoke_macro_news.py
-    python smoke_macro_news.py --symbol NIFTY --as-of 2026-03-13T10:25:00+05:30
+Purpose:
+    Provide a smoke-test entry point for macro-event and news-state integrations.
+
+Role in the System:
+    Part of the repository entry layer that wires top-level workflows into the trading system.
+
+Key Outputs:
+    CLI/runtime side effects, saved snapshots, and entry-point orchestration.
+
+Downstream Usage:
+    Consumed by operators and indirectly by runtime, replay, and capture workflows.
 """
 
 from __future__ import annotations
@@ -16,6 +24,22 @@ from news.service import build_default_headline_service
 
 
 def parse_args():
+    """
+    Purpose:
+        Parse command-line arguments for the current entry point.
+
+    Context:
+        Function inside the `smoke macro news` module. The module sits in the repository entry layer that wires top-level scripts into the trading workflow.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Parsed argument namespace.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--symbol", default="NIFTY")
     parser.add_argument("--as-of", default=None)
@@ -23,6 +47,22 @@ def parse_args():
 
 
 def main():
+    """
+    Purpose:
+        Run the module entry point for command-line or operational execution.
+
+    Context:
+        Function inside the `smoke macro news` module. The module sits in the repository entry layer that wires top-level scripts into the trading workflow.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Exit status or workflow result returned by the implementation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     args = parse_args()
     headline_service = build_default_headline_service()
 

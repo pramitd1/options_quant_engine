@@ -1,5 +1,17 @@
 """
-Centralized configuration for strike selection heuristics.
+Module: strike_selection_policy.py
+
+Purpose:
+    Define the thresholds, weights, and policy getters used by strike selection.
+
+Role in the System:
+    Part of the configuration layer that centralizes policy defaults, thresholds, and governance controls.
+
+Key Outputs:
+    Configuration objects and threshold bundles consumed by runtime and research workflows.
+
+Downstream Usage:
+    Consumed by analytics, signal generation, strategy, risk overlays, tuning, and backtests.
 """
 
 from __future__ import annotations
@@ -66,6 +78,22 @@ STRIKE_SELECTION_SCORE_CONFIG = {
 
 
 def get_strike_selection_score_config():
-    from tuning.runtime import resolve_mapping
+    """
+    Purpose:
+        Return the configuration bundle for strike selection score.
+    
+    Context:
+        Public function within the configuration layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Centralizing this contract keeps runtime, replay, and research workflows aligned on the same configuration semantics.
+    """
+    from config.policy_resolver import resolve_mapping
 
     return resolve_mapping("strike_selection.core", STRIKE_SELECTION_SCORE_CONFIG)

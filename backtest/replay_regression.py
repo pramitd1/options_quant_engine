@@ -1,5 +1,17 @@
 """
-Replay-based regression harness for directional bias checks.
+Module: replay_regression.py
+
+Purpose:
+    Implement replay regression logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
 """
 
 from __future__ import annotations
@@ -13,12 +25,29 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from app.engine_runner import run_preloaded_engine_snapshot
 from data.expiry_resolver import filter_option_chain_by_expiry, resolve_selected_expiry
 from data.replay_loader import load_option_chain_snapshot, load_spot_snapshot
-from engine.signal_engine import generate_trade
 
 
 def _extract_ts_from_filename(path: Path, marker: str):
+    """
+    Purpose:
+        Extract timestamp from filename from the supplied payload.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+        marker (str): Input associated with marker.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     name = path.name
     try:
         start = name.index(marker) + len(marker)
@@ -30,6 +59,23 @@ def _extract_ts_from_filename(path: Path, marker: str):
 
 
 def _parse_embedded_timestamp(path: Path, marker: str):
+    """
+    Purpose:
+        Process parse embedded timestamp for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path (Path): Input associated with path.
+        marker (str): Input associated with marker.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     raw = _extract_ts_from_filename(path, marker)
     if raw is None:
         return None
@@ -56,17 +102,104 @@ def _parse_embedded_timestamp(path: Path, marker: str):
 
 
 def _find_spot_snapshots(symbol: str, replay_dir: str):
+    """
+    Purpose:
+        Process find spot snapshots for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        replay_dir (str): Input associated with replay dir.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     directory = Path(replay_dir)
     return sorted(directory.glob(f"{symbol.upper()}_spot_snapshot_*.json"))
 
 
+def _replay_global_market_snapshot(symbol: str, spot_snapshot: dict) -> dict:
+    """
+    Purpose:
+        Provide a neutral global-market snapshot for offline replay analysis.
+
+    Context:
+        Internal helper used when archived spot and option-chain snapshots are
+        re-evaluated through the shared runtime orchestration path.
+
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        spot_snapshot (dict): Spot snapshot associated with the replay case.
+
+    Returns:
+        dict: Neutral global-market snapshot shaped like the live payload.
+
+    Notes:
+        Replay regression is intended to measure signal behavior from archived
+        inputs, so it avoids blending in present-day cross-asset market data.
+    """
+
+    return {
+        "symbol": str(symbol or "").upper().strip(),
+        "provider": "REPLAY_NEUTRAL",
+        "as_of": spot_snapshot.get("timestamp"),
+        "data_available": False,
+        "neutral_fallback": True,
+        "issues": [],
+        "warnings": ["replay_global_market_snapshot_unavailable"],
+        "stale": False,
+        "lookback_days": None,
+        "market_inputs": {},
+    }
+
+
 def _find_chain_snapshots(symbol: str, source: str, replay_dir: str):
+    """
+    Purpose:
+        Process find chain snapshots for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        source (str): Data-source label associated with the current snapshot.
+        replay_dir (str): Input associated with replay dir.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     directory = Path(replay_dir)
     source = source.upper().strip()
     return sorted(directory.glob(f"{symbol.upper()}_{source}_option_chain_snapshot_*.csv"))
 
 
 def _nearest_spot_snapshot(chain_path: Path, spot_paths: list[Path]):
+    """
+    Purpose:
+        Process nearest spot snapshot for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        chain_path (Path): Input associated with chain path.
+        spot_paths (list[Path]): Input associated with spot paths.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not spot_paths:
         return None
 
@@ -89,6 +222,22 @@ def _nearest_spot_snapshot(chain_path: Path, spot_paths: list[Path]):
 
 
 def _count_bucket(trade):
+    """
+    Purpose:
+        Process count bucket for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        trade (Any): Input associated with trade.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not trade:
         return "NO_SIGNAL"
 
@@ -104,6 +253,25 @@ def _count_bucket(trade):
 
 
 def run_regression(symbol: str, source: str, replay_dir: str, limit: int | None = None):
+    """
+    Purpose:
+        Process run regression for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        source (str): Data-source label associated with the current snapshot.
+        replay_dir (str): Input associated with replay dir.
+        limit (int | None): Input associated with limit.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     spot_paths = _find_spot_snapshots(symbol, replay_dir)
     chain_paths = _find_chain_snapshots(symbol, source, replay_dir)
 
@@ -127,22 +295,25 @@ def run_regression(symbol: str, source: str, replay_dir: str, limit: int | None 
         resolved_expiry = resolve_selected_expiry(option_chain)
         option_chain = filter_option_chain_by_expiry(option_chain, resolved_expiry)
 
-        trade = generate_trade(
+        signal_result = run_preloaded_engine_snapshot(
             symbol=symbol.upper().strip(),
-            spot=float(spot_snapshot["spot"]),
+            mode="REPLAY",
+            source=source.upper().strip(),
+            spot_snapshot=spot_snapshot,
             option_chain=option_chain,
             previous_chain=None,
-            day_high=spot_snapshot.get("day_high"),
-            day_low=spot_snapshot.get("day_low"),
-            day_open=spot_snapshot.get("day_open"),
-            prev_close=spot_snapshot.get("prev_close"),
-            lookback_avg_range_pct=spot_snapshot.get("lookback_avg_range_pct"),
-            spot_validation=spot_snapshot.get("validation"),
-            option_chain_validation=None,
             apply_budget_constraint=False,
+            requested_lots=1,
+            lot_size=1,
+            max_capital=float("inf"),
+            capture_signal_evaluation=False,
+            enable_shadow_logging=False,
+            global_market_snapshot=_replay_global_market_snapshot(symbol, spot_snapshot),
         )
-        if trade is not None:
-            trade["selected_expiry"] = resolved_expiry
+        if not signal_result.get("ok", False):
+            raise ValueError(signal_result.get("error") or "Replay snapshot evaluation failed")
+
+        trade = signal_result.get("execution_trade") or signal_result.get("trade")
 
         bucket = _count_bucket(trade)
         bucket_counts[bucket] += 1
@@ -164,6 +335,22 @@ def run_regression(symbol: str, source: str, replay_dir: str, limit: int | None 
 
 
 def main():
+    """
+    Purpose:
+        Run the module entry point for command-line or operational execution.
+
+    Context:
+        Function inside the `replay regression` module. The module sits in the backtest layer that replays historical scenarios and scores realized performance.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Exit status or workflow result returned by the implementation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", required=True, help="Underlying symbol, for example NIFTY or RELIANCE")
     parser.add_argument("--source", default="ICICI", help="Snapshot source label, for example ICICI or NSE")

@@ -1,5 +1,17 @@
 """
-Structured signal-evaluation reporting for human review.
+Module: reporting.py
+
+Purpose:
+    Implement reporting utilities for signal evaluation, reporting, or research diagnostics.
+
+Role in the System:
+    Part of the research layer that records signal-evaluation datasets and diagnostic reports.
+
+Key Outputs:
+    Signal-evaluation datasets, reports, and comparison artifacts.
+
+Downstream Usage:
+    Consumed by tuning, governance reviews, and post-trade analysis.
 """
 
 from __future__ import annotations
@@ -56,6 +68,23 @@ COVERAGE_FIELDS = (
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `reporting` module. The module sits in the research layer that evaluates signals, curates datasets, and renders reports.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (float | None): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None or value == "":
             return default
@@ -65,6 +94,23 @@ def _safe_float(value: Any, default: float | None = None) -> float | None:
 
 
 def _round_or_none(value: Any, digits: int = 4) -> float | None:
+    """
+    Purpose:
+        Process round or none for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+        digits (int): Input associated with digits.
+    
+    Returns:
+        float | None: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     coerced = _safe_float(value, None)
     if coerced is None or pd.isna(coerced):
         return None
@@ -72,6 +118,22 @@ def _round_or_none(value: Any, digits: int = 4) -> float | None:
 
 
 def _frame_with_timestamp(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process frame with timestamp for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     enriched = frame.copy()
     if "signal_timestamp" in enriched.columns:
         enriched["signal_timestamp"] = pd.to_datetime(enriched["signal_timestamp"], errors="coerce")
@@ -79,6 +141,22 @@ def _frame_with_timestamp(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _evaluation_period(frame: pd.DataFrame) -> dict[str, Any]:
+    """
+    Purpose:
+        Process evaluation period for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or "signal_timestamp" not in frame.columns:
         return {"start": None, "end": None, "trading_days": 0}
 
@@ -94,6 +172,24 @@ def _evaluation_period(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def _counts_with_optional_hit_rate(frame: pd.DataFrame, field_name: str, top_n: int) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process counts with optional hit rate for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        field_name (str): Human-readable name for field.
+        top_n (int): Input associated with top n.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or field_name not in frame.columns:
         return []
 
@@ -120,6 +216,22 @@ def _counts_with_optional_hit_rate(frame: pd.DataFrame, field_name: str, top_n: 
 
 
 def _signal_frequency_summary(frame: pd.DataFrame) -> dict[str, Any]:
+    """
+    Purpose:
+        Process signal frequency summary for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or "signal_timestamp" not in frame.columns:
         return {
             "average_signals_per_day": 0.0,
@@ -147,6 +259,23 @@ def _signal_frequency_summary(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def _score_statistics(frame: pd.DataFrame, field_name: str) -> dict[str, Any]:
+    """
+    Purpose:
+        Process score statistics for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        field_name (str): Human-readable name for field.
+    
+    Returns:
+        dict[str, Any]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     series = pd.to_numeric(frame.get(field_name, pd.Series(dtype=float)), errors="coerce").dropna()
     if series.empty:
         return {
@@ -173,6 +302,22 @@ def _score_statistics(frame: pd.DataFrame, field_name: str) -> dict[str, Any]:
 
 
 def _horizon_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process horizon performance for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     rows = []
     for label, raw_field, signed_field, correct_field in HORIZON_DEFINITIONS:
         if raw_field is None and signed_field not in frame.columns and correct_field not in frame.columns:
@@ -198,6 +343,23 @@ def _horizon_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _score_bucket_performance(frame: pd.DataFrame, score_field: str = "composite_signal_score") -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process score bucket performance for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        score_field (str): Input associated with score field.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or score_field not in frame.columns:
         return []
 
@@ -233,6 +395,23 @@ def _score_bucket_performance(frame: pd.DataFrame, score_field: str = "composite
 
 
 def _regime_breakdown(frame: pd.DataFrame, top_n: int) -> dict[str, list[dict[str, Any]]]:
+    """
+    Purpose:
+        Process regime breakdown for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        top_n (int): Input associated with top n.
+    
+    Returns:
+        dict[str, list[dict[str, Any]]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     breakdown = {}
     for field_name in REGIME_FIELDS:
         breakdown[field_name] = _counts_with_optional_hit_rate(frame, field_name, top_n=top_n)
@@ -240,6 +419,22 @@ def _regime_breakdown(frame: pd.DataFrame, top_n: int) -> dict[str, list[dict[st
 
 
 def _coverage_summary(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """
+    Purpose:
+        Process coverage summary for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        list[dict[str, Any]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty:
         return []
 
@@ -260,6 +455,22 @@ def _coverage_summary(frame: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _outcome_status_counts(frame: pd.DataFrame) -> dict[str, int]:
+    """
+    Purpose:
+        Process outcome status counts for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        dict[str, int]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if frame.empty or "outcome_status" not in frame.columns:
         return {}
     counts = frame["outcome_status"].fillna("UNKNOWN").value_counts()
@@ -267,6 +478,22 @@ def _outcome_status_counts(frame: pd.DataFrame) -> dict[str, int]:
 
 
 def _sanitize_value(value: Any) -> Any:
+    """
+    Purpose:
+        Sanitize value before it is consumed downstream.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if isinstance(value, dict):
         return {str(key): _sanitize_value(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -282,6 +509,22 @@ def _sanitize_value(value: Any) -> Any:
 
 
 def _research_tables(frame: pd.DataFrame) -> dict[str, list[dict[str, Any]]]:
+    """
+    Purpose:
+        Process research tables for downstream use.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+    
+    Returns:
+        dict[str, list[dict[str, Any]]]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     tables = {}
     for section_name, section_df in build_research_report(frame).items():
         tables[section_name] = _sanitize_value(section_df.to_dict(orient="records"))
@@ -295,6 +538,25 @@ def build_signal_evaluation_summary(
     dataset_path: str | None = None,
     top_n: int = 10,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Build the signal evaluation summary used by downstream components.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        production_pack_name (str | None): Human-readable name for production pack.
+        dataset_path (str | None): Input associated with dataset path.
+        top_n (int): Input associated with top n.
+    
+    Returns:
+        dict[str, Any]: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     enriched = _frame_with_timestamp(frame)
     score_statistics = {
         field_name: _score_statistics(enriched, field_name)
@@ -324,6 +586,22 @@ def build_signal_evaluation_summary(
 
 
 def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
+    """
+    Purpose:
+        Render signal evaluation markdown for operator-facing or report output.
+    
+    Context:
+        Public function within the research layer that records evaluation datasets and diagnostic reports. It exposes a reusable workflow step to other parts of the repository.
+    
+    Inputs:
+        summary (dict[str, Any]): Summary payload being rendered or inspected.
+    
+    Returns:
+        str: Side-effect-oriented result returned by the current workflow.
+    
+    Notes:
+        The output is designed to remain serializable so evaluation artifacts can be replayed, audited, and compared across experiments.
+    """
     period = summary.get("evaluation_period", {})
     signal_frequency = summary.get("signal_frequency", {})
     lines = [
@@ -419,6 +697,23 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
 
 
 def _write_table_csvs(summary: dict[str, Any], base_dir: Path) -> dict[str, str]:
+    """
+    Purpose:
+        Write table csvs to the appropriate output artifact.
+    
+    Context:
+        Internal helper within the research layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        summary (dict[str, Any]): Input associated with summary.
+        base_dir (Path): Input associated with base dir.
+    
+    Returns:
+        dict[str, str]: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     csv_paths: dict[str, str] = {}
     table_mappings = {
         "signals_by_symbol": summary.get("signals_by_symbol", []),
@@ -449,6 +744,27 @@ def write_signal_evaluation_report(
     report_name: str | None = None,
     top_n: int = 10,
 ) -> dict[str, Any]:
+    """
+    Purpose:
+        Write signal evaluation report to the appropriate output artifact.
+    
+    Context:
+        Public function within the research layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        frame (pd.DataFrame): Input associated with frame.
+        production_pack_name (str | None): Human-readable name for production pack.
+        dataset_path (str | None): Input associated with dataset path.
+        output_dir (str | Path): Input associated with output dir.
+        report_name (str | None): Human-readable name for report.
+        top_n (int): Input associated with top n.
+    
+    Returns:
+        None: The function communicates through side effects such as terminal output or persisted artifacts.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     summary = build_signal_evaluation_summary(
         frame,
         production_pack_name=production_pack_name,

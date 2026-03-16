@@ -1,5 +1,17 @@
 """
-Parameter registry and tuning framework for controlled research iteration.
+Module: __init__.py
+
+Purpose:
+    Implement init utilities for parameter search, validation, governance, or promotion workflows.
+
+Role in the System:
+    Part of the tuning layer that searches, validates, and governs candidate parameter packs.
+
+Key Outputs:
+    Experiment records, parameter candidates, validation summaries, and promotion decisions.
+
+Downstream Usage:
+    Consumed by shadow mode, promotion workflow, and parameter-pack governance.
 """
 
 from tuning.campaigns import default_group_tuning_plans, run_group_tuning_campaign

@@ -1,5 +1,17 @@
 """
-Aggregate scheduled event risk and classified headlines into a compact macro regime state.
+Module: macro_news_aggregator.py
+
+Purpose:
+    Implement macro news aggregator logic used to score scheduled events and macro catalysts.
+
+Role in the System:
+    Part of the macro context layer that scores scheduled events and broad market catalysts.
+
+Key Outputs:
+    Macro-event state, catalyst scores, and gating diagnostics.
+
+Downstream Usage:
+    Consumed by the signal engine, risk overlays, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -18,10 +30,45 @@ from news.models import HeadlineIngestionState
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `macro news aggregator` module. The module sits in the macro overlay layer that models scheduled events and headline-driven context.
+
+    Inputs:
+        value (float): Raw value supplied by the caller.
+        lo (float): Inclusive lower bound for the returned value.
+        hi (float): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `macro news aggregator` module. The module sits in the macro overlay layer that models scheduled events and headline-driven context.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -32,6 +79,37 @@ def _safe_float(value, default=0.0):
 
 @dataclass(frozen=True)
 class MacroNewsState:
+    """
+    Purpose:
+        Dataclass representing MacroNewsState within the repository.
+    
+    Context:
+        Used within the macro context layer that scores scheduled events and broad catalysts. The class keeps configuration or structured state explicit for downstream consumers.
+    
+    Attributes:
+        macro_regime (str): Regime label for macro.
+        macro_event_risk_score (int): Score value for macro event risk.
+        macro_sentiment_score (float): Score value for macro sentiment.
+        volatility_shock_score (float): Score value for volatility shock.
+        event_lockdown_flag (bool): Boolean flag controlling whether event lockdown flag is active.
+        news_confidence_score (float): Score value for news confidence.
+        headline_impact_score (float): Score value for headline impact.
+        india_macro_bias (float): Value supplied for india macro bias.
+        global_risk_bias (float): Value supplied for global risk bias.
+        headline_velocity (float): Value supplied for headline velocity.
+        headline_count (int): Count recorded for headline.
+        classified_headline_count (int): Count recorded for classified headline.
+        event_window_status (str): Macro-event window state used by the current heuristic.
+        next_event_name (str | None): Value supplied for next event name.
+        neutral_fallback (bool): Boolean flag controlling whether neutral fallback is active.
+        macro_regime_reasons (list[str]): Human-readable explanations for macro regime.
+        issues (list[str]): Collection of issues.
+        warnings (list[str]): Collection of warnings.
+        classification_preview (list[dict[str, Any]]): Collection of classification preview.
+    
+    Notes:
+        The structured record keeps important state explicit, serializable, and easy to audit across live, replay, and research workflows.
+    """
     macro_regime: str
     macro_event_risk_score: int
     macro_sentiment_score: float
@@ -53,10 +131,44 @@ class MacroNewsState:
     classification_preview: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Purpose:
+            Serialize the object into a plain dictionary for persistence and review.
+        
+        Context:
+            Method on `MacroNewsState` that makes the object easy to persist in tuning artifacts, logs, or serialized payloads.
+        
+        Inputs:
+            None: This helper does not require caller-supplied inputs.
+        
+        Returns:
+            dict[str, Any]: Dictionary representation of the object suitable for serialization or persistence.
+        
+        Notes:
+            The serialized shape is kept stable so artifacts can be diffed, persisted, and inspected outside Python.
+        """
         return asdict(self)
 
 
 def _neutral_macro_news_state(event_state: dict | None = None, issues=None, warnings=None) -> MacroNewsState:
+    """
+    Purpose:
+        Process neutral macro news state for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        event_state (dict | None): Structured state payload for event.
+        issues (Any): Input associated with issues.
+        warnings (Any): Input associated with warnings.
+    
+    Returns:
+        MacroNewsState: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     event_state = event_state or {}
     return MacroNewsState(
         macro_regime="MACRO_NEUTRAL" if not event_state.get("event_lockdown_flag") else "EVENT_LOCKDOWN",
@@ -82,6 +194,23 @@ def _neutral_macro_news_state(event_state: dict | None = None, issues=None, warn
 
 
 def _weighted_headline_aggregates(classified: list[HeadlineClassification], as_of=None):
+    """
+    Purpose:
+        Process weighted headline aggregates for downstream use.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        classified (list[HeadlineClassification]): Input associated with classified.
+        as_of (Any): Input associated with as of.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_macro_news_aggregation_config()
     if not classified:
         return {
@@ -166,6 +295,26 @@ def _weighted_headline_aggregates(classified: list[HeadlineClassification], as_o
 
 
 def _derive_macro_regime(*, event_lockdown_flag: bool, macro_sentiment_score: float, global_risk_bias: float, india_macro_bias: float, volatility_shock_score: float):
+    """
+    Purpose:
+        Derive macro regime from the supplied inputs.
+    
+    Context:
+        Internal helper within the macro context layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        event_lockdown_flag (bool): Boolean flag indicating whether scheduled-event rules require a hard lockdown.
+        macro_sentiment_score (float): Score value for macro sentiment.
+        global_risk_bias (float): Input associated with global risk bias.
+        india_macro_bias (float): Input associated with india macro bias.
+        volatility_shock_score (float): Score value for volatility shock.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     cfg = get_macro_news_regime_config()
     reasons = []
     if event_lockdown_flag:
@@ -205,6 +354,24 @@ def build_macro_news_state(
     headline_state: HeadlineIngestionState | None,
     as_of=None,
 ) -> MacroNewsState:
+    """
+    Purpose:
+        Build the macro news state used by downstream components.
+    
+    Context:
+        Public function within the macro context layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        event_state (dict | None): Structured state payload for event.
+        headline_state (HeadlineIngestionState | None): Structured state payload for headline.
+        as_of (Any): Input associated with as of.
+    
+    Returns:
+        MacroNewsState: Computed value returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     event_state = event_state or {}
 
     if headline_state is None:

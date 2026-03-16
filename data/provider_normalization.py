@@ -1,5 +1,17 @@
 """
-Normalize live provider option-chain outputs into a consistent engine contract.
+Module: provider_normalization.py
+
+Purpose:
+    Implement provider normalization data-ingestion utilities for the repository.
+
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from __future__ import annotations
@@ -23,6 +35,24 @@ CANONICAL_NUMERIC_COLUMNS = [
 
 
 def _copy_alias(df: pd.DataFrame, canonical_name: str, alias_name: str) -> None:
+    """
+    Purpose:
+        Process copy alias for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        df (pd.DataFrame): Input associated with df.
+        canonical_name (str): Human-readable name for canonical.
+        alias_name (str): Human-readable name for alias.
+    
+    Returns:
+        None: The function operates through side effects.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if canonical_name in df.columns and alias_name not in df.columns:
         df[alias_name] = df[canonical_name]
     elif alias_name in df.columns and canonical_name not in df.columns:
@@ -33,6 +63,24 @@ def _copy_alias(df: pd.DataFrame, canonical_name: str, alias_name: str) -> None:
 
 
 def normalize_live_option_chain(option_chain, *, source: str, symbol: str):
+    """
+    Purpose:
+        Normalize live option chain into the repository-standard representation.
+    
+    Context:
+        Public function in the `provider normalization` module. It forms part of the data workflow exposed by this module.
+    
+    Inputs:
+        option_chain (Any): Option-chain snapshot used for scoring or signal generation.
+        source (str): Market-data source label.
+        symbol (str): Underlying symbol or index identifier.
+    
+    Returns:
+        Any: Value returned by the current workflow step.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     if option_chain is None or getattr(option_chain, "empty", True):
         return pd.DataFrame()
 

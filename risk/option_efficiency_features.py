@@ -1,5 +1,17 @@
 """
-Deterministic expected move and option efficiency feature model.
+Module: option_efficiency_features.py
+
+Purpose:
+    Build option efficiency features used by the risk overlay.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -12,10 +24,45 @@ from config.option_efficiency_policy import get_option_efficiency_policy_config
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `option efficiency features` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `option efficiency features` module. The module sits in the risk overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     try:
         if value is None:
             return default
@@ -25,6 +72,23 @@ def _safe_float(value, default=0.0):
 
 
 def _holding_context(global_risk_state, holding_profile):
+    """
+    Purpose:
+        Process holding context for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        global_risk_state (Any): Structured state payload for global risk.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
     holding_context = global_risk_state.get("holding_context", {})
     holding_context = holding_context if isinstance(holding_context, dict) else {}
@@ -41,6 +105,22 @@ def _holding_context(global_risk_state, holding_profile):
 
 
 def _normalize_iv(value):
+    """
+    Purpose:
+        Normalize IV into the repository-standard representation.
+    
+    Context:
+        Internal helper in the `option efficiency features` module. It isolates one overlay heuristic so risk adjustments remain auditable.
+    
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+    
+    Returns:
+        Any: Value returned by the current workflow step.
+    
+    Notes:
+        The helper intentionally produces bounded, serializable values so overlays can be inspected alongside the final trade decision.
+    """
     cfg = get_option_efficiency_policy_config()
     iv = _safe_float(value, None)
     if iv is None or iv <= 0:
@@ -52,6 +132,24 @@ def _normalize_iv(value):
 
 
 def _parse_time_to_expiry_years(expiry_value=None, valuation_time=None, tte=None):
+    """
+    Purpose:
+        Process parse time to expiry years for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        expiry_value (Any): Input associated with expiry value.
+        valuation_time (Any): Input associated with valuation time.
+        tte (Any): Input associated with tte.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     tte_value = _safe_float(tte, None)
     if tte_value not in (None, 0):
@@ -75,6 +173,23 @@ def _parse_time_to_expiry_years(expiry_value=None, valuation_time=None, tte=None
 
 
 def _expected_move_quality(iv_source, dte_source):
+    """
+    Purpose:
+        Process expected move quality for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        iv_source (Any): Input associated with IV source.
+        dte_source (Any): Input associated with dte source.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if iv_source is None or dte_source is None:
         return "UNAVAILABLE"
     if iv_source == "ATM_IV" and dte_source in {"DIRECT_TTE", "PARSED_EXPIRY"}:
@@ -83,6 +198,22 @@ def _expected_move_quality(iv_source, dte_source):
 
 
 def _effective_delta(delta):
+    """
+    Purpose:
+        Process effective delta for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        delta (Any): Input associated with delta.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     value = abs(_safe_float(delta, 0.0))
     if value <= 0:
@@ -91,6 +222,24 @@ def _effective_delta(delta):
 
 
 def _strike_moneyness_bucket(direction, strike, spot):
+    """
+    Purpose:
+        Process strike moneyness bucket for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        strike (Any): Input associated with strike.
+        spot (Any): Input associated with spot.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     spot_value = _safe_float(spot, None)
     strike_value = _safe_float(strike, None)
@@ -109,6 +258,24 @@ def _strike_moneyness_bucket(direction, strike, spot):
 
 
 def _payoff_hint(strike_moneyness_bucket, strike_distance_ratio, premium_ratio):
+    """
+    Purpose:
+        Process payoff hint for downstream use.
+    
+    Context:
+        Internal helper within the risk-overlay layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        strike_moneyness_bucket (Any): Input associated with strike moneyness bucket.
+        strike_distance_ratio (Any): Input associated with strike distance ratio.
+        premium_ratio (Any): Input associated with premium ratio.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     if strike_moneyness_bucket == "OTM" and strike_distance_ratio is not None and strike_distance_ratio > cfg.payoff_far_otm_distance_ratio:
         return "far_otm_requires_large_move"
@@ -151,6 +318,50 @@ def build_option_efficiency_features(
     delta=None,
     holding_profile="AUTO",
 ):
+    """
+    Purpose:
+        Build the option efficiency features used by downstream components.
+    
+    Context:
+        Public function within the risk-overlay layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        atm_iv (Any): Input associated with ATM IV.
+        fallback_iv (Any): Input associated with fallback IV.
+        expiry_value (Any): Input associated with expiry value.
+        valuation_time (Any): Input associated with valuation time.
+        time_to_expiry_years (Any): Input associated with time to expiry years.
+        direction (Any): Trade direction label associated with the current signal, typically `CALL` or `PUT`.
+        strike (Any): Input associated with strike.
+        option_type (Any): Input associated with option type.
+        entry_price (Any): Input associated with entry price.
+        target (Any): Input associated with target.
+        stop_loss (Any): Input associated with stop loss.
+        trade_strength (Any): Input associated with trade strength.
+        hybrid_move_probability (Any): Input associated with hybrid move probability.
+        rule_move_probability (Any): Input associated with rule move probability.
+        ml_move_probability (Any): Input associated with ML move probability.
+        gamma_regime (Any): Input associated with gamma regime.
+        volatility_regime (Any): Input associated with volatility regime.
+        volatility_shock_score (Any): Score value for volatility shock.
+        volatility_compression_score (Any): Score value for volatility compression.
+        macro_event_risk_score (Any): Macro-event risk score used by fallback or overlay logic.
+        global_risk_state (Any): Structured state payload for global risk.
+        gamma_vol_acceleration_score (Any): Score value for gamma vol acceleration.
+        dealer_hedging_pressure_score (Any): Score value for dealer hedging pressure.
+        liquidity_vacuum_state (Any): Structured state payload for liquidity vacuum.
+        support_wall (Any): Input associated with support wall.
+        resistance_wall (Any): Input associated with resistance wall.
+        delta (Any): Input associated with delta.
+        holding_profile (Any): Holding intent that determines whether overnight rules should be considered.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     cfg = get_option_efficiency_policy_config()
     holding_context = _holding_context(global_risk_state, holding_profile)
     iv_decimal, iv_unit = _normalize_iv(atm_iv)

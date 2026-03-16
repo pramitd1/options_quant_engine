@@ -1,5 +1,17 @@
 """
-Shared scope normalization and matching utilities for macro/news layers.
+Module: scope_utils.py
+
+Purpose:
+    Implement scope utils logic used to score scheduled events and macro catalysts.
+
+Role in the System:
+    Part of the macro context layer that scores scheduled events and broad market catalysts.
+
+Key Outputs:
+    Macro-event state, catalyst scores, and gating diagnostics.
+
+Downstream Usage:
+    Consumed by the signal engine, risk overlays, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -14,6 +26,22 @@ INDEX_KEYWORD_MAP = {
 
 
 def normalize_scope(value) -> list[str]:
+    """
+    Purpose:
+        Normalize scope into the repository-standard representation.
+    
+    Context:
+        Public function in the `scope utils` module. It forms part of the macro workflow exposed by this module.
+    
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+    
+    Returns:
+        list[str]: List of results produced by the current workflow step.
+    
+    Notes:
+        Outputs are designed to remain serializable and reusable across live, replay, research, and tuning workflows.
+    """
     if value is None:
         return ["ALL"]
 
@@ -34,6 +62,23 @@ def normalize_scope(value) -> list[str]:
 
 
 def symbol_scope_matches(symbol: str, scopes: list[str]) -> bool:
+    """
+    Purpose:
+        Process symbol scope matches for downstream use.
+    
+    Context:
+        Public function within the macro context layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        scopes (list[str]): Input associated with scopes.
+    
+    Returns:
+        bool: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     symbol_upper = str(symbol or "").strip().upper()
 
     if "ALL" in scopes:
@@ -52,6 +97,23 @@ def symbol_scope_matches(symbol: str, scopes: list[str]) -> bool:
 
 
 def headline_mentions_symbol(symbol: str, headline: str) -> bool:
+    """
+    Purpose:
+        Process headline mentions symbol for downstream use.
+    
+    Context:
+        Public function within the macro context layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        headline (str): Input associated with headline.
+    
+    Returns:
+        bool: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     symbol_upper = str(symbol or "").strip().upper()
     text = str(headline or "").strip().lower()
 

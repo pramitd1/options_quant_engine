@@ -1,3 +1,18 @@
+"""
+Module: ml_move_predictor.py
+
+Purpose:
+    Implement ML move predictor modeling logic used by predictive or heuristic components.
+
+Role in the System:
+    Part of the modeling layer that builds statistical features and predictive estimates.
+
+Key Outputs:
+    Model-ready feature sets, fitted estimators, or predictive outputs.
+
+Downstream Usage:
+    Consumed by analytics, the probability stack, and research workflows.
+"""
 from __future__ import annotations
 
 import math
@@ -6,18 +21,97 @@ from typing import Iterable
 import numpy as np
 
 def _clip(x: float, lo: float, hi: float) -> float:
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Function inside the `ml move predictor` module. The module sits in the modeling layer that turns features into probabilities, scores, and predictive outputs.
+
+    Inputs:
+        x (float): Raw scalar input supplied by the caller.
+        lo (float): Inclusive lower bound for the returned value.
+        hi (float): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return max(lo, min(hi, x))
 
 
 class MovePredictor:
+    """
+    Purpose:
+        Represent MovePredictor within the repository.
+    
+    Context:
+        Used within the `ml move predictor` module. The class participates in the module's role within the trading system.
+    
+    Attributes:
+        None: The class primarily defines behavior or a protocol contract rather than stored fields.
+    
+    Notes:
+        The class groups behavior and state that need to stay explicit for maintainability and auditability.
+    """
     def __init__(self, base_model=None):
+        """
+        Purpose:
+            Process init for downstream use.
+        
+        Context:
+            Method on `MovePredictor` within the modeling layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            base_model (Any): Input associated with base model.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         self.base_model = base_model
 
     def _sigmoid(self, x: float) -> float:
+        """
+        Purpose:
+            Process sigmoid for downstream use.
+        
+        Context:
+            Method on `MovePredictor` within the modeling layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            x (float): Input associated with x.
+        
+        Returns:
+            float: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         x = _clip(float(x), -8.0, 8.0)
         return 1.0 / (1.0 + math.exp(-x))
 
     def _normalize_row(self, row: Iterable[float]) -> list[float]:
+        """
+        Purpose:
+            Normalize row into the repository-standard form.
+        
+        Context:
+            Method on `MovePredictor` within the modeling layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            row (Iterable[float]): Input associated with row.
+        
+        Returns:
+            list[float]: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         vals = [float(x) for x in row]
 
         # Keep backward compatibility with the existing 7-feature expectation.
@@ -44,6 +138,22 @@ class MovePredictor:
         ]
 
     def _heuristic_probability(self, X):
+        """
+        Purpose:
+            Process heuristic probability for downstream use.
+        
+        Context:
+            Method on `MovePredictor` within the modeling layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            X (Any): Input associated with X.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         arr = np.asarray(X, dtype=float)
         if arr.ndim == 1:
             arr = arr.reshape(1, -1)
@@ -69,6 +179,22 @@ class MovePredictor:
         return probs[0] if len(probs) == 1 else probs
 
     def predict_probability(self, X):
+        """
+        Purpose:
+            Process predict probability for downstream use.
+        
+        Context:
+            Method on `MovePredictor` within the modeling layer. It keeps the object's contract explicit for downstream callers.
+        
+        Inputs:
+            X (Any): Input associated with X.
+        
+        Returns:
+            Any: Result returned by the helper.
+        
+        Notes:
+            The helper keeps the surrounding module readable without changing runtime behavior.
+        """
         if self.base_model is not None:
             try:
                 result = self.base_model.predict_probability(X)

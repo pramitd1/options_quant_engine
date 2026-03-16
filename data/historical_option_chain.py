@@ -1,14 +1,17 @@
 """
-Historical Option Chain Loader / Builder
+Module: historical_option_chain.py
 
-Adds:
-- cache loading
-- auto synthetic build
-- expiry-aware synthetic chain
-- optional real IV surface integration
+Purpose:
+    Implement historical option chain data-ingestion utilities for the repository.
 
-Note:
-- the default synthetic builder uses one daily spot bar per snapshot
+Role in the System:
+    Part of the data layer that downloads, normalizes, validates, and stores market snapshots.
+
+Key Outputs:
+    Normalized dataframes, validation payloads, and persisted market snapshots.
+
+Downstream Usage:
+    Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 
 from pathlib import Path
@@ -37,6 +40,23 @@ YF_SYMBOL_MAP = {
 
 
 def _candidate_paths(symbol: str, years: int):
+    """
+    Purpose:
+        Process candidate paths for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     symbol = symbol.upper().strip()
     base = Path(DATA_DIR)
 
@@ -48,6 +68,22 @@ def _candidate_paths(symbol: str, years: int):
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Normalize columns into the repository-standard form.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        df (pd.DataFrame): Input associated with df.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     rename_map = {
         "STRIKE_PR": "strikePrice",
         "OPEN_INT": "openInterest",
@@ -70,6 +106,22 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _validate_dataframe(df: pd.DataFrame):
+    """
+    Purpose:
+        Validate the dataframe before downstream use.
+
+    Context:
+        Function inside the `historical option chain` module. The module sits in the data layer that ingests, normalizes, and validates market inputs before analytics run.
+
+    Inputs:
+        df (pd.DataFrame): Normalized dataframe supplied to the routine.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     required = ["timestamp", "strikePrice", "OPTION_TYP", "lastPrice", "openInterest"]
     missing = [col for col in required if col not in df.columns]
 
@@ -78,10 +130,46 @@ def _validate_dataframe(df: pd.DataFrame):
 
 
 def _norm_cdf(x: float) -> float:
+    """
+    Purpose:
+        Evaluate the standard normal cumulative distribution function.
+
+    Context:
+        Function inside the `historical option chain` module. The module sits in the data layer that ingests, normalizes, and validates market inputs before analytics run.
+
+    Inputs:
+        x (float): Raw scalar input supplied by the caller.
+
+    Returns:
+        float: Cumulative probability for the supplied z-score.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
 def _black_scholes_price(spot, strike, t, sigma, option_type):
+    """
+    Purpose:
+        Process black scholes price for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        strike (Any): Input associated with strike.
+        t (Any): Input associated with t.
+        sigma (Any): Input associated with sigma.
+        option_type (Any): Input associated with option type.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     spot = max(float(spot), 1e-6)
     strike = max(float(strike), 1e-6)
     sigma = max(float(sigma), 1e-6)
@@ -97,6 +185,22 @@ def _black_scholes_price(spot, strike, t, sigma, option_type):
 
 
 def _symbol_to_yfinance(symbol: str) -> str:
+    """
+    Purpose:
+        Process symbol to yfinance for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     normalized = str(symbol or "").upper().strip()
 
     if normalized in YF_SYMBOL_MAP:
@@ -109,6 +213,22 @@ def _symbol_to_yfinance(symbol: str) -> str:
 
 
 def _flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Purpose:
+        Process flatten yfinance columns for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        df (pd.DataFrame): Input associated with df.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [
             col[0] if isinstance(col, tuple) and len(col) > 0 else col
@@ -118,6 +238,23 @@ def _flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _download_spot_history(symbol: str, years: int) -> pd.DataFrame:
+    """
+    Purpose:
+        Process download spot history for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     yf_symbol = _symbol_to_yfinance(symbol)
 
     df = yf.download(
@@ -165,6 +302,27 @@ def _build_synthetic_snapshot(
     default_iv,
     iv_surface_df=None
 ):
+    """
+    Purpose:
+        Build the synthetic snapshot used by downstream components.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        timestamp (Any): Input associated with timestamp.
+        spot (Any): Input associated with spot.
+        strike_step (Any): Input associated with strike step.
+        strike_range (Any): Input associated with strike range.
+        default_iv (Any): Input associated with default IV.
+        iv_surface_df (Any): Input associated with IV surface df.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     spot = float(spot)
     rows = []
 
@@ -223,6 +381,23 @@ def _build_synthetic_snapshot(
 
 
 def _build_historical_option_chain(symbol: str, years: int) -> pd.DataFrame:
+    """
+    Purpose:
+        Build the historical option chain used by downstream components.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     spot_df = _download_spot_history(symbol, years)
     iv_surface_df = load_historical_iv_surface(symbol, years)
 
@@ -250,12 +425,46 @@ def _build_historical_option_chain(symbol: str, years: int) -> pd.DataFrame:
 
 
 def _cache_path(symbol: str, years: int) -> Path:
+    """
+    Purpose:
+        Process cache path for downstream use.
+    
+    Context:
+        Internal helper within the data layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        Path: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     symbol_dir = Path(DATA_DIR) / symbol.upper().strip()
     symbol_dir.mkdir(parents=True, exist_ok=True)
     return symbol_dir / f"{symbol.upper().strip()}_{years}y_option_chain.csv"
 
 
 def load_option_chain(symbol: str, years: int = 1) -> pd.DataFrame:
+    """
+    Purpose:
+        Process load option chain for downstream use.
+    
+    Context:
+        Public function within the data layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        symbol (str): Underlying symbol or index identifier.
+        years (int): Input associated with years.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     for path in _candidate_paths(symbol, years):
         if path.exists() and path.is_file():
             df = pd.read_csv(path)

@@ -1,5 +1,17 @@
 """
-Risk utilities for engine-wide trade gating and sizing decisions.
+Module: __init__.py
+
+Purpose:
+    Evaluate init conditions used by the risk overlay.
+
+Role in the System:
+    Part of the risk-overlay layer that measures destabilizing conditions and adjusts trade eligibility or sizing.
+
+Key Outputs:
+    Overlay states, feature diagnostics, and trade-adjustment decisions.
+
+Downstream Usage:
+    Consumed by the signal engine, trade construction, and research diagnostics.
 """
 
 from risk.option_efficiency_layer import build_option_efficiency_state

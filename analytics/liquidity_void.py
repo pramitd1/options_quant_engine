@@ -1,14 +1,17 @@
 """
-Liquidity Void Detector
+Module: liquidity_void.py
 
-Identifies areas with extremely low open interest.
+Purpose:
+    Compute liquidity void analytics used by downstream signal and risk layers.
 
-When price enters these regions,
-markets often move quickly because
-there is little dealer liquidity.
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
 
-This is a core concept used by options desks
-to identify potential fast moves.
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 import pandas as pd
@@ -16,6 +19,23 @@ import pandas as pd
 
 def detect_liquidity_voids(option_chain, threshold=50):
 
+    """
+    Purpose:
+        Detect liquidity voids from the available inputs.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        option_chain (Any): Input associated with option chain.
+        threshold (Any): Input associated with threshold.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if option_chain.empty:
         return []
 
@@ -35,6 +55,23 @@ def detect_liquidity_voids(option_chain, threshold=50):
 
 def nearest_liquidity_void(spot, voids):
 
+    """
+    Purpose:
+        Process nearest liquidity void for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        voids (Any): Input associated with voids.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     if not voids:
         return None
 
@@ -45,6 +82,23 @@ def nearest_liquidity_void(spot, voids):
 
 def liquidity_void_signal(spot, voids):
 
+    """
+    Purpose:
+        Process liquidity void signal for downstream use.
+    
+    Context:
+        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        spot (Any): Input associated with spot.
+        voids (Any): Input associated with voids.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    """
     nearest = nearest_liquidity_void(spot, voids)
 
     if nearest is None:

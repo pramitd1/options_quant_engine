@@ -1,5 +1,17 @@
 """
-Backward-compatible facade for the global risk layer.
+Module: global_risk_layer.py
+
+Purpose:
+    Score cross-asset and volatility stress signals before they are allowed to modify a trade decision.
+
+Role in the System:
+    Part of the risk-overlay layer that can downgrade, suppress, or annotate otherwise valid trades.
+
+Key Outputs:
+    A structured global-risk assessment containing feature diagnostics, overlay scores, and gating flags.
+
+Downstream Usage:
+    Consumed by the signal engine, shadow evaluations, and research diagnostics.
 """
 
 from __future__ import annotations
@@ -10,10 +22,45 @@ from risk.global_risk_regime import classify_global_risk_state
 
 
 def _clip(value, lo, hi):
+    """
+    Purpose:
+        Clamp a numeric value to the configured bounds.
+
+    Context:
+        Used within the global risk layer workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        lo (Any): Inclusive lower bound for the returned value.
+        hi (Any): Inclusive upper bound for the returned value.
+
+    Returns:
+        float | int: Bounded value returned by the helper.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     return max(lo, min(hi, value))
 
 
 def _safe_float(value, default=0.0):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Used within the global risk layer workflow. The module sits in the risk-overlay layer that can resize, downgrade, or block trade ideas.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+        default (Any): Fallback value used when the preferred path is unavailable.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding trading logic compact and readable.
+    """
     try:
         if value is None:
             return default
@@ -23,6 +70,23 @@ def _safe_float(value, default=0.0):
 
 
 def _event_name(active_event_name=None, next_event_name=None):
+    """
+    Purpose:
+        Resolve the event name used in global-risk fallback messaging.
+    
+    Context:
+        Internal helper in the risk overlay. When the global-risk layer blocks or downgrades a trade because of scheduled events, the message path needs a single human-readable event label even if only partial metadata is available.
+    
+    Inputs:
+        active_event_name (Any): Currently active scheduled event, when one exists.
+        next_event_name (Any): Next scheduled event, when one exists.
+    
+    Returns:
+        str: Event label used in operator-facing or research-facing diagnostics.
+    
+    Notes:
+        This keeps fallback messaging deterministic even when upstream event metadata is incomplete.
+    """
     return active_event_name or next_event_name or "scheduled macro event"
 
 
@@ -34,6 +98,26 @@ def build_global_risk_state(
     holding_profile: str = "AUTO",
     as_of=None,
 ):
+    """
+    Purpose:
+        Assemble the global-risk state from macro-event, news, and cross-asset inputs.
+    
+    Context:
+        This function belongs to the risk-overlay layer and runs before the final trade decision is emitted. It converts macro-event state, news adjustments, and global-market features into a normalized risk-state payload that later overlays can consume.
+    
+    Inputs:
+        macro_event_state (Any): Scheduled-event state produced by the macro layer.
+        macro_news_state (Any): Headline-driven macro state produced by the news layer.
+        global_market_snapshot (Any): Cross-asset market snapshot used by global-risk feature builders.
+        holding_profile (str): Holding intent that determines whether overnight logic should matter.
+        as_of (Any): Timestamp representing when the global snapshot should be interpreted.
+    
+    Returns:
+        dict: Serialized global-risk state containing feature diagnostics, regime labels, and overnight-risk fields.
+    
+    Notes:
+        The output is normalized into a dictionary so the same state contract can flow through live runtime, replay, shadow evaluation, and research logging.
+    """
     features = build_global_risk_features(
         macro_event_state=macro_event_state,
         macro_news_state=macro_news_state,
@@ -53,6 +137,27 @@ def _fallback_global_risk_state(
     active_event_name=None,
     holding_profile="AUTO",
 ):
+    """
+    Purpose:
+        Construct a conservative fallback global-risk state when full market data is unavailable.
+    
+    Context:
+        Internal helper used when the engine has event-window information but does not have a complete cross-asset risk snapshot. It prevents missing market data from silently bypassing obvious scheduled-event risk.
+    
+    Inputs:
+        event_window_status (Any): Scheduled-event window label such as pre-event watch or live event.
+        macro_event_risk_score (Any): Macro-event risk score available from the event layer.
+        event_lockdown_flag (Any): Whether scheduled-event policy requires a hard lockdown.
+        next_event_name (Any): Next scheduled event, when one exists.
+        active_event_name (Any): Currently active scheduled event, when one exists.
+        holding_profile (Any): Holding intent used to populate overnight context fields.
+    
+    Returns:
+        dict: Conservative fallback state that preserves the same schema as the full global-risk path.
+    
+    Notes:
+        The fallback intentionally biases toward caution so event-driven risk is still surfaced even if cross-asset feeds are delayed or unavailable.
+    """
     state = "EVENT_LOCKDOWN" if event_lockdown_flag else "GLOBAL_NEUTRAL"
     score = 100 if event_lockdown_flag else int(_clip(_safe_float(macro_event_risk_score, 0.0) * 0.5, 0.0, 100.0))
     reasons = ["event_lockdown"] if event_lockdown_flag else ["global_risk_neutral_fallback"]
@@ -102,6 +207,29 @@ def _fallback_global_risk_state(
 
 
 def _result(*, state, score, level, action, size_cap, reasons, trade_status=None, message=None):
+    """
+    Purpose:
+        Assemble the normalized global-risk result payload returned to the signal engine.
+    
+    Context:
+        Internal helper in the risk overlay. Multiple decision branches can block, watchlist, or pass a trade, and this helper keeps the resulting payload shape identical across those branches.
+    
+    Inputs:
+        state (Any): Base global-risk state dictionary.
+        score (Any): Composite overlay risk score on a 0-100 style scale.
+        level (Any): High-level severity label such as low, medium, or high.
+        action (Any): Overlay action label such as pass, watchlist, or block.
+        size_cap (Any): Position-size multiplier cap allowed by the overlay.
+        reasons (Any): Ordered list of reasons explaining the overlay decision.
+        trade_status (Any): Trade-status label to expose back to the signal engine, when one is needed.
+        message (Any): Human-readable explanation attached to the risk decision.
+    
+    Returns:
+        dict: Normalized risk-layer payload containing scores, action flags, diagnostics, and trade-status metadata.
+    
+    Notes:
+        Centralizing this payload assembly keeps downstream code focused on the reason for the decision instead of the mechanics of shaping the response.
+    """
     state = state if isinstance(state, dict) else {}
     return {
         "global_risk_state": state.get("global_risk_state", "GLOBAL_NEUTRAL"),
@@ -138,6 +266,33 @@ def evaluate_global_risk_layer(
     global_risk_state=None,
     holding_profile="AUTO",
 ):
+    """
+    Purpose:
+        Apply the global-risk overlay to the current trade candidate and return the resulting action.
+    
+    Context:
+        This is the final decision layer for cross-asset and event-driven risk. It combines data quality, confirmation state, scheduled-event risk, news adjustments, and the prebuilt global-risk state to decide whether the trade should pass, shrink, move to watchlist, or be blocked.
+    
+    Inputs:
+        data_quality (Any): Data-quality payload produced earlier in signal assembly.
+        confirmation (Any): Confirmation-filter payload produced by the signal engine.
+        adjusted_trade_strength (Any): Trade-strength score after earlier overlay adjustments.
+        min_trade_strength (Any): Minimum trade-strength threshold required for execution.
+        event_window_status (Any): Scheduled-event window label from the macro layer.
+        macro_event_risk_score (Any): Macro-event risk score from the macro layer.
+        event_lockdown_flag (Any): Whether scheduled-event policy requires a hard lockdown.
+        next_event_name (Any): Next scheduled event, when one exists.
+        active_event_name (Any): Currently active scheduled event, when one exists.
+        macro_news_adjustments (Any): News-derived macro adjustment payload already computed by the engine.
+        global_risk_state (Any): Precomputed global-risk state, when available.
+        holding_profile (Any): Holding intent used for overnight-sensitive risk decisions.
+    
+    Returns:
+        dict: Overlay decision payload containing risk scores, action labels, size caps, and any trade-status downgrade or veto.
+    
+    Notes:
+        The score is intentionally composite: weak market-data quality, scheduled-event risk, cross-asset stress, and reduced size capacity all contribute to the final overlay action.
+    """
     cfg = get_global_risk_policy_config()
     data_quality = data_quality if isinstance(data_quality, dict) else {}
     confirmation = confirmation if isinstance(confirmation, dict) else {}
@@ -159,6 +314,8 @@ def evaluate_global_risk_layer(
         _clip(_safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0), 0.0, 1.0),
         _clip(_safe_float(global_risk_state.get("global_risk_position_size_multiplier"), 1.0), 0.0, 1.0),
     )
+    # The risk score is intentionally composite: weak data, event risk, broad
+    # global stress, and size constraints all contribute to the final action.
     score = int(round((100 - _safe_float(data_quality.get("score"), 100.0)) * cfg.layer_data_quality_weight))
     score += int(round(_safe_float(macro_event_risk_score, 0.0) * cfg.layer_macro_event_weight))
     score += int(round(_safe_float(global_risk_state.get("global_risk_score"), 0.0) * cfg.layer_global_risk_weight))
@@ -201,6 +358,8 @@ def evaluate_global_risk_layer(
             message="Trade blocked due to elevated global risk conditions",
         )
 
+    # Overnight handling is evaluated explicitly because some setups are
+    # acceptable intraday but not safe to carry through the close.
     holding_context = global_risk_state.get("holding_context", {})
     overnight_relevant = bool(holding_context.get("overnight_relevant", False))
     if overnight_relevant and not global_risk_state.get("overnight_hold_allowed", True):

@@ -1,7 +1,38 @@
+"""
+Module: performance_metrics.py
+
+Purpose:
+    Implement performance metrics logic used by historical replay and backtest evaluation.
+
+Role in the System:
+    Part of the backtest layer that replays historical data and measures strategy behavior out of sample.
+
+Key Outputs:
+    Backtest results, replay diagnostics, and evaluation summaries.
+
+Downstream Usage:
+    Consumed by research analysis, tuning validation, and promotion decisions.
+"""
 import math
 
 
 def _equity_curve(pnls):
+    """
+    Purpose:
+        Process equity curve for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        pnls (Any): Input associated with pnls.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     equity = []
     running = 0.0
     for p in pnls:
@@ -11,6 +42,22 @@ def _equity_curve(pnls):
 
 
 def _max_drawdown(equity):
+    """
+    Purpose:
+        Process max drawdown for downstream use.
+    
+    Context:
+        Internal helper within the backtest layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        equity (Any): Input associated with equity.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     peak = float("-inf")
     max_dd = 0.0
     for x in equity:
@@ -20,6 +67,23 @@ def _max_drawdown(equity):
 
 
 def compute_performance_metrics(trade_log, starting_capital=500000):
+    """
+    Purpose:
+        Compute performance metrics from the supplied inputs.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade_log (Any): Input associated with trade log.
+        starting_capital (Any): Input associated with starting capital.
+    
+    Returns:
+        Any: Computed value returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     if not trade_log:
         return {
             "total_pnl": 0.0,
@@ -86,4 +150,21 @@ def compute_performance_metrics(trade_log, starting_capital=500000):
 
 
 def performance_metrics(trade_log, starting_capital=500000):
+    """
+    Purpose:
+        Process performance metrics for downstream use.
+    
+    Context:
+        Public function within the backtest layer. It exposes a reusable step in this module's workflow.
+    
+    Inputs:
+        trade_log (Any): Input associated with trade log.
+        starting_capital (Any): Input associated with starting capital.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
+    """
     return compute_performance_metrics(trade_log, starting_capital)

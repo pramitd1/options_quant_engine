@@ -1,3 +1,18 @@
+"""
+Module: streamlit_app.py
+
+Purpose:
+    Provide the Streamlit operator interface for live runs, replay analysis, and research inspection.
+
+Role in the System:
+    Part of the application layer that exposes runtime controls and diagnostics through a browser-based workstation.
+
+Key Outputs:
+    Interactive controls, rendered signal diagnostics, replay tools, and research tables.
+
+Downstream Usage:
+    Used by operators and researchers who need a richer interface than the CLI runtime.
+"""
 from __future__ import annotations
 
 import json
@@ -259,10 +274,42 @@ st.markdown(
 
 
 def _safe_metric_value(value):
+    """
+    Purpose:
+        Safely normalize metric value while preserving fallback behavior.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     return "-" if value in (None, "") else value
 
 
 def _safe_float(value):
+    """
+    Purpose:
+        Safely coerce an input to `float` while preserving a fallback.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        value (Any): Raw value supplied by the caller.
+
+    Returns:
+        float: Parsed floating-point value or the fallback.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(numeric):
         return None
@@ -270,6 +317,22 @@ def _safe_float(value):
 
 
 def _display_path(path_value: str) -> str:
+    """
+    Purpose:
+        Render path for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path_value (str): Input associated with path value.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if not path_value:
         return "-"
     path = Path(path_value)
@@ -279,6 +342,22 @@ def _display_path(path_value: str) -> str:
 
 
 def _normalize_display_value(value):
+    """
+    Purpose:
+        Normalize display value into the repository-standard form.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        value (Any): Input associated with value.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if value is None:
         return None
     if isinstance(value, Path):
@@ -299,6 +378,22 @@ def _normalize_display_value(value):
 
 
 def _prepare_display_frame(data) -> pd.DataFrame:
+    """
+    Purpose:
+        Process prepare display frame for downstream use.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        data (Any): Input associated with data.
+    
+    Returns:
+        pd.DataFrame: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if isinstance(data, pd.DataFrame):
         frame = data.copy()
     else:
@@ -332,6 +427,23 @@ def _prepare_display_frame(data) -> pd.DataFrame:
 
 
 def _render_dataframe(data, *, hide_index: bool = True):
+    """
+    Purpose:
+        Render dataframe for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        data (Any): Input associated with data.
+        hide_index (bool): Boolean flag associated with hide_index.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     st.dataframe(
         _prepare_display_frame(data),
         width="stretch",
@@ -340,6 +452,22 @@ def _render_dataframe(data, *, hide_index: bool = True):
 
 
 def _badge_class_for_regime(regime: str) -> str:
+    """
+    Purpose:
+        Process badge class for regime for downstream use.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        regime (str): Input associated with regime.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     regime = (regime or "").upper()
     if regime == "RISK_ON":
         return "oqe-badge-risk-on"
@@ -351,6 +479,22 @@ def _badge_class_for_regime(regime: str) -> str:
 
 
 def _badge_class_for_trade_status(status: str) -> str:
+    """
+    Purpose:
+        Process badge class for trade status for downstream use.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        status (str): Input associated with status.
+    
+    Returns:
+        str: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     status = (status or "").upper()
     if status == "TRADE":
         return "oqe-badge-trade"
@@ -362,6 +506,24 @@ def _badge_class_for_trade_status(status: str) -> str:
 
 
 def _list_replay_files(replay_dir: str, symbol: str, kind: str):
+    """
+    Purpose:
+        List replay files available to the current workflow.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        replay_dir (str): Input associated with replay dir.
+        symbol (str): Underlying symbol or index identifier.
+        kind (str): Input associated with kind.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     replay_path = Path(replay_dir)
     if not replay_path.exists():
         return []
@@ -376,6 +538,22 @@ def _list_replay_files(replay_dir: str, symbol: str, kind: str):
 
 
 def _extract_snapshot_timestamp(path_str: str):
+    """
+    Purpose:
+        Extract snapshot timestamp from the supplied payload.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        path_str (str): Input associated with path str.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     match = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}[-:]\d{2}[-:]\d{2}(?:\.\d+)?\+\d{2}[-:]\d{2})", path_str)
     if not match:
         return None
@@ -389,12 +567,45 @@ def _extract_snapshot_timestamp(path_str: str):
 
 
 def _select_default_option(options):
+    """
+    Purpose:
+        Process select default option for downstream use.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        options (Any): Input associated with options.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     if not options:
         return ""
     return options[-1]
 
 
 def _nearest_spot_for_chain(chain_path: str, spot_options):
+    """
+    Purpose:
+        Process nearest spot for chain for downstream use.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        chain_path (str): Input associated with chain path.
+        spot_options (Any): Input associated with spot options.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     chain_ts = _extract_snapshot_timestamp(chain_path or "")
     if chain_ts is None or not spot_options:
         return _select_default_option(spot_options)
@@ -412,6 +623,23 @@ def _nearest_spot_for_chain(chain_path: str, spot_options):
 
 
 def _render_key_value_table(title: str, values: dict):
+    """
+    Purpose:
+        Render key value table for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        title (str): Input associated with title.
+        values (dict): Input associated with values.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     st.markdown(f'<div class="oqe-panel">', unsafe_allow_html=True)
     st.subheader(title)
     frame = pd.DataFrame([{"field": key, "value": value} for key, value in values.items()])
@@ -420,6 +648,23 @@ def _render_key_value_table(title: str, values: dict):
 
 
 def _render_key_value_list(title: str, values: dict):
+    """
+    Purpose:
+        Render key value list for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        title (str): Input associated with title.
+        values (dict): Input associated with values.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     st.markdown(f'<div class="oqe-panel">', unsafe_allow_html=True)
     st.subheader(title)
     for key, value in values.items():
@@ -432,6 +677,22 @@ def _render_key_value_list(title: str, values: dict):
 
 
 def _render_runbar(result: dict):
+    """
+    Purpose:
+        Render runbar for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        result (dict): Input associated with result.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     timestamp = ((result.get("spot_summary") or {}).get("timestamp")) or "-"
     pills = [
         ("Mode", result.get("mode")),
@@ -447,6 +708,22 @@ def _render_runbar(result: dict):
 
 
 def _render_trade_metrics(trade: dict):
+    """
+    Purpose:
+        Render the trade metrics for reporting or presentation.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        trade (dict): Trade payload produced by the signal engine, or `None` for no-trade outcomes.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     status = trade.get("trade_status", "UNKNOWN")
     st.markdown(
         f'<div class="oqe-badge {_badge_class_for_trade_status(status)}">{status}</div>',
@@ -485,6 +762,22 @@ def _render_trade_metrics(trade: dict):
 
 
 def _render_decision_panel(trade: dict):
+    """
+    Purpose:
+        Render the decision panel for reporting or presentation.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        trade (dict): Trade payload produced by the signal engine, or `None` for no-trade outcomes.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     focus_cards = [
         ("Direction Source", trade.get("direction_source")),
         ("Execution Regime", trade.get("execution_regime")),
@@ -506,6 +799,23 @@ def _render_decision_panel(trade: dict):
 
 
 def _render_macro_news_section(macro_news_state: dict, headline_state: dict):
+    """
+    Purpose:
+        Render the macro news section for reporting or presentation.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        macro_news_state (dict): Headline-driven macro-news state produced by the news stack.
+        headline_state (dict): Headline-ingestion state produced by the news service.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     st.markdown(f'<div class="oqe-panel">', unsafe_allow_html=True)
     st.subheader("Macro / News Regime")
     regime = macro_news_state.get("macro_regime", "MACRO_NEUTRAL")
@@ -557,6 +867,22 @@ def _render_macro_news_section(macro_news_state: dict, headline_state: dict):
 
 
 def _render_option_chain_charts(option_chain: pd.DataFrame):
+    """
+    Purpose:
+        Render the option chain charts for reporting or presentation.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        option_chain (pd.DataFrame): Option-chain snapshot in dataframe form.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     if option_chain is None or option_chain.empty:
         st.info("No option-chain data available for charts.")
         return
@@ -633,6 +959,24 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
 
 
 def _render_macro_lab(macro_news_state: dict, headline_records: pd.DataFrame, macro_event_state: dict):
+    """
+    Purpose:
+        Render macro lab for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        macro_news_state (dict): Headline-driven macro state produced by the news layer.
+        headline_records (pd.DataFrame): Input associated with headline records.
+        macro_event_state (dict): Scheduled-event state produced by the macro-event layer.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     left, right = st.columns([1.1, 0.9])
     with left:
         _render_macro_news_section(macro_news_state, {
@@ -659,7 +1003,23 @@ def _render_macro_lab(macro_news_state: dict, headline_records: pd.DataFrame, ma
 
 
 def _render_workstation(result: dict):
-    trade = result.get("trade")
+    """
+    Purpose:
+        Render workstation for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        result (dict): Input associated with result.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
+    trade = result.get("execution_trade") or result.get("trade")
     if trade:
         _render_trade_metrics(trade)
         _render_decision_panel(trade)
@@ -729,6 +1089,22 @@ def _render_workstation(result: dict):
 
 
 def _render_run_paths(result: dict):
+    """
+    Purpose:
+        Render run paths for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        result (dict): Input associated with result.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     replay_paths = result.get("replay_paths") or {}
     saved_paths = result.get("saved_paths") or {}
 
@@ -750,6 +1126,22 @@ def _render_run_paths(result: dict):
 
 
 def _render_replay_tools(result: dict):
+    """
+    Purpose:
+        Render replay tools for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        result (dict): Input associated with result.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     replay_paths = result.get("replay_paths") or {}
     saved_paths = result.get("saved_paths") or {}
 
@@ -778,6 +1170,23 @@ def _render_replay_tools(result: dict):
 
 
 def _render_research_metric_card(label: str, value: str):
+    """
+    Purpose:
+        Render the research metric card for reporting or presentation.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        label (str): Human-readable label shown to the operator or attached to a record.
+        value (str): Raw value supplied by the caller.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     st.markdown(
         f"""
         <div class="oqe-summary-card">
@@ -790,6 +1199,24 @@ def _render_research_metric_card(label: str, value: str):
 
 
 def _render_research_table(title: str, frame: pd.DataFrame, *, caption: str | None = None):
+    """
+    Purpose:
+        Render research table for operator-facing or report output.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        title (str): Input associated with title.
+        frame (pd.DataFrame): Input associated with frame.
+        caption (str | None): Input associated with caption.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
     st.subheader(title)
     if caption:
@@ -802,6 +1229,22 @@ def _render_research_table(title: str, frame: pd.DataFrame, *, caption: str | No
 
 
 def _render_signal_research_dashboard():
+    """
+    Purpose:
+        Render the signal research dashboard for reporting or presentation.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        None: Side effect only.
+
+    Notes:
+        Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
+    """
     dataset = load_signals_dataset()
 
     st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
@@ -886,6 +1329,22 @@ def _render_signal_research_dashboard():
 
 
 def _inject_autorefresh(interval_seconds: int):
+    """
+    Purpose:
+        Process inject autorefresh for downstream use.
+    
+    Context:
+        Internal helper within the application layer. It isolates a reusable transformation so the surrounding code remains easy to follow.
+    
+    Inputs:
+        interval_seconds (int): Input associated with interval seconds.
+    
+    Returns:
+        Any: Result returned by the helper.
+    
+    Notes:
+        The helper keeps the surrounding module readable without changing runtime behavior.
+    """
     interval_ms = max(int(interval_seconds * 1000), 5000)
     components.html(
         f"""
@@ -901,6 +1360,22 @@ def _inject_autorefresh(interval_seconds: int):
 
 
 def main():
+    """
+    Purpose:
+        Run the module entry point for command-line or operational execution.
+
+    Context:
+        Function inside the `streamlit app` module. The module sits in the application layer that presents runtime state through operator-facing interfaces and sinks.
+
+    Inputs:
+        None: This helper does not require caller-supplied inputs.
+
+    Returns:
+        Any: Exit status or workflow result returned by the implementation.
+
+    Notes:
+        Part of the module API used by downstream runtime, research, backtest, or governance workflows.
+    """
     st.markdown(
         """
         <div class="oqe-hero">

@@ -1,7 +1,17 @@
 """
-Intraday Gamma Shift Tracker
+Module: intraday_gamma_shift.py
 
-Compares gamma exposure between two option-chain snapshots.
+Purpose:
+    Compute intraday gamma shift analytics used by downstream signal and risk layers.
+
+Role in the System:
+    Part of the analytics layer that transforms raw option-chain and market snapshots into interpretable features.
+
+Key Outputs:
+    Structured features, regime labels, and market-state diagnostics derived from market data.
+
+Downstream Usage:
+    Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
 
 from analytics.gamma_exposure import calculate_gamma_exposure
