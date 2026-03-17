@@ -80,8 +80,22 @@ def main() -> None:
         default=False,
         help="Generate both daily and cumulative reports in one run.",
     )
+    parser.add_argument(
+        "--pdf",
+        action="store_true",
+        default=True,
+        help="Also render PDF alongside the Markdown report (default: on).",
+    )
+    parser.add_argument(
+        "--no-pdf",
+        action="store_true",
+        default=False,
+        help="Skip PDF rendering.",
+    )
 
     args = parser.parse_args()
+    if args.no_pdf:
+        args.pdf = False
 
     report_date: date | None = None
     if args.date:
@@ -107,6 +121,14 @@ def main() -> None:
             from research.signal_evaluation.narrative_provider import get_provider_name
             provider = get_provider_name()
             print(f"  AI Narrative: {provider or 'no provider available (skipped)'}")
+
+        if args.pdf:
+            try:
+                from scripts.render_pdf import render_markdown_to_pdf
+                pdf_path = render_markdown_to_pdf(report_path)
+                print(f"  PDF : {pdf_path}")
+            except Exception as exc:
+                print(f"  PDF rendering failed: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

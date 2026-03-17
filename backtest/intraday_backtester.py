@@ -182,6 +182,7 @@ def run_intraday_backtest(
     max_hold_bars: int = BACKTEST_MAX_HOLD_BARS,
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
+    data_source=None,
 ):
     """
     Purpose:
@@ -204,7 +205,7 @@ def run_intraday_backtest(
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
-    historical_df = load_option_chain(symbol=symbol, years=years)
+    historical_df = load_option_chain(symbol=symbol, years=years, data_source=data_source)
 
     if historical_df is None or historical_df.empty:
         return {

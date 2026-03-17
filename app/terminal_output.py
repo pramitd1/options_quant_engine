@@ -18,6 +18,9 @@ Downstream Usage:
 
 from __future__ import annotations
 
+import math
+from datetime import date
+
 from analytics.signal_confidence import compute_signal_confidence
 from engine.runtime_metadata import TRADER_VIEW_KEYS
 
@@ -61,6 +64,18 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
     reason = trade.get("overnight_hold_reason") or ""
     trade_block = trade.get("overnight_trade_block", False)
 
+    # ── Expiry-day guard: never suggest overnight hold on expiry day ─────
+    is_expiry_day = False
+    selected_expiry = trade.get("selected_expiry")
+    if selected_expiry is not None:
+        try:
+            import pandas as _pd
+            expiry_date = _pd.Timestamp(selected_expiry).date()
+            if expiry_date == date.today():
+                is_expiry_day = True
+        except Exception:
+            pass
+
     # Collect per-layer constraint details
     constraints: list[str] = []
     if trade.get("overnight_convexity_risk"):
@@ -75,7 +90,10 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
         constraints.append(f"Option efficiency penalty: {trade['overnight_option_efficiency_penalty']}")
 
     # --- Classification logic ---
-    if not hold_allowed or trade_block or penalty >= 20:
+    if is_expiry_day:
+        suggested = "NO"
+        reason = reason or "Expiry day — do not hold overnight"
+    elif not hold_allowed or trade_block or penalty >= 20:
         suggested = "NO"
     elif penalty >= 8 or gap_score >= 60:
         suggested = "HOLD_WITH_CAUTION"
@@ -83,7 +101,9 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
         suggested = "YES"
 
     # Confidence is based on how clear-cut the decision is
-    if suggested == "NO" and (penalty >= 25 or trade_block):
+    if is_expiry_day:
+        confidence = "HIGH"
+    elif suggested == "NO" and (penalty >= 25 or trade_block):
         confidence = "HIGH"
     elif suggested == "YES" and penalty <= 2 and gap_score <= 20:
         confidence = "HIGH"
@@ -93,7 +113,9 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
         confidence = "MODERATE"
 
     # Human-readable one-liner
-    if suggested == "NO":
+    if is_expiry_day:
+        summary = "DO NOT HOLD — options expire today"
+    elif suggested == "NO":
         summary = f"DO NOT HOLD — {reason or 'overnight risk too high'} (penalty {penalty})"
     elif suggested == "HOLD_WITH_CAUTION":
         summary = f"HOLD WITH CAUTION — gap risk {gap_score}, penalty {penalty}"
@@ -187,9 +209,14 @@ _RANKED_EXTENDED_COLS = [
 ]
 
 
-def _render_ranked_strikes(candidates, expiry=None, *, extended=False):
+def _render_ranked_strikes(candidates, expiry=None, *, extended=False,
+                           direction=None):
     """Print the ranked strike candidates table."""
     if not candidates:
+        if direction is None:
+            print("\nRANKED STRIKES")
+            print("---------------------------")
+            print("  No ranked strikes — direction not yet determined.")
         return
     title = f"RANKED STRIKES ({expiry})" if expiry else "RANKED STRIKES"
     print(f"\n{title}")
@@ -238,13 +265,15 @@ def _render_strike_efficiency(trade, ranked):
     if eff is None:
         return
 
-    import math as _m
-
     premium = best.get("last_price", 0)
     iv_val = trade.get("atm_iv") or best.get("iv") or 0.15
+    # atm_iv and ranked-candidate iv are in percentage points (e.g. 15.8);
+    # convert to decimal for Black-Scholes expected-move calculation.
+    if isinstance(iv_val, (int, float)) and iv_val > 1.5:
+        iv_val = iv_val / 100.0
     spot = trade.get("spot") or trade.get("entry_price") or 0
     dte = trade.get("days_to_expiry") or 1
-    expected_move = float(spot) * float(iv_val) * _m.sqrt(max(float(dte), 0.1) / 365.0) if spot else 0
+    expected_move = float(spot) * float(iv_val) * math.sqrt(max(float(dte), 0.1) / 365.0) if spot else 0
     eff_ratio = f"{expected_move / premium:.2f}" if premium and premium > 0 else "-"
 
     strike_label = f"{best['strike']} {best.get('option_type', '')}"
@@ -349,6 +378,15 @@ def _render_overnight_assessment(trade, *, verbose=False):
     if assessment["overnight_hold_reason"]:
         print(f"{'reason':26}: {assessment['overnight_hold_reason']}")
     print(f"{'summary':26}: {assessment['overnight_risk_summary']}")
+
+    # Show trade direction/strike/expiry context if available
+    if trade:
+        direction = trade.get("direction")
+        strike = trade.get("strike")
+        option_type = trade.get("option_type")
+        expiry = trade.get("selected_expiry")
+        if direction or strike:
+            print(f"{'trade_context':26}: {direction or '-'} {strike or '-'} {option_type or '-'} (exp: {expiry or '-'})")
 
     if verbose and assessment["overnight_constraints"]:
         print(f"{'constraints':26}:")
@@ -517,17 +555,26 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         ranked,
         expiry=trade.get("selected_expiry") if trade else None,
         extended=False,
+        direction=trade.get("direction") if trade else None,
     )
 
     if not trade:
         return
 
     # ── 5b. STRIKE EFFICIENCY ────────────────────────────────────────────
-    _render_strike_efficiency(trade, ranked)
+    if has_trade:
+        _render_strike_efficiency(trade, ranked)
 
     # ── 6. RISK SUMMARY ─────────────────────────────────────────────────
     event_lock = macro_event_state.get("event_lockdown_flag")
     watchlist = trade.get("watchlist_flag")
+
+    oe_status = trade.get("option_efficiency_status")
+    oe_reason = trade.get("option_efficiency_reason")
+    if oe_status and "UNAVAILABLE" in str(oe_status) and oe_reason:
+        oe_display = f"{oe_status} ({oe_reason})"
+    else:
+        oe_display = oe_status
 
     risk_fields = {
         "global_risk": global_risk_state.get("global_risk_state"),
@@ -535,7 +582,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         "event_lockdown": event_lock if event_lock else None,
         "watchlist": watchlist if watchlist else None,
         "macro_news_status": trade.get("macro_news_status"),
-        "option_efficiency": trade.get("option_efficiency_status"),
+        "option_efficiency": oe_display,
     }
     no_trade = trade.get("no_trade_reason")
     if no_trade:
@@ -672,6 +719,7 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         trade.get("ranked_strike_candidates"),
         expiry=trade.get("selected_expiry"),
         extended=True,
+        direction=trade.get("direction") if trade else None,
     )
 
 
@@ -1031,6 +1079,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         trade.get("ranked_strike_candidates"),
         expiry=trade.get("selected_expiry"),
         extended=True,
+        direction=trade.get("direction") if trade else None,
     )
 
 
@@ -1054,6 +1103,13 @@ def render_snapshot(mode, *, result, spot_summary, spot_validation,
 
     Falls back to STANDARD if the mode is unrecognised.
     """
+    # ── Visual separator between refreshes ───────────────────────────────
+    from datetime import datetime as _dt
+    now_str = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n{'=' * 80}")
+    print(f"  ENGINE SNAPSHOT — {now_str}")
+    print(f"{'=' * 80}")
+
     effective = mode.upper().strip() if mode else "STANDARD"
     renderer = _RENDERERS.get(effective, render_standard)
 

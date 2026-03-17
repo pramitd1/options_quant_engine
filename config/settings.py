@@ -173,6 +173,12 @@ LARGE_MOVE_POINTS = (150, 300)
 BACKTEST_YEARS = 5
 INTRADAY_INTERVAL = "1d"
 
+# Data source mode for backtesting / tuning.
+# "historical" — real NSE bhav-copy data from data_store/historical/
+# "live"       — synthetic (Black-Scholes) chain built on the fly
+# "combined"   — historical first, live-synthetic appended for missing dates
+BACKTEST_DATA_SOURCE = os.getenv("BACKTEST_DATA_SOURCE", "historical").strip().lower()
+
 BACKTEST_STRIKE_STEP = 50
 BACKTEST_STRIKE_RANGE = 10
 BACKTEST_DEFAULT_IV = 18.0

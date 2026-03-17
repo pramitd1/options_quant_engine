@@ -16,6 +16,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -38,6 +39,13 @@ from config.settings import (
     NUMBER_OF_LOTS,
 )
 from app.engine_runner import run_engine_snapshot
+from app.html_utils import esc
+from app.state import (
+    persist_control_state,
+    query_param_bool,
+    seed_control_state,
+)
+from app.styles import OQE_GLOBAL_CSS
 from research.signal_evaluation import (
     SIGNAL_DATASET_PATH,
     build_research_report,
@@ -51,264 +59,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background:
-            radial-gradient(circle at top left, rgba(255, 220, 176, 0.38), transparent 28%),
-            radial-gradient(circle at top right, rgba(182, 225, 204, 0.35), transparent 30%),
-            linear-gradient(180deg, #f5efe4 0%, #f7f5ef 45%, #f2f0ea 100%);
-    }
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #f3efe6 0%, #ebe6db 100%);
-        border-right: 1px solid rgba(30, 41, 59, 0.08);
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0.45rem;
-    }
-    .stTabs [data-baseweb="tab"] {
-        background: rgba(255, 255, 255, 0.68);
-        border: 1px solid rgba(30, 41, 59, 0.12);
-        border-radius: 0.85rem 0.85rem 0 0;
-        color: #334155 !important;
-        font-weight: 700;
-        padding: 0.65rem 0.95rem;
-    }
-    .stTabs [data-baseweb="tab"]:hover {
-        color: #0f172a !important;
-        background: rgba(255, 255, 255, 0.88);
-    }
-    .stTabs [aria-selected="true"] {
-        color: #0f172a !important;
-        background: rgba(255, 253, 247, 0.96) !important;
-        border-bottom-color: rgba(255, 253, 247, 0.96) !important;
-        box-shadow: 0 -2px 0 0 #d97706 inset;
-    }
-    .stMarkdown, .stText, .stCaption, label, p, li, div {
-        color: #1f2937;
-    }
-    h1, h2, h3 {
-        color: #111827 !important;
-    }
-    .stSelectbox label, .stTextInput label, .stNumberInput label, .stCheckbox label, .stRadio label {
-        color: #334155 !important;
-        font-weight: 600;
-    }
-    div[data-testid="stSidebar"] * {
-        color: #1f2937;
-    }
-    div[data-testid="stSidebar"] p,
-    div[data-testid="stSidebar"] span,
-    div[data-testid="stSidebar"] small,
-    div[data-testid="stSidebar"] label,
-    div[data-testid="stSidebar"] .stCaption {
-        color: #1f2937 !important;
-    }
-    div[data-testid="stSidebar"] [data-baseweb="select"] > div,
-    div[data-testid="stSidebar"] [data-baseweb="base-input"] > div,
-    div[data-testid="stSidebar"] textarea,
-    div[data-testid="stSidebar"] input {
-        background: rgba(255, 255, 255, 0.92) !important;
-        color: #111827 !important;
-    }
-    div[data-testid="stSidebar"] [data-baseweb="select"] [data-testid="stMarkdownContainer"] p,
-    div[data-testid="stSidebar"] [data-baseweb="select"] div[role="button"],
-    div[data-testid="stSidebar"] [data-baseweb="select"] span,
-    div[data-testid="stSidebar"] [data-baseweb="base-input"] input::placeholder,
-    div[data-testid="stSidebar"] textarea::placeholder {
-        color: #334155 !important;
-        opacity: 1 !important;
-    }
-    div[data-testid="stSidebar"] [data-baseweb="select"] svg {
-        fill: #334155 !important;
-    }
-    div[data-testid="stSidebar"] details summary,
-    div[data-testid="stSidebar"] details summary * {
-        color: #1f2937 !important;
-    }
-    div[data-testid="stSidebar"] [role="radiogroup"] label,
-    div[data-testid="stSidebar"] .stCheckbox label {
-        color: #1f2937 !important;
-        font-weight: 600;
-    }
-    div[data-testid="stSidebar"] hr {
-        border-color: rgba(30, 41, 59, 0.12);
-    }
-    div[data-testid="stSidebar"] .stButton > button {
-        background: linear-gradient(135deg, #c96b28 0%, #b45309 100%);
-        color: #fff8f1;
-        border: none;
-        font-weight: 700;
-    }
-    div[data-testid="stSidebar"] .stButton > button:hover {
-        background: linear-gradient(135deg, #b45309 0%, #92400e 100%);
-        color: white;
-    }
-    .oqe-path-card {
-        border: 1px solid rgba(30, 41, 59, 0.10);
-        background: rgba(255, 255, 255, 0.74);
-        border-radius: 0.9rem;
-        padding: 0.75rem 0.9rem;
-        margin-bottom: 1rem;
-    }
-    .oqe-path-label {
-        font-size: 0.72rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #6b7280;
-        margin-bottom: 0.15rem;
-    }
-    .oqe-path-value {
-        font-size: 0.92rem;
-        color: #111827;
-        word-break: break-word;
-    }
-    .oqe-hero {
-        border: 1px solid rgba(30, 41, 59, 0.12);
-        border-radius: 1rem;
-        padding: 1rem 1.1rem;
-        background: rgba(255, 253, 247, 0.85);
-        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
-        margin-bottom: 1rem;
-    }
-    .oqe-hero-title {
-        font-size: 1.7rem;
-        font-weight: 800;
-        color: #18212f;
-        margin-bottom: 0.15rem;
-    }
-    .oqe-hero-subtitle {
-        font-size: 0.95rem;
-        color: #4b5563;
-    }
-    .oqe-runbar {
-        display: flex;
-        gap: 0.65rem;
-        flex-wrap: wrap;
-        margin-bottom: 1rem;
-    }
-    .oqe-runpill {
-        border-radius: 999px;
-        padding: 0.38rem 0.8rem;
-        background: rgba(255,255,255,0.82);
-        border: 1px solid rgba(30, 41, 59, 0.10);
-        font-size: 0.78rem;
-        color: #334155;
-        font-weight: 700;
-    }
-    .oqe-summary-card {
-        border: 1px solid rgba(128, 128, 128, 0.18);
-        border-radius: 0.85rem;
-        padding: 0.85rem 0.95rem;
-        background: rgba(255, 253, 247, 0.88);
-        min-height: 90px;
-    }
-    .oqe-summary-label {
-        font-size: 0.78rem;
-        color: #6b7280;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        margin-bottom: 0.28rem;
-    }
-    .oqe-summary-value {
-        font-size: 1.02rem;
-        font-weight: 700;
-        line-height: 1.25;
-        color: #111827;
-        word-break: break-word;
-    }
-    .oqe-badge {
-        display: inline-block;
-        padding: 0.3rem 0.7rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        font-weight: 800;
-        letter-spacing: 0.03em;
-        margin-bottom: 0.8rem;
-    }
-    .oqe-badge-neutral {
-        background: rgba(148, 163, 184, 0.18);
-        color: #475569;
-    }
-    .oqe-badge-risk-on {
-        background: rgba(34, 197, 94, 0.16);
-        color: #166534;
-    }
-    .oqe-badge-risk-off {
-        background: rgba(239, 68, 68, 0.16);
-        color: #991b1b;
-    }
-    .oqe-badge-lockdown {
-        background: rgba(249, 115, 22, 0.18);
-        color: #9a3412;
-    }
-    .oqe-badge-trade {
-        background: rgba(16, 185, 129, 0.16);
-        color: #065f46;
-    }
-    .oqe-badge-watch {
-        background: rgba(245, 158, 11, 0.18);
-        color: #92400e;
-    }
-    .oqe-badge-no-signal {
-        background: rgba(100, 116, 139, 0.18);
-        color: #475569;
-    }
-    .oqe-badge-blocked {
-        background: rgba(239, 68, 68, 0.16);
-        color: #991b1b;
-    }
-    .oqe-panel {
-        border: 1px solid rgba(30, 41, 59, 0.10);
-        border-radius: 1rem;
-        padding: 0.8rem 0.9rem 0.55rem 0.9rem;
-        background: rgba(255, 255, 255, 0.72);
-        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
-        margin-bottom: 1rem;
-    }
-    .oqe-mini-scorecard {
-        border: 1px solid rgba(30, 41, 59, 0.10);
-        border-radius: 1rem;
-        background: rgba(255, 255, 255, 0.74);
-        padding: 0.7rem 0.8rem;
-        margin-bottom: 0.85rem;
-    }
-    .oqe-mini-title {
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #64748b;
-        margin-bottom: 0.2rem;
-        font-weight: 700;
-    }
-    .oqe-mini-value {
-        font-size: 0.95rem;
-        font-weight: 700;
-        color: #0f172a;
-        line-height: 1.25;
-        word-break: break-word;
-    }
-    .oqe-decision-watchlist {
-        background: rgba(245, 158, 11, 0.18);
-        color: #92400e;
-    }
-    .oqe-decision-inactive {
-        background: rgba(100, 116, 139, 0.18);
-        color: #334155;
-    }
-    .oqe-decision-blocked {
-        background: rgba(239, 68, 68, 0.16);
-        color: #991b1b;
-    }
-    .oqe-decision-ready {
-        background: rgba(16, 185, 129, 0.16);
-        color: #065f46;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown(OQE_GLOBAL_CSS, unsafe_allow_html=True)
 
 
 def _safe_metric_value(value):
@@ -328,7 +79,9 @@ def _safe_metric_value(value):
     Notes:
         The helper keeps the surrounding module readable without changing runtime behavior.
     """
-    return "-" if value in (None, "") else value
+    if value in (None, ""):
+        return "-"
+    return esc(value)
 
 
 def _normalize_symbol_input_state(key: str = "control_symbol"):
@@ -396,8 +149,8 @@ def _display_path(path_value: str) -> str:
         return "-"
     path = Path(path_value)
     if len(path_value) <= 96:
-        return path_value
-    return f"{path.parent.name}/{path.name}"
+        return esc(path_value)
+    return esc(f"{path.parent.name}/{path.name}")
 
 
 def _normalize_display_value(value):
@@ -505,7 +258,7 @@ def _render_dataframe(data, *, hide_index: bool = True):
     """
     st.dataframe(
         _prepare_display_frame(data),
-        width="stretch",
+        use_container_width=True,
         hide_index=hide_index,
     )
 
@@ -653,7 +406,7 @@ def _render_explainability_scorecard(trade: dict):
         (
             '<div class="oqe-mini-scorecard">'
             '<div class="oqe-mini-title">Decision</div>'
-            f'<div class="oqe-badge {decision_badge_class}" style="margin-bottom:0.35rem;">{decision_classification}</div>'
+            f'<div class="oqe-badge {decision_badge_class}" style="margin-bottom:0.35rem;">{esc(decision_classification)}</div>'
             f'<div class="oqe-mini-value">{_safe_metric_value(trade_status)}</div>'
             '</div>'
         ),
@@ -672,7 +425,7 @@ def _render_explainability_scorecard(trade: dict):
         unsafe_allow_html=True,
     )
 
-    blocked_value = ", ".join(blocked_by) if blocked_by else "-"
+    blocked_value = esc(", ".join(blocked_by)) if blocked_by else "-"
     cols[2].markdown(
         (
             '<div class="oqe-mini-scorecard">'
@@ -740,6 +493,40 @@ def _list_replay_files(replay_dir: str, symbol: str, kind: str):
         pattern = f"{symbol}_*_option_chain_snapshot_*"
 
     return sorted(str(path) for path in replay_path.glob(pattern))
+
+
+def _list_replay_directories() -> list[str]:
+    """Return directories under the project root that contain snapshot files."""
+    root = PROJECT_ROOT
+    candidates = ["debug_samples", "data_store", "backtests"]
+    dirs = []
+    for name in candidates:
+        path = root / name
+        if path.is_dir():
+            dirs.append(name)
+    # Also pick up any other top-level dirs that contain snapshot files.
+    for entry in sorted(root.iterdir()):
+        if entry.is_dir() and entry.name not in candidates and not entry.name.startswith((".", "__")):
+            if any(entry.glob("*_spot_snapshot_*.json")) or any(entry.glob("*_option_chain_snapshot_*")):
+                dirs.append(entry.name)
+    return dirs if dirs else ["debug_samples"]
+
+
+def _list_replay_source_labels(replay_dir: str, symbol: str) -> list[str]:
+    """Scan chain snapshot filenames to extract available source labels."""
+    replay_path = Path(replay_dir)
+    if not replay_path.is_dir():
+        return ["REPLAY"]
+    symbol = (symbol or "").strip().upper()
+    labels: set[str] = set()
+    for path in replay_path.glob(f"{symbol}_*_option_chain_snapshot_*"):
+        name = path.name
+        # Filename pattern: {SYMBOL}_{SOURCE}_option_chain_snapshot_...
+        remainder = name[len(symbol) + 1:]  # strip "{SYMBOL}_"
+        idx = remainder.find("_option_chain_snapshot_")
+        if idx > 0:
+            labels.add(remainder[:idx])
+    return sorted(labels) if labels else ["REPLAY"]
 
 
 def _extract_snapshot_timestamp(path_str: str):
@@ -931,18 +718,27 @@ def _render_trade_metrics(trade: dict):
     """
     status = trade.get("trade_status", "UNKNOWN")
     st.markdown(
-        f'<div class="oqe-badge {_badge_class_for_trade_status(status)}">{status}</div>',
+        f'<div class="oqe-badge {_badge_class_for_trade_status(status)}">{esc(status)}</div>',
         unsafe_allow_html=True,
     )
-    cols = st.columns(5)
-    summary_items = [
-        ("Direction", trade.get("direction")),
+
+    # Primary execution fields — the operator's at-a-glance trade ticket
+    direction = trade.get("direction")
+    option_type = trade.get("option_type")
+    direction_label = _safe_metric_value(direction)
+    if option_type:
+        direction_label = f"{_safe_metric_value(direction)} ({esc(str(option_type))})"
+
+    cols = st.columns(6)
+    primary_items = [
+        ("Direction", direction_label),
         ("Strike", trade.get("strike")),
-        ("Entry", trade.get("entry_price")),
-        ("Strength", trade.get("trade_strength")),
-        ("Signal Regime", trade.get("signal_regime")),
+        ("Entry Price", trade.get("entry_price")),
+        ("Target", trade.get("target")),
+        ("Stop Loss", trade.get("stop_loss")),
+        ("Expiry", trade.get("selected_expiry")),
     ]
-    for col, (label, value) in zip(cols, summary_items):
+    for col, (label, value) in zip(cols, primary_items):
         col.markdown(
             f"""
             <div class="oqe-summary-card">
@@ -953,17 +749,20 @@ def _render_trade_metrics(trade: dict):
             unsafe_allow_html=True,
         )
 
-    kpi_cols = st.columns(4)
+    # Secondary sizing and quality metrics
+    kpi_cols = st.columns(6)
     lots_value = "-"
     current_lots = trade.get("number_of_lots")
     suggested_lots = trade.get("macro_suggested_lots")
     if current_lots is not None or suggested_lots is not None:
         lots_value = f"{_safe_metric_value(current_lots)} / {_safe_metric_value(suggested_lots)}"
 
-    kpi_cols[0].metric("Signal Quality", _safe_metric_value(trade.get("signal_quality")))
-    kpi_cols[1].metric("Data Quality", _safe_metric_value(trade.get("data_quality_score")))
-    kpi_cols[2].metric("Lots (Current / Suggested)", lots_value)
-    kpi_cols[3].metric("Event Risk", _safe_metric_value(trade.get("macro_event_risk_score")))
+    kpi_cols[0].metric("Strength", _safe_metric_value(trade.get("trade_strength")))
+    kpi_cols[1].metric("Signal Quality", _safe_metric_value(trade.get("signal_quality")))
+    kpi_cols[2].metric("Data Quality", _safe_metric_value(trade.get("data_quality_score")))
+    kpi_cols[3].metric("Lots (Curr / Sugg)", lots_value)
+    kpi_cols[4].metric("Capital Required", _safe_metric_value(trade.get("capital_required")))
+    kpi_cols[5].metric("Event Risk", _safe_metric_value(trade.get("macro_event_risk_score")))
 
 
 def _render_decision_panel(trade: dict):
@@ -988,9 +787,7 @@ def _render_decision_panel(trade: dict):
         ("Setup State", trade.get("setup_state")),
         ("Direction Source", trade.get("direction_source")),
         ("Execution Regime", trade.get("execution_regime")),
-        ("Selected Expiry", trade.get("selected_expiry")),
-        ("Target / Stop", f"{trade.get('target')} / {trade.get('stop_loss')}"),
-        ("Capital Required", trade.get("capital_required")),
+        ("Signal Regime", trade.get("signal_regime")),
         ("Provider Health", (trade.get("provider_health") or {}).get("summary_status")),
         ("Macro Adjustment", trade.get("macro_adjustment_score")),
         ("Position Size Multiplier", trade.get("macro_position_size_multiplier")),
@@ -1014,21 +811,17 @@ def _render_overnight_risk_card(trade: dict):
     assessment = resolve_overnight_hold_assessment(trade)
     suggested = assessment["overnight_hold_suggested"]
 
-    color_map = {"YES": "#22c55e", "HOLD_WITH_CAUTION": "#eab308", "NO": "#ef4444"}
+    class_map = {"YES": "oqe-overnight-yes", "HOLD_WITH_CAUTION": "oqe-overnight-caution", "NO": "oqe-overnight-no"}
     label_map = {"YES": "HOLD ALLOWED", "HOLD_WITH_CAUTION": "HOLD WITH CAUTION", "NO": "DO NOT HOLD"}
-    bg_map = {"YES": "#052e16", "HOLD_WITH_CAUTION": "#422006", "NO": "#450a0a"}
 
-    color = color_map.get(suggested, "#888")
-    label = label_map.get(suggested, suggested)
-    bg = bg_map.get(suggested, "#1a1a1a")
+    card_class = class_map.get(suggested, "oqe-overnight-unknown")
+    label = label_map.get(suggested, esc(suggested))
 
     st.markdown(
-        f'<div style="background:{bg};border:1px solid {color};border-radius:8px;'
-        f'padding:12px 16px;margin:8px 0">'
-        f'<span style="color:{color};font-weight:700;font-size:1.1em">'
-        f'{label}</span>'
-        f'<span style="color:#aaa;margin-left:12px;font-size:0.9em">'
-        f'Confidence: {assessment["overnight_hold_confidence"]}</span>'
+        f'<div class="oqe-overnight-card {card_class}">'
+        f'<span class="oqe-overnight-label">{label}</span>'
+        f'<span class="oqe-overnight-confidence">'
+        f'Confidence: {esc(assessment["overnight_hold_confidence"])}</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -1055,18 +848,33 @@ def _render_signal_confidence_card(trade: dict):
     level = result["confidence_level"]
 
     color_map = {
+        "VERY_HIGH": "#166534",
+        "HIGH": "#1e40af",
+        "MODERATE": "#92400e",
+        "LOW": "#9a3412",
+        "UNRELIABLE": "#991b1b",
+    }
+    dark_color_map = {
+        "VERY_HIGH": "#4ade80",
+        "HIGH": "#60a5fa",
+        "MODERATE": "#fbbf24",
+        "LOW": "#fb923c",
+        "UNRELIABLE": "#f87171",
+    }
+    accent_map = {
         "VERY_HIGH": "#22c55e",
         "HIGH": "#3b82f6",
         "MODERATE": "#eab308",
         "LOW": "#f97316",
         "UNRELIABLE": "#ef4444",
     }
-    color = color_map.get(level, "#888")
+    color = color_map.get(level, "#475569")
+    dark_color = dark_color_map.get(level, "#94a3b8")
+    accent = accent_map.get(level, "#94a3b8")
 
     # SVG gauge arc
     pct = max(0, min(100, score))
     arc_len = pct * 1.8  # 0–180 degrees mapped
-    import math
     rad = math.radians(180 - arc_len)
     ex = 50 + 40 * math.cos(rad)
     ey = 55 - 40 * math.sin(rad)
@@ -1074,17 +882,16 @@ def _render_signal_confidence_card(trade: dict):
 
     gauge_svg = (
         f'<svg viewBox="0 0 100 60" width="220" height="132">'
-        f'<path d="M10,55 A40,40 0 0,1 90,55" fill="none" stroke="#333" stroke-width="6" stroke-linecap="round"/>'
-        f'<path d="M10,55 A40,40 0 {large},1 {ex:.1f},{ey:.1f}" fill="none" stroke="{color}" stroke-width="6" stroke-linecap="round"/>'
-        f'<text x="50" y="48" text-anchor="middle" fill="{color}" font-size="14" font-weight="700">{score}</text>'
-        f'<text x="50" y="58" text-anchor="middle" fill="#aaa" font-size="6">{level}</text>'
+        f'<path d="M10,55 A40,40 0 0,1 90,55" fill="none" stroke="var(--oqe-gauge-track, rgba(30,41,59,0.15))" stroke-width="6" stroke-linecap="round"/>'
+        f'<path d="M10,55 A40,40 0 {large},1 {ex:.1f},{ey:.1f}" fill="none" stroke="{accent}" stroke-width="6" stroke-linecap="round"/>'
+        f'<text x="50" y="48" text-anchor="middle" fill="var(--oqe-gauge-score, {color})" font-size="14" font-weight="700">{score}</text>'
+        f'<text x="50" y="58" text-anchor="middle" fill="var(--oqe-gauge-sublabel, #6b7280)" font-size="6">{level}</text>'
         f'</svg>'
     )
 
     st.markdown(
-        f'<div style="background:#111;border:1px solid {color};border-radius:8px;'
-        f'padding:12px 16px;margin:8px 0;text-align:center">'
-        f'<div style="color:{color};font-weight:700;font-size:1em;margin-bottom:4px">'
+        f'<div class="oqe-confidence-card" style="--oqe-conf-color:{color};--oqe-conf-dark-color:{dark_color}">'
+        f'<div class="oqe-confidence-title">'
         f'Signal Confidence</div>'
         f'{gauge_svg}'
         f'</div>',
@@ -1106,7 +913,7 @@ def _render_signal_confidence_card(trade: dict):
 
     st.dataframe(
         pd.DataFrame(rows),
-        width=400,
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -1133,7 +940,7 @@ def _render_macro_news_section(macro_news_state: dict, headline_state: dict):
     st.subheader("Macro / News Regime")
     regime = macro_news_state.get("macro_regime", "MACRO_NEUTRAL")
     st.markdown(
-        f'<div class="oqe-badge {_badge_class_for_regime(regime)}">{regime}</div>',
+        f'<div class="oqe-badge {_badge_class_for_regime(regime)}">{esc(regime)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -1149,7 +956,7 @@ def _render_macro_news_section(macro_news_state: dict, headline_state: dict):
     }
     st.dataframe(
         _prepare_display_frame([{"field": key, "value": value} for key, value in summary.items()]),
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -1217,7 +1024,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         )
         with chart_cols[0]:
             st.markdown("**Open Interest by Strike**")
-            st.bar_chart(oi_view, width="stretch")
+            st.bar_chart(oi_view, use_container_width=True)
 
     if {"strikePrice", "OPTION_TYP", "impliedVolatility"}.issubset(df.columns):
         iv_view = (
@@ -1228,7 +1035,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         with chart_cols[1]:
             st.markdown("**IV Smile**")
             if not iv_view.empty:
-                st.line_chart(iv_view, width="stretch")
+                st.line_chart(iv_view, use_container_width=True)
             else:
                 st.caption("No positive IV values available.")
 
@@ -1244,7 +1051,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         with greek_cols[0]:
             st.markdown("**Signed Gamma by Strike**")
             if not gamma_view.empty:
-                st.line_chart(gamma_view, width="stretch")
+                st.line_chart(gamma_view, use_container_width=True)
             else:
                 st.caption("Gamma data unavailable.")
 
@@ -1256,7 +1063,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         )
         with greek_cols[1]:
             st.markdown("**Option Premium Curve**")
-            st.line_chart(ltp_view, width="stretch")
+            st.line_chart(ltp_view, use_container_width=True)
 
     if {"strikePrice", "changeinOI", "OPTION_TYP"}.issubset(df.columns):
         coi_view = (
@@ -1267,7 +1074,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         )
         st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
         st.markdown("**Change in OI by Strike**")
-        st.bar_chart(coi_view, width="stretch")
+        st.bar_chart(coi_view, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -1554,8 +1361,8 @@ def _render_research_metric_card(label: str, value: str):
     st.markdown(
         f"""
         <div class="oqe-summary-card">
-            <div class="oqe-summary-label">{label}</div>
-            <div class="oqe-summary-value">{value}</div>
+            <div class="oqe-summary-label">{esc(label)}</div>
+            <div class="oqe-summary-value">{esc(value)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1622,11 +1429,11 @@ def _render_signal_research_dashboard():
 
     report = build_research_report(dataset)
     total_signals = len(dataset)
-    scored_signals = int(dataset.get("composite_signal_score", pd.Series(dtype="float64")).notna().sum())
+    scored_signals = int(pd.to_numeric(dataset.get("composite_signal_score", pd.Series(dtype="float64")), errors="coerce").notna().sum())
     completed_outcomes = int(dataset.get("outcome_status", pd.Series(dtype="object")).astype(str).str.upper().eq("COMPLETE").sum())
-    avg_composite_score = _safe_float(dataset.get("composite_signal_score", pd.Series(dtype="float64")).mean())
-    avg_move_probability = _safe_float(dataset.get("move_probability", pd.Series(dtype="float64")).mean())
-    avg_hit_rate = _safe_float(report["move_probability_calibration"].get("actual_hit_rate", pd.Series(dtype="float64")).mean())
+    avg_composite_score = _safe_float(pd.to_numeric(dataset.get("composite_signal_score", pd.Series(dtype="float64")), errors="coerce").mean())
+    avg_move_probability = _safe_float(pd.to_numeric(dataset.get("move_probability", pd.Series(dtype="float64")), errors="coerce").mean())
+    avg_hit_rate = _safe_float(pd.to_numeric(report["move_probability_calibration"].get("actual_hit_rate", pd.Series(dtype="float64")), errors="coerce").mean())
 
     metric_cols = st.columns(6)
     metric_values = [
@@ -1723,179 +1530,6 @@ def _inject_autorefresh(interval_seconds: int):
     )
 
 
-def _query_param_value(name: str, default: str | None = None) -> str | None:
-    """
-    Purpose:
-        Read a single query parameter value from the current Streamlit URL state.
-
-    Context:
-        The workstation uses a browser reload for timed refreshes, so lightweight
-        control selections need a second persistence mechanism beyond in-memory
-        session state.
-
-    Inputs:
-        name (str): Query-parameter name to read.
-        default (str | None): Fallback used when the parameter is missing.
-
-    Returns:
-        str | None: The normalized string value, or the provided fallback.
-    """
-    value = st.query_params.get(name, default)
-    if isinstance(value, list):
-        return value[0] if value else default
-    return value
-
-
-def _query_param_bool(name: str, default: bool) -> bool:
-    """
-    Purpose:
-        Decode a boolean control value from query parameters.
-
-    Context:
-        Streamlit query parameters are string-based, so booleans need an explicit
-        conversion step before they are used to seed widget state.
-
-    Inputs:
-        name (str): Query-parameter name to read.
-        default (bool): Fallback boolean when the parameter is missing.
-
-    Returns:
-        bool: Parsed boolean value for the control.
-    """
-    value = (_query_param_value(name) or "").strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _query_param_int(name: str, default: int) -> int:
-    """
-    Purpose:
-        Decode an integer control value from query parameters.
-
-    Context:
-        Numeric sidebar selections should survive timed page reloads without
-        forcing operators to re-enter sizing or cadence settings.
-
-    Inputs:
-        name (str): Query-parameter name to read.
-        default (int): Fallback integer when the parameter is missing or invalid.
-
-    Returns:
-        int: Parsed integer value for the control.
-    """
-    value = _query_param_value(name)
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _query_param_float(name: str, default: float) -> float:
-    """
-    Purpose:
-        Decode a float control value from query parameters.
-
-    Context:
-        Capital controls are stored as URL strings during timed refreshes, so
-        they need a safe numeric conversion on reload.
-
-    Inputs:
-        name (str): Query-parameter name to read.
-        default (float): Fallback float when the parameter is missing or invalid.
-
-    Returns:
-        float: Parsed floating-point value for the control.
-    """
-    value = _query_param_value(name)
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _seed_control_state():
-    """
-    Purpose:
-        Seed Streamlit widget state from URL parameters on first load.
-
-    Context:
-        The timed refresh path performs a full browser reload. Query-parameter
-        seeding preserves operator-selected runtime controls across those reloads
-        without leaking engine logic into the UI layer.
-
-    Inputs:
-        None: This helper derives defaults from query parameters and settings.
-
-    Returns:
-        None: The function mutates `st.session_state` in place.
-    """
-    defaults = {
-        "control_mode": _query_param_value("mode", "LIVE") or "LIVE",
-        "control_symbol": (_query_param_value("symbol", DEFAULT_SYMBOL) or DEFAULT_SYMBOL).strip().upper(),
-        "control_source": (_query_param_value("source", DEFAULT_DATA_SOURCE) or DEFAULT_DATA_SOURCE).strip().upper(),
-        "control_save_live_snapshots": _query_param_bool("save_live_snapshots", False),
-        "control_auto_refresh": _query_param_bool("auto_refresh", False),
-        "control_refresh_seconds": max(10, min(_query_param_int("refresh_seconds", 30), 300)),
-        "control_apply_budget_constraint": _query_param_bool("apply_budget_constraint", False),
-        "control_lot_size": max(1, _query_param_int("lot_size", int(LOT_SIZE))),
-        "control_requested_lots": max(1, _query_param_int("requested_lots", int(NUMBER_OF_LOTS))),
-        "control_max_capital": max(0.0, _query_param_float("max_capital", float(MAX_CAPITAL_PER_TRADE))),
-        "control_replay_dir": _query_param_value("replay_dir", "debug_samples") or "debug_samples",
-        "control_replay_spot": _query_param_value("replay_spot", "") or "",
-        "control_replay_chain": _query_param_value("replay_chain", "") or "",
-    }
-
-    if defaults["control_source"] not in DATA_SOURCE_OPTIONS and defaults["control_mode"] == "LIVE":
-        defaults["control_source"] = DEFAULT_DATA_SOURCE
-
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
-
-
-def _persist_control_state(mode: str, *, symbol: str | None = None, source: str | None = None, replay_dir: str | None = None):
-    """
-    Purpose:
-        Persist non-sensitive sidebar controls into the URL query string.
-
-    Context:
-        URL-backed persistence keeps the workstation sticky across timed reloads
-        while avoiding unsafe exposure of broker credentials in the browser address.
-
-    Inputs:
-        mode (str): Current workstation mode so mode-specific fields can be managed.
-
-    Returns:
-        None: The function mutates `st.query_params` in place.
-    """
-    st.query_params["mode"] = st.session_state.get("control_mode", mode)
-    st.query_params["symbol"] = symbol or st.session_state.get("control_symbol", DEFAULT_SYMBOL)
-    st.query_params["source"] = source or st.session_state.get("control_source", DEFAULT_DATA_SOURCE)
-    st.query_params["save_live_snapshots"] = "1" if st.session_state.get("control_save_live_snapshots") else "0"
-    st.query_params["auto_refresh"] = "1" if st.session_state.get("control_auto_refresh") else "0"
-    st.query_params["refresh_seconds"] = str(st.session_state.get("control_refresh_seconds", 30))
-    if not st.session_state.get("control_auto_refresh"):
-        st.query_params.pop("auto_run", None)
-    st.query_params["apply_budget_constraint"] = "1" if st.session_state.get("control_apply_budget_constraint") else "0"
-    st.query_params["lot_size"] = str(st.session_state.get("control_lot_size", int(LOT_SIZE)))
-    st.query_params["requested_lots"] = str(st.session_state.get("control_requested_lots", int(NUMBER_OF_LOTS)))
-    st.query_params["max_capital"] = str(st.session_state.get("control_max_capital", float(MAX_CAPITAL_PER_TRADE)))
-
-    if mode == "REPLAY":
-        st.query_params["replay_dir"] = replay_dir or st.session_state.get("control_replay_dir", "debug_samples")
-        st.query_params["replay_spot"] = st.session_state.get("control_replay_spot", "")
-        st.query_params["replay_chain"] = st.session_state.get("control_replay_chain", "")
-    else:
-        for key in ("replay_dir", "replay_spot", "replay_chain"):
-            st.query_params.pop(key, None)
-
-
 def main():
     """
     Purpose:
@@ -1923,7 +1557,7 @@ def main():
         unsafe_allow_html=True,
     )
 
-    _seed_control_state()
+    seed_control_state()
 
     with st.sidebar:
         st.header("Run Controls")
@@ -1950,7 +1584,14 @@ def main():
                 refresh_seconds = int(st.session_state.get("control_refresh_seconds", 30))
         else:
             st.caption("Replay from saved market snapshots")
-            source = st.text_input("Replay Source Label", key="control_source").strip().upper() or "REPLAY"
+            replay_dir_options = _list_replay_directories()
+            saved_replay_dir = st.session_state.get("control_replay_dir", "debug_samples")
+            replay_dir_index = replay_dir_options.index(saved_replay_dir) if saved_replay_dir in replay_dir_options else 0
+            replay_dir = st.selectbox("Replay Directory", replay_dir_options, index=replay_dir_index, key="control_replay_dir")
+            source_labels = _list_replay_source_labels(replay_dir, symbol)
+            saved_source = st.session_state.get("control_source", source_labels[0] if source_labels else "REPLAY")
+            source_index = source_labels.index(saved_source) if saved_source in source_labels else 0
+            source = st.selectbox("Replay Source Label", source_labels, index=source_index, key="control_source")
             save_live_snapshots = False
 
         st.divider()
@@ -1964,22 +1605,22 @@ def main():
         if mode == "LIVE" and source == "ZERODHA":
             st.divider()
             st.markdown("**Zerodha Credentials**")
-            provider_credentials["api_key"] = st.text_input("API Key", value=os.getenv("ZERODHA_API_KEY", ""))
+            provider_credentials["api_key"] = st.text_input("API Key", value=os.getenv("ZERODHA_API_KEY", ""), type="password")
             provider_credentials["api_secret"] = st.text_input("API Secret", value="", type="password")
             provider_credentials["access_token"] = st.text_input("Access Token", value="", type="password")
         elif mode == "LIVE" and source == "ICICI":
             st.divider()
             st.markdown("**ICICI Breeze Credentials**")
-            provider_credentials["api_key"] = st.text_input("API Key", value=os.getenv("ICICI_BREEZE_API_KEY", ""))
+            provider_credentials["api_key"] = st.text_input("API Key", value=os.getenv("ICICI_BREEZE_API_KEY", ""), type="password")
             provider_credentials["secret_key"] = st.text_input("Secret Key", value="", type="password")
             provider_credentials["session_token"] = st.text_input("Session Token", value="", type="password")
 
         replay_spot = None
         replay_chain = None
-        replay_dir = "debug_samples"
+        if mode != "REPLAY":
+            replay_dir = "debug_samples"
         if mode == "REPLAY":
-            st.markdown("**Replay Inputs**")
-            replay_dir = st.text_input("Replay Directory", key="control_replay_dir").strip() or "debug_samples"
+            st.markdown("**Replay Snapshots**")
             spot_files = _list_replay_files(replay_dir, symbol, "spot")
             chain_files = _list_replay_files(replay_dir, symbol, "chain")
             default_chain = _select_default_option(chain_files)
@@ -2011,15 +1652,15 @@ def main():
                 if replay_chain:
                     st.caption(f"Selected chain: {replay_chain}")
 
-        run_button = st.button("Run Snapshot", type="primary", width="stretch")
+        run_button = st.button("Run Snapshot", type="primary", use_container_width=True)
 
-    _persist_control_state(mode, symbol=symbol, source=source, replay_dir=replay_dir if mode == "REPLAY" else None)
+    persist_control_state(mode, symbol=symbol, source=source, replay_dir=replay_dir if mode == "REPLAY" else None)
 
     # Detect a reload triggered by the auto-refresh timer (query param survives browser reloads).
     auto_run_triggered = (
         mode == "LIVE"
         and auto_refresh
-        and _query_param_bool("auto_run", False)
+        and query_param_bool("auto_run", False)
     )
     should_run = run_button or auto_run_triggered
 

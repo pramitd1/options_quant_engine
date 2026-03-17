@@ -15,7 +15,9 @@ Downstream Usage:
 """
 from __future__ import annotations
 
+import logging
 import os
+import traceback
 from contextlib import nullcontext
 from typing import Dict, Optional
 
@@ -935,7 +937,6 @@ def _evaluate_snapshot_for_pack(
                 stop_loss_percent=stop_loss_percent,
             )
             if trade:
-                trade = attach_trade_views(trade)
                 trade["selected_expiry"] = option_chain_validation.get("selected_expiry")
                 trade["parameter_pack_name"] = active_pack_name
                 trade = attach_trade_views(trade)
@@ -1162,6 +1163,10 @@ def run_preloaded_engine_snapshot(
 
         return result_payload
     except Exception as exc:
+        logging.getLogger(__name__).error(
+            "run_preloaded_engine_snapshot failed for %s: %s\n%s",
+            symbol, exc, traceback.format_exc(),
+        )
         return {
             "ok": False,
             "error": str(exc),
@@ -1329,6 +1334,10 @@ def run_engine_snapshot(
             stop_loss_percent=stop_loss_percent,
         )
     except Exception as exc:
+        logging.getLogger(__name__).error(
+            "run_engine_snapshot failed for %s: %s\n%s",
+            symbol, exc, traceback.format_exc(),
+        )
         return {
             "ok": False,
             "error": str(exc),

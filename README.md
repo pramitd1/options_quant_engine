@@ -123,8 +123,13 @@ These layers are intentionally modifiers and filters. They do not replace the co
 ### 3. Historical Backtesting
 
 - runner in [backtest_runner.py](backtest/backtest_runner.py)
-- default historical builder is bar-based and uses synthetic option-chain reconstruction unless richer data is provided
-- performance conclusions should be interpreted in the context of the available bar granularity
+- three data-source modes controlled by `BACKTEST_DATA_SOURCE` (or interactive prompt):
+  - **historical**: real NSE bhav-copy option chains with Newton-Raphson IV computation via [historical_data_adapter.py](data/historical_data_adapter.py)
+  - **live**: synthetic option-chain reconstruction from spot bars (legacy default)
+  - **combined**: historical chains where available, synthetic fallback elsewhere
+- the historical pipeline is powered by [historical_data_download.py](scripts/historical_data_download.py) which downloads NSE F&O bhav copies, merges them into a single Parquet database, and downloads spot history via yfinance
+- the merged Parquet dataset (`data_store/historical/`) is excluded from version control due to size (~12 GB); run the download script locally to build it
+- performance conclusions should be interpreted in the context of the available data granularity
 
 ### 4. Research Dataset and Evaluation
 
@@ -215,14 +220,14 @@ options_quant_engine/
 ├── backtests/          # generated backtest output directory
 ├── config/             # runtime, scoring, and overlay policies
 │   └── parameter_packs/# versioned parameter pack overrides
-├── data/               # provider adapters, validation, historical loaders
+├── data/               # provider adapters, validation, historical loaders and adapters
 ├── engine/             # signal engine, compat facades, and trading support domains
 ├── macro/              # scheduled-event and macro/news logic
 ├── models/             # move probability and ML support
 ├── news/               # deterministic news classification
 ├── research/           # signal evaluation + parameter-tuning artifacts
 ├── risk/               # overlay layers and regime models
-├── scripts/            # operational helpers
+├── scripts/            # operational helpers and historical-data download
 ├── strategy/           # confirmation, strike selection, exits, sizing
 ├── tests/              # regression and scenario coverage
 ├── tuning/             # registry, packs, experiments, search, validation, promotion code
@@ -242,6 +247,9 @@ options_quant_engine/
 - [gamma_vol_acceleration_layer.py](risk/gamma_vol_acceleration_layer.py): convexity acceleration overlay
 - [dealer_hedging_pressure_layer.py](risk/dealer_hedging_pressure_layer.py): dealer pressure overlay
 - [option_efficiency_layer.py](risk/option_efficiency_layer.py): expected move / option efficiency overlay
+- [historical_data_adapter.py](data/historical_data_adapter.py): NSE bhav-copy adapter with Newton-Raphson IV
+- [historical_data_download.py](scripts/historical_data_download.py): multi-source historical data downloader
+- [terminal_output.py](app/terminal_output.py): terminal rendering with verbosity modes (COMPACT/STANDARD/FULL_DEBUG)
 - [dataset.py](research/signal_evaluation/dataset.py): canonical schema
 - [evaluator.py](research/signal_evaluation/evaluator.py): research row builder and outcome enrichment
 - [registry.py](tuning/registry.py): parameter registry and metadata
@@ -251,6 +259,18 @@ options_quant_engine/
 ## Configuration
 
 Environment variables are loaded from `.env` when present.
+
+### Backtest Data Source
+
+```bash
+BACKTEST_DATA_SOURCE=historical   # historical | live | combined
+```
+
+Set to `historical` to use real NSE bhav-copy option chains (requires the
+merged Parquet dataset under `data_store/historical/`).  Set to `live` for
+synthetic chain reconstruction.  Set to `combined` for historical-first with
+synthetic fallback.  The backtest runner also prompts interactively if the
+variable is not set.
 
 ### Common Provider Settings
 

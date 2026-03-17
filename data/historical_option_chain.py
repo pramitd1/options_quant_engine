@@ -17,6 +17,7 @@ Downstream Usage:
 from pathlib import Path
 from math import sqrt, log
 import math
+from typing import Optional
 import pandas as pd
 import yfinance as yf
 
@@ -26,7 +27,8 @@ from config.settings import (
     DATA_DIR,
     BACKTEST_STRIKE_STEP,
     BACKTEST_STRIKE_RANGE,
-    BACKTEST_DEFAULT_IV
+    BACKTEST_DEFAULT_IV,
+    BACKTEST_DATA_SOURCE,
 )
 from data.historical_iv_surface import (
     load_historical_iv_surface,
@@ -429,24 +431,8 @@ def _cache_path(symbol: str, years: int) -> Path:
     return symbol_dir / f"{symbol.upper().strip()}_{years}y_option_chain.csv"
 
 
-def load_option_chain(symbol: str, years: int = 1) -> pd.DataFrame:
-    """
-    Purpose:
-        Process load option chain for downstream use.
-    
-    Context:
-        Public function within the data layer. It exposes a reusable step in this module's workflow.
-    
-    Inputs:
-        symbol (str): Underlying symbol or index identifier.
-        years (int): Input associated with years.
-    
-    Returns:
-        pd.DataFrame: Result returned by the helper.
-    
-    Notes:
-        The helper keeps the surrounding module readable without changing runtime behavior.
-    """
+def _load_live_chain(symbol: str, years: int) -> pd.DataFrame:
+    """Load or build the synthetic (live-style) option chain."""
     for path in _candidate_paths(symbol, years):
         if path.exists() and path.is_file():
             df = pd.read_csv(path)
@@ -466,3 +452,56 @@ def load_option_chain(symbol: str, years: int = 1) -> pd.DataFrame:
 
     print(f"Historical option chain cached at: {cache_file}")
     return historical_df
+
+
+def load_option_chain(
+    symbol: str,
+    years: int = 1,
+    data_source: Optional[str] = None,
+) -> pd.DataFrame:
+    """Load option-chain data for backtesting.
+
+    Parameters
+    ----------
+    symbol : str
+        Underlying symbol (e.g. ``"NIFTY"``).
+    years : int
+        Number of years of data to load.
+    data_source : str or None
+        One of ``"historical"``, ``"live"``, or ``"combined"``.
+        When *None*, falls back to ``BACKTEST_DATA_SOURCE`` from settings.
+    """
+    mode = (data_source or BACKTEST_DATA_SOURCE).strip().lower()
+
+    if mode == "historical":
+        from data.historical_data_adapter import load_historical_option_chain
+        return load_historical_option_chain(symbol=symbol, years=years)
+
+    if mode == "live":
+        return _load_live_chain(symbol, years)
+
+    if mode == "combined":
+        from data.historical_data_adapter import load_historical_option_chain
+        try:
+            hist_df = load_historical_option_chain(symbol=symbol, years=years)
+        except FileNotFoundError:
+            hist_df = pd.DataFrame()
+
+        live_df = _load_live_chain(symbol, years)
+
+        if hist_df.empty:
+            return live_df
+        if live_df.empty:
+            return hist_df
+
+        # Append live rows whose timestamps are beyond the historical range
+        hist_max = hist_df["timestamp"].max()
+        live_extra = live_df[live_df["timestamp"] > hist_max]
+        if live_extra.empty:
+            return hist_df
+        return pd.concat([hist_df, live_extra], ignore_index=True)
+
+    raise ValueError(
+        f"Unknown BACKTEST_DATA_SOURCE '{mode}'.  "
+        "Choose 'historical', 'live', or 'combined'."
+    )

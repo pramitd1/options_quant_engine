@@ -10,6 +10,7 @@ logs/
 .env.*
 !.env.example
 data_store/icici_cache/
+data_store/historical/
 debug_samples/
 research/parameter_tuning/promotion_state.json
 research/parameter_tuning/*.jsonl

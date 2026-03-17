@@ -133,6 +133,16 @@ def main():
             f"avg_composite={row.get('avg_composite_signal_score')}"
         )
 
+    # Auto-render PDF from the Markdown report
+    md_path = report.get("markdown_path")
+    if md_path:
+        try:
+            from scripts.render_pdf import render_markdown_to_pdf
+            pdf_path = render_markdown_to_pdf(md_path)
+            print(f"pdf_report: {pdf_path}")
+        except Exception as exc:
+            print(f"PDF rendering failed: {exc}")
+
 
 if __name__ == "__main__":
     main()

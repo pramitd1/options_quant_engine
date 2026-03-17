@@ -737,6 +737,7 @@ def generate_trade(
     base_payload = {
         "symbol": symbol,
         "spot": round(spot, 2),
+        "ranked_strike_candidates": [],
         "gamma_exposure": round(market_state["gamma"], 2) if market_state["gamma"] is not None else None,
         "market_gamma": market_state["market_gamma_summary"],
         "gamma_flip": _to_python_number(market_state["flip"]),

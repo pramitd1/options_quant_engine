@@ -15,7 +15,7 @@ Downstream Usage:
 """
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from config.settings import BACKTEST_YEARS, MC_SIMULATIONS, MAX_WORKERS
+from config.settings import BACKTEST_YEARS, BACKTEST_DATA_SOURCE, MC_SIMULATIONS, MAX_WORKERS
 from backtest.intraday_backtester import run_intraday_backtest
 from backtest.monte_carlo import monte_carlo_reshuffle
 from backtest.parameter_sweep import build_parameter_grid, summarize_sweep_results
@@ -42,7 +42,7 @@ def _run_one_sweep(args):
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
-    symbol, years, signal_persistence, max_hold_bars, tp, sl = args
+    symbol, years, signal_persistence, max_hold_bars, tp, sl, data_source = args
     result = run_intraday_backtest(
         symbol=symbol,
         years=years,
@@ -50,6 +50,7 @@ def _run_one_sweep(args):
         max_hold_bars=max_hold_bars,
         target_profit_percent=tp,
         stop_loss_percent=sl,
+        data_source=data_source,
     )
     result.update({
         "signal_persistence": signal_persistence,
@@ -81,6 +82,15 @@ def run_backtest():
     years_input = input(f"Years of data [{BACKTEST_YEARS}]: ").strip()
     years = int(years_input) if years_input else BACKTEST_YEARS
 
+    print(f"\nData source (current default: {BACKTEST_DATA_SOURCE}):")
+    print("1. historical  — real NSE bhav-copy data")
+    print("2. live         — synthetic Black-Scholes chain")
+    print("3. combined     — historical + live for missing dates")
+    ds_input = input("Enter choice (1/2/3) or press Enter for default: ").strip()
+    ds_map = {"1": "historical", "2": "live", "3": "combined"}
+    data_source = ds_map.get(ds_input, BACKTEST_DATA_SOURCE)
+    print(f"Using data source: {data_source}")
+
     print("\nChoose mode:")
     print("1. Single backtest")
     print("2. Parameter sweep")
@@ -89,7 +99,7 @@ def run_backtest():
 
     if mode == "2":
         grid = build_parameter_grid()
-        jobs = [(symbol, years, sp, mh, tp, sl) for sp, mh, tp, sl in grid]
+        jobs = [(symbol, years, sp, mh, tp, sl, data_source) for sp, mh, tp, sl in grid]
 
         results = []
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
@@ -109,7 +119,7 @@ def run_backtest():
     print("\nRunning backtest...")
     print("If historical option-chain data is not cached, it will be built automatically.")
 
-    results = run_intraday_backtest(symbol, years)
+    results = run_intraday_backtest(symbol, years, data_source=data_source)
     mc = monte_carlo_reshuffle(results.get("trades", []), simulations=MC_SIMULATIONS)
 
     print("\nBACKTEST RESULTS")
