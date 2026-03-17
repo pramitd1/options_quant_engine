@@ -25,6 +25,23 @@ from analytics.signal_confidence import compute_signal_confidence
 from engine.runtime_metadata import TRADER_VIEW_KEYS
 
 
+def _resolve_next_expiry_from_candidates(expiry_candidates, current_expiry_date):
+    """Find the next expiry after *current_expiry_date* from the API candidates list.
+
+    Falls back to ``None`` if no candidate is later than *current_expiry_date*.
+    """
+    import pandas as _pd
+
+    for raw in expiry_candidates:
+        try:
+            candidate_date = _pd.Timestamp(raw).date()
+            if candidate_date > current_expiry_date:
+                return candidate_date
+        except Exception:
+            continue
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Overnight hold assessment — presentation-layer resolver
 # ---------------------------------------------------------------------------
@@ -66,13 +83,18 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
 
     # ── Expiry-day guard: never suggest overnight hold on expiry day ─────
     is_expiry_day = False
+    next_expiry = None
     selected_expiry = trade.get("selected_expiry")
+    expiry_candidates = trade.get("expiry_candidates") or []
     if selected_expiry is not None:
         try:
             import pandas as _pd
             expiry_date = _pd.Timestamp(selected_expiry).date()
             if expiry_date == date.today():
                 is_expiry_day = True
+                next_expiry = _resolve_next_expiry_from_candidates(
+                    expiry_candidates, expiry_date,
+                )
         except Exception:
             pass
 
@@ -91,8 +113,16 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
 
     # --- Classification logic ---
     if is_expiry_day:
-        suggested = "NO"
-        reason = reason or "Expiry day — do not hold overnight"
+        # Current expiry expires today — assess against next expiry instead
+        if penalty >= 20 or trade_block or not hold_allowed:
+            suggested = "NO"
+            reason = reason or "High overnight risk even for next-expiry contracts"
+        elif penalty >= 8 or gap_score >= 60:
+            suggested = "HOLD_WITH_CAUTION"
+            reason = reason or "Current expiry expires today — roll to next expiry for overnight"
+        else:
+            suggested = "HOLD_WITH_CAUTION"
+            reason = reason or "Current expiry expires today — use next expiry for overnight hold"
     elif not hold_allowed or trade_block or penalty >= 20:
         suggested = "NO"
     elif penalty >= 8 or gap_score >= 60:
@@ -101,8 +131,10 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
         suggested = "YES"
 
     # Confidence is based on how clear-cut the decision is
-    if is_expiry_day:
+    if is_expiry_day and suggested == "NO":
         confidence = "HIGH"
+    elif is_expiry_day:
+        confidence = "MODERATE"  # next-expiry assessment has uncertainty
     elif suggested == "NO" and (penalty >= 25 or trade_block):
         confidence = "HIGH"
     elif suggested == "YES" and penalty <= 2 and gap_score <= 20:
@@ -113,8 +145,11 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
         confidence = "MODERATE"
 
     # Human-readable one-liner
-    if is_expiry_day:
-        summary = "DO NOT HOLD — options expire today"
+    next_exp_str = next_expiry.strftime("%d-%b-%Y") if next_expiry else "next week"
+    if is_expiry_day and suggested == "NO":
+        summary = f"DO NOT HOLD — risk too high even for next expiry ({next_exp_str})"
+    elif is_expiry_day:
+        summary = f"EXPIRY DAY — roll to next expiry ({next_exp_str}) for overnight hold (penalty {penalty})"
     elif suggested == "NO":
         summary = f"DO NOT HOLD — {reason or 'overnight risk too high'} (penalty {penalty})"
     elif suggested == "HOLD_WITH_CAUTION":
@@ -122,7 +157,7 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
     else:
         summary = f"OVERNIGHT HOLD OK — low risk (penalty {penalty})"
 
-    return {
+    result = {
         "overnight_hold_suggested": suggested,
         "overnight_hold_confidence": confidence,
         "overnight_hold_reason": reason,
@@ -131,6 +166,21 @@ def resolve_overnight_hold_assessment(trade: dict) -> dict:
         "overnight_constraints": constraints,
         "overnight_risk_summary": summary,
     }
+    if is_expiry_day and next_expiry:
+        result["next_expiry"] = next_expiry.strftime("%d-%b-%Y")
+        result["is_expiry_day"] = True
+
+        # Build an actionable roll suggestion when overnight hold is viable
+        if suggested != "NO":
+            strike = trade.get("strike")
+            option_type = trade.get("option_type")
+            direction = trade.get("direction")
+            if strike and option_type:
+                result["roll_strike"] = strike
+                result["roll_option_type"] = option_type
+                result["roll_direction"] = direction
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +327,8 @@ def _render_strike_efficiency(trade, ranked):
     eff_ratio = f"{expected_move / premium:.2f}" if premium and premium > 0 else "-"
 
     strike_label = f"{best['strike']} {best.get('option_type', '')}"
-    delta_str = f"{best['delta']:.4f}" if best.get("delta") is not None else "-"
+    delta_val = best.get("delta")
+    delta_str = f"{delta_val:.4f}" if delta_val is not None and delta_val == delta_val else "-"
 
     print(f"\nSTRIKE EFFICIENCY")
     print("---------------------------")
@@ -387,6 +438,15 @@ def _render_overnight_assessment(trade, *, verbose=False):
         expiry = trade.get("selected_expiry")
         if direction or strike:
             print(f"{'trade_context':26}: {direction or '-'} {strike or '-'} {option_type or '-'} (exp: {expiry or '-'})")
+
+    # Show next-expiry guidance on expiry day
+    if assessment.get("is_expiry_day") and assessment.get("next_expiry"):
+        print(f"{'next_expiry':26}: {assessment['next_expiry']}")
+        roll_strike = assessment.get("roll_strike")
+        if roll_strike:
+            roll_ot = assessment.get("roll_option_type", "")
+            roll_dir = assessment.get("roll_direction", "")
+            print(f"{'suggested_roll':26}: {roll_dir} {roll_strike} {roll_ot} — {assessment['next_expiry']} expiry")
 
     if verbose and assessment["overnight_constraints"]:
         print(f"{'constraints':26}:")

@@ -17,6 +17,7 @@ Downstream Usage:
 import numpy as np
 import pandas as pd
 
+from analytics.greeks_engine import estimate_iv_from_price, compute_option_greeks, _parse_expiry_years
 from config.strike_selection_policy import get_strike_selection_score_config
 from strategy.enhanced_strike_scoring import compute_enhanced_strike_scores
 from utils.numerics import safe_float as _safe_float, to_python_number as _to_python_number  # noqa: F401
@@ -684,6 +685,13 @@ def rank_strike_candidates(
         oi = _safe_float(row.get("_normalized_open_interest"), _safe_float(row.get("openInterest"), row.get("OPEN_INT", 0.0)))
         iv = _safe_float(row.get("_normalized_iv"), _safe_float(row.get("impliedVolatility"), row.get("IV", 0.0)))
 
+        # Fallback: estimate IV from market price when upstream enrichment missed this row
+        if (iv is None or iv <= 0) and premium > 0 and strike and spot:
+            tte = _parse_expiry_years(row.get("EXPIRY_DT"))
+            estimated_iv = estimate_iv_from_price(premium, spot, strike, tte, option_type)
+            if estimated_iv and estimated_iv > 0:
+                iv = estimated_iv
+
         score_breakdown = {
             "moneyness_score": int(row.get("_moneyness_score", 0)),
             "directional_side_score": int(row.get("_directional_side_score", 0)),
@@ -718,6 +726,18 @@ def rank_strike_candidates(
 
         total_score = int(row.get("_base_score", 0)) + efficiency_score_adjustment
         delta_raw = _safe_float(row.get("DELTA"), None)
+
+        # Fallback: compute delta from estimated IV when upstream enrichment missed
+        if (delta_raw is None or (isinstance(delta_raw, float) and not (delta_raw == delta_raw))) and iv and iv > 0 and strike and spot:
+            tte = _parse_expiry_years(row.get("EXPIRY_DT"))
+            if tte is not None:
+                greeks = compute_option_greeks(
+                    spot=spot, strike=strike, time_to_expiry_years=tte,
+                    volatility_pct=iv, option_type=option_type,
+                )
+                if greeks is not None:
+                    delta_raw = greeks["DELTA"]
+
         record = {
             "option_type": option_type,
             "strike": _to_python_number(strike),

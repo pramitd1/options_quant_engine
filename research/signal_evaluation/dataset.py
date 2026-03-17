@@ -41,6 +41,9 @@ SIGNAL_DATASET_COLUMNS = [
     "entry_price",
     "target",
     "stop_loss",
+    "recommended_hold_minutes",
+    "max_hold_minutes",
+    "exit_urgency",
     "spot_at_signal",
     "day_open",
     "day_high",
@@ -163,6 +166,14 @@ SIGNAL_DATASET_COLUMNS = [
     "signal_calibration_bucket",
     "probability_calibration_bucket",
     "notes",
+]
+
+# Features that are inherently event-driven and may exhibit zero variance
+# during calm periods.  Downstream ML and analysis should check variance
+# before including these as predictors to avoid degenerate splits.
+EVENT_DRIVEN_FEATURES = [
+    "volatility_shock_score",
+    "macro_event_risk_score",
 ]
 
 _SIGNAL_ID_CACHE: dict[Path, dict[str, object]] = {}

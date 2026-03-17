@@ -186,12 +186,14 @@ def compute_premium_efficiency(
     spot: float,
     atm_iv: float | None,
     days_to_expiry: float | None,
+    expected_move: float | None = None,
 ) -> pd.Series:
-    iv = safe_float(atm_iv, 0.15)
-    dte = safe_float(days_to_expiry, 1.0)
-    dte = max(dte, 0.1)
-
-    expected_move = float(spot) * iv * math.sqrt(dte / 365.0)
+    if expected_move is None:
+        iv = safe_float(atm_iv, 0.15)
+        if iv > 1.5:
+            iv = iv / 100.0
+        dte = max(safe_float(days_to_expiry, 1.0), 0.1)
+        expected_move = float(spot) * iv * math.sqrt(dte / 365.0)
 
     premium = _safe_series(rows, "_normalized_last_price", "lastPrice", "LAST_PRICE")
 
@@ -226,6 +228,7 @@ def compute_payoff_efficiency(
     days_to_expiry: float | None,
     support_wall: float | None = None,
     resistance_wall: float | None = None,
+    expected_move: float | None = None,
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Compute per-strike payoff efficiency and sub-component scores.
 
@@ -237,9 +240,12 @@ def compute_payoff_efficiency(
         Columns: pe_premium_eff, pe_delta_align, pe_liquidity,
         pe_dist_target, pe_iv_eff (each 0–100).
     """
-    iv_val = safe_float(atm_iv, 0.15)
-    dte = max(safe_float(days_to_expiry, 1.0), 0.1)
-    expected_move = float(spot) * iv_val * math.sqrt(dte / 365.0)
+    if expected_move is None:
+        iv_val = safe_float(atm_iv, 0.15)
+        if iv_val > 1.5:
+            iv_val = iv_val / 100.0
+        dte = max(safe_float(days_to_expiry, 1.0), 0.1)
+        expected_move = float(spot) * iv_val * math.sqrt(dte / 365.0)
 
     premium = _safe_series(rows, "_normalized_last_price", "lastPrice", "LAST_PRICE")
     strikes = pd.to_numeric(
@@ -313,14 +319,18 @@ def compute_tradeability_flags(
     spot: float,
     atm_iv: float | None,
     days_to_expiry: float | None,
+    expected_move: float | None = None,
 ) -> pd.DataFrame:
     volume = _safe_series(rows, "_normalized_volume", "totalTradedVolume", "VOLUME")
     oi = _safe_series(rows, "_normalized_open_interest", "openInterest", "OPEN_INT")
     premium = _safe_series(rows, "_normalized_last_price", "lastPrice", "LAST_PRICE")
 
-    iv_val = safe_float(atm_iv, 0.15)
-    dte = max(safe_float(days_to_expiry, 1.0), 0.1)
-    expected_move = float(spot) * iv_val * math.sqrt(dte / 365.0)
+    if expected_move is None:
+        iv_val = safe_float(atm_iv, 0.15)
+        if iv_val > 1.5:
+            iv_val = iv_val / 100.0
+        dte = max(safe_float(days_to_expiry, 1.0), 0.1)
+        expected_move = float(spot) * iv_val * math.sqrt(dte / 365.0)
 
     flags = pd.DataFrame(index=rows.index)
     flags["tradable_intraday"] = volume >= _MIN_INTRADAY_VOLUME
@@ -380,8 +390,16 @@ def compute_enhanced_strike_scores(
         dealer_gamma_exposure=dealer_gamma_exposure,
     )
     convexity = compute_volatility_convexity(rows)
+    # Compute expected_move once for all sub-functions
+    _iv = safe_float(atm_iv, 0.15)
+    if _iv > 1.5:
+        _iv = _iv / 100.0
+    _dte = max(safe_float(days_to_expiry, 1.0), 0.1)
+    _expected_move = float(spot) * _iv * math.sqrt(_dte / 365.0)
+
     prem_eff = compute_premium_efficiency(
         rows, spot=spot, atm_iv=atm_iv, days_to_expiry=days_to_expiry,
+        expected_move=_expected_move,
     )
 
     # Composite
@@ -398,6 +416,7 @@ def compute_enhanced_strike_scores(
     # Tradeability
     flags = compute_tradeability_flags(
         rows, spot=spot, atm_iv=atm_iv, days_to_expiry=days_to_expiry,
+        expected_move=_expected_move,
     )
 
     # Distance from spot
@@ -414,6 +433,7 @@ def compute_enhanced_strike_scores(
         days_to_expiry=days_to_expiry,
         support_wall=support_wall,
         resistance_wall=resistance_wall,
+        expected_move=_expected_move,
     )
 
     result = pd.DataFrame(index=rows.index)

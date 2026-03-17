@@ -64,6 +64,13 @@ _ACTIVE_CONTEXT: ContextVar[ParameterRuntimeContext | None] = ContextVar(
 )
 _MISSING = object()
 
+# Per-context cache for resolved dataclass configs.  The cache is keyed by
+# (context_name, prefix, config_class).  It auto‑invalidates whenever the
+# active context object changes (e.g. via ``set_active_parameter_pack`` or
+# ``temporary_parameter_pack``).
+_config_cache: dict[tuple, Any] = {}
+_config_cache_context_id: int | None = None
+
 
 def _load_pack_overrides(name: str) -> tuple[str, dict[str, Any]]:
     """
@@ -338,7 +345,8 @@ def resolve_mapping(prefix: str, defaults: dict[str, Any]) -> dict[str, Any]:
     """
 
     resolved = dict(defaults)
-    _, overrides = _resolve_active_overrides()
+    context = _resolve_active_context()
+    overrides = context.overrides  # read-only access; no copy needed
     dotted_prefix = f"{prefix}."
     for key, value in overrides.items():
         if key.startswith(dotted_prefix):
@@ -367,8 +375,25 @@ def resolve_dataclass_config(prefix: str, config_obj: Any):
         Field replacement happens through `asdict` so nested dataclass defaults
         remain serializable and easy to compare in tuning artifacts.
     """
+    global _config_cache, _config_cache_context_id
 
     if not is_dataclass(config_obj):
         raise TypeError("resolve_dataclass_config expects a dataclass instance")
+
+    context = _resolve_active_context()
+    ctx_id = id(context)
+
+    # Invalidate cache when the active context changes.
+    if _config_cache_context_id != ctx_id:
+        _config_cache = {}
+        _config_cache_context_id = ctx_id
+
+    cache_key = (prefix, type(config_obj))
+    cached = _config_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     payload = resolve_mapping(prefix, asdict(config_obj))
-    return type(config_obj)(**payload)
+    result = type(config_obj)(**payload)
+    _config_cache[cache_key] = result
+    return result

@@ -1374,6 +1374,8 @@ def _section_regime_coverage(df: pd.DataFrame) -> list[str]:
 
 def _section_feature_variance(day_df: pd.DataFrame) -> list[str]:
     """Feature Variance Check — flag features with insufficient variance or extreme dispersion."""
+    from research.signal_evaluation.dataset import EVENT_DRIVEN_FEATURES
+
     lines = [
         "## Feature Variance Check",
         "",
@@ -1385,6 +1387,7 @@ def _section_feature_variance(day_df: pd.DataFrame) -> list[str]:
     ]
 
     zero_var_features: list[str] = []
+    event_driven_zero: list[str] = []
     high_range_features: list[str] = []
 
     for col, label in FEATURE_DIAGNOSTICS_COLS:
@@ -1396,8 +1399,12 @@ def _section_feature_variance(day_df: pd.DataFrame) -> list[str]:
         std = s.std()
         flag = "OK"
         if std < 0.01:
-            flag = "[!] NEAR-ZERO VARIANCE"
-            zero_var_features.append(label)
+            if col in EVENT_DRIVEN_FEATURES:
+                flag = "[i] EVENT-DRIVEN (expected in calm sessions)"
+                event_driven_zero.append(label)
+            else:
+                flag = "[!] NEAR-ZERO VARIANCE"
+                zero_var_features.append(label)
         elif s.max() > 3 * s.median() and s.median() > 0:
             flag = "[!] HIGH DISPERSION"
             high_range_features.append(label)
@@ -1410,12 +1417,19 @@ def _section_feature_variance(day_df: pd.DataFrame) -> list[str]:
             f"**Action:** {len(zero_var_features)} feature(s) near-zero variance "
             f"({', '.join(zero_var_features)}) — consider exclusion or re-parameterization.")
         lines.append("")
+    if event_driven_zero:
+        lines.append(
+            f"**Note:** {len(event_driven_zero)} event-driven feature(s) "
+            f"({', '.join(event_driven_zero)}) show zero variance — this is expected "
+            f"during sessions without macro events or volatility shocks. These features "
+            f"activate only during triggered events and should not be excluded from the schema.")
+        lines.append("")
     if high_range_features:
         lines.append(
             f"**Review:** {len(high_range_features)} feature(s) high dispersion "
             f"({', '.join(high_range_features)}) — consider z-scoring or rank normalization.")
         lines.append("")
-    if not zero_var_features and not high_range_features:
+    if not zero_var_features and not high_range_features and not event_driven_zero:
         lines.append("All features show healthy variance and dispersion.")
         lines.append("")
 

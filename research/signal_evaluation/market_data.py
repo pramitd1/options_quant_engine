@@ -102,12 +102,16 @@ def fetch_realized_spot_history(symbol: str, *, start_ts, end_ts, interval: str 
     end_ts = coerce_market_timestamp(end_ts)
 
     ticker = yf.Ticker(normalize_symbol_to_yfinance(symbol))
-    frame = ticker.history(
-        start=start_ts.tz_convert("UTC").to_pydatetime(),
-        end=end_ts.tz_convert("UTC").to_pydatetime(),
-        interval=interval,
-        auto_adjust=False,
-    )
+    try:
+        frame = ticker.history(
+            start=start_ts.tz_convert("UTC").to_pydatetime(),
+            end=end_ts.tz_convert("UTC").to_pydatetime(),
+            interval=interval,
+            auto_adjust=False,
+        )
+    except Exception:
+        logger.warning("yfinance raised an exception for %s; falling back to local spot history", symbol)
+        frame = None
 
     if frame is not None and not frame.empty:
         history = frame.reset_index()

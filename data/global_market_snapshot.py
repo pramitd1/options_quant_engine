@@ -17,6 +17,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import math
+import time as _time_mod
 
 import pandas as pd
 import yfinance as yf
@@ -185,6 +186,21 @@ def _extract_batch_history(batch_history: pd.DataFrame, ticker: str) -> pd.DataF
     return _normalize_download_history(batch_history.copy())
 
 
+# TTL cache for yfinance downloads (daily data rarely changes intra-session)
+_DOWNLOAD_CACHE_TTL_SECONDS = 300  # 5 minutes
+_download_cache: dict | None = None
+_download_cache_key: tuple | None = None
+_download_cache_time: float = 0.0
+
+
+def invalidate_download_cache():
+    """Clear the yfinance download cache (used by tests and forced refresh)."""
+    global _download_cache, _download_cache_key, _download_cache_time
+    _download_cache = None
+    _download_cache_key = None
+    _download_cache_time = 0.0
+
+
 def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[str, pd.DataFrame]:
     """
     Purpose:
@@ -205,6 +221,16 @@ def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[
     """
     if not tickers:
         return {}
+
+    global _download_cache, _download_cache_key, _download_cache_time
+    cache_key = (tuple(sorted(tickers.items())), lookback_days)
+    now = _time_mod.monotonic()
+    if (
+        _download_cache is not None
+        and _download_cache_key == cache_key
+        and (now - _download_cache_time) < _DOWNLOAD_CACHE_TTL_SECONDS
+    ):
+        return _download_cache
 
     unique_tickers = list(dict.fromkeys(tickers.values()))
     batch_history = pd.DataFrame()
@@ -231,6 +257,10 @@ def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[
                 history = _download_history(ticker, lookback_days=lookback_days)
             ticker_cache[ticker] = history
         histories[name] = history
+
+    _download_cache = histories
+    _download_cache_key = cache_key
+    _download_cache_time = now
     return histories
 
 

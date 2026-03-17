@@ -102,6 +102,13 @@ class ProbabilityFeaturePolicyConfig:
     categorical_flow_weight: float = 0.5
     smart_money_flow_weight: float = 0.5
 
+    # Post-blend logistic recalibration — stretches the compressed hybrid
+    # probability distribution so that confident setups reach higher values
+    # and weak setups are pushed lower, improving discrimination.
+    calibration_enabled: bool = True
+    calibration_midpoint: float = 0.40
+    calibration_steepness: float = 5.0
+
 
 def get_probability_feature_policy_config() -> ProbabilityFeaturePolicyConfig:
     """

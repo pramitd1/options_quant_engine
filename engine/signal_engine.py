@@ -44,6 +44,7 @@ from engine.trading_support import (
     derive_option_efficiency_trade_modifiers,
     normalize_option_chain,
 )
+from analytics.signal_confidence import compute_signal_confidence
 from macro.engine_adjustments import compute_macro_news_adjustments
 from risk import (
     build_dealer_hedging_pressure_state,
@@ -53,7 +54,7 @@ from risk import (
 from risk.global_risk_layer import evaluate_global_risk_layer
 from risk.option_efficiency_layer import score_option_efficiency_candidate
 from strategy.budget_optimizer import optimize_lots
-from strategy.exit_model import calculate_exit
+from strategy.exit_model import calculate_exit, compute_exit_timing
 from strategy.strike_selector import select_best_strike
 
 
@@ -1019,10 +1020,6 @@ def generate_trade(
         payload.update(explainability)
         payload["explainability"] = explainability
 
-        # Compute signal confidence and attach to the payload so it is
-        # captured into the evaluation dataset alongside the other diagnostics.
-        from analytics.signal_confidence import compute_signal_confidence
-
         confidence = compute_signal_confidence(payload)
         payload["signal_confidence_score"] = confidence["confidence_score"]
         payload["signal_confidence_level"] = confidence["confidence_level"]
@@ -1144,6 +1141,19 @@ def generate_trade(
         target_profit_percent=target_profit_percent,
         stop_loss_percent=stop_loss_percent,
     )
+
+    # --- Time-based exit recommendation ------------------------------------
+    _gr_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
+    _mtc = _safe_float(_gr_features.get("minutes_to_close"), None)
+    _mso = round(375.0 - _mtc, 2) if _mtc is not None else None
+    exit_timing = compute_exit_timing(
+        trade_strength=adjusted_trade_strength,
+        gamma_regime=market_state["gamma_regime"],
+        vol_regime=market_state["vol_regime"],
+        minutes_since_open=_mso,
+        minutes_to_close=_mtc,
+    )
+
     option_row_dict = option_row.iloc[0].to_dict()
 
     # Once a specific contract is chosen, recompute option-efficiency metrics
@@ -1209,6 +1219,10 @@ def generate_trade(
         "entry_price": round(entry_price, 2),
         "target": round(target, 2),
         "stop_loss": round(stop_loss, 2),
+        "recommended_hold_minutes": exit_timing["recommended_hold_minutes"],
+        "max_hold_minutes": exit_timing["max_hold_minutes"],
+        "exit_urgency": exit_timing["exit_urgency"],
+        "exit_timing_reasons": exit_timing["exit_timing_reasons"],
         "expected_move_points": option_efficiency_trade_modifiers["expected_move_points"],
         "expected_move_pct": option_efficiency_trade_modifiers["expected_move_pct"],
         "expected_move_quality": option_efficiency_trade_modifiers["expected_move_quality"],

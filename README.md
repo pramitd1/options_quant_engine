@@ -90,6 +90,12 @@ python scripts/update_signal_outcomes.py
 python scripts/signal_evaluation_report.py
 ```
 
+### Daily Research Report
+
+```bash
+python scripts/daily_research_report.py
+```
+
 ## Current System Shape
 
 The engine now has five important overlay packages plus a dedicated research-governance stack sitting on top of the core microstructure signal path:
@@ -101,6 +107,7 @@ The engine now has five important overlay packages plus a dedicated research-gov
 - `risk/option_efficiency_*`: expected move and option-buying efficiency overlay
 - `tuning/`: parameter registry, named packs, experiment runner, advanced search, automated campaigns, promotion, and reporting
   plus walk-forward and regime-aware validation
+- `strategy/`: strike selection, confirmation scoring, enhanced strike scoring with market-microstructure factors, exit model, budget optimization, and trade strength evaluation
 - `utils/`: centralized numeric helpers (`clip`, `safe_float`, `safe_div`, `to_python_number`), math functions (`norm_pdf`, `norm_cdf`), and timestamp utilities (`coerce_timestamp`)
 
 These layers are intentionally modifiers and filters. They do not replace the core directional engine.
@@ -227,10 +234,12 @@ options_quant_engine/
 ├── news/               # deterministic news classification
 ├── research/           # signal evaluation + parameter-tuning artifacts
 ├── risk/               # overlay layers and regime models
-├── scripts/            # operational helpers and historical-data download
-├── strategy/           # confirmation, strike selection, exits, sizing
+├── scripts/            # operational helpers, historical-data download, daily research reports
+├── strategy/           # confirmation, strike selection, enhanced scoring, exits, sizing, trade strength
 ├── tests/              # regression and scenario coverage
 ├── tuning/             # registry, packs, experiments, search, validation, promotion code
+├── utils/              # centralized numerics, math helpers, timestamp utilities
+├── documentation/      # system monograph, academic papers, signal state dictionary, audit reports
 ├── main.py
 └── README.md
 ```
@@ -250,6 +259,11 @@ options_quant_engine/
 - [historical_data_adapter.py](data/historical_data_adapter.py): NSE bhav-copy adapter with Newton-Raphson IV
 - [historical_data_download.py](scripts/historical_data_download.py): multi-source historical data downloader
 - [terminal_output.py](app/terminal_output.py): terminal rendering with verbosity modes (COMPACT/STANDARD/FULL_DEBUG)
+- [signal_confidence.py](analytics/signal_confidence.py): multi-factor signal confidence scoring
+- [enhanced_strike_scoring.py](strategy/enhanced_strike_scoring.py): institutional-grade five-factor strike scoring
+- [spot_history.py](data/spot_history.py): intraday spot price history caching (yfinance-backed)
+- [daily_research_report.py](research/signal_evaluation/daily_research_report.py): automated daily research narrative and analysis
+- [runtime_metadata.py](engine/runtime_metadata.py): operator-facing trade decision metadata schema
 - [dataset.py](research/signal_evaluation/dataset.py): canonical schema
 - [evaluator.py](research/signal_evaluation/evaluator.py): research row builder and outcome enrichment
 - [registry.py](tuning/registry.py): parameter registry and metadata

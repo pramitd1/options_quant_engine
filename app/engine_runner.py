@@ -46,7 +46,7 @@ from macro.scheduled_event_risk import evaluate_scheduled_event_risk
 from macro.macro_news_aggregator import build_macro_news_state
 from news.service import build_default_headline_service
 from engine.signal_engine import generate_trade
-from engine.runtime_metadata import TRADER_VIEW_KEYS, attach_trade_views, split_trade_payload
+from engine.runtime_metadata import TRADER_VIEW_KEYS, split_trade_payload
 from risk import build_global_risk_state
 from research.signal_evaluation import (
     CAPTURE_POLICY_ALL,
@@ -635,7 +635,6 @@ def _build_result_payload(
     Notes:
         The helper keeps the surrounding module readable without changing runtime behavior.
     """
-    trade = attach_trade_views(trade)
     execution_trade, trade_audit = split_trade_payload(trade)
     headline_state_payload = _jsonable_headline_state(headline_state)
     return {
@@ -939,7 +938,6 @@ def _evaluate_snapshot_for_pack(
             if trade:
                 trade["selected_expiry"] = option_chain_validation.get("selected_expiry")
                 trade["parameter_pack_name"] = active_pack_name
-                trade = attach_trade_views(trade)
 
         return {
             "parameter_pack_name": active_pack_name,
@@ -1306,7 +1304,17 @@ def run_engine_snapshot(
             except Exception:
                 pass  # best-effort; never block engine on history logging
 
-        return run_preloaded_engine_snapshot(
+        # Resolve actual exchange expiry candidates from the provider so
+        # downstream display (e.g. overnight assessment) can identify the real
+        # next expiry without hard-coding weekday assumptions.
+        active_router = data_router or managed_data_router
+        expiry_candidates = (
+            active_router.get_expiry_candidates()
+            if active_router is not None and hasattr(active_router, "get_expiry_candidates")
+            else []
+        )
+
+        result = run_preloaded_engine_snapshot(
             symbol=symbol,
             mode=mode,
             source=source,
@@ -1333,6 +1341,13 @@ def run_engine_snapshot(
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
         )
+
+        if expiry_candidates and isinstance(result, dict):
+            trade = result.get("trade")
+            if isinstance(trade, dict):
+                trade["expiry_candidates"] = expiry_candidates
+
+        return result
     except Exception as exc:
         logging.getLogger(__name__).error(
             "run_engine_snapshot failed for %s: %s\n%s",

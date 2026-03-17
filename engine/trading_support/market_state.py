@@ -233,6 +233,7 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
         market_gamma_map_mod,
         ["largest_gamma_strikes"],
         market_gex,
+        spot=spot,
         default=[],
     )
     gamma_clusters = [_to_python_number(x) for x in gamma_clusters] if gamma_clusters else []

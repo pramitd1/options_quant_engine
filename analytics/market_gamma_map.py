@@ -58,10 +58,19 @@ def market_gamma_regime(gex):
     return "NEGATIVE_GAMMA"
 
 
-def largest_gamma_strikes(gex, top_n=5):
+def largest_gamma_strikes(gex, top_n=5, spot=None, max_distance_pct=0.10):
     """
-    Find strikes with largest gamma concentration
+    Find strikes with largest gamma concentration.
+    When *spot* is given, restrict to strikes within *max_distance_pct* of spot
+    so that deep OTM hedging strikes do not dominate near-spot clusters.
     """
+    if spot is not None and spot > 0:
+        lower = spot * (1 - max_distance_pct)
+        upper = spot * (1 + max_distance_pct)
+        gex = gex[(gex.index >= lower) & (gex.index <= upper)]
+
+    if gex.empty:
+        return []
 
     walls = gex.abs().sort_values(
         ascending=False

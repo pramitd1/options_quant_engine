@@ -115,6 +115,10 @@ class DataSourceRouter:
         raw_chain = getattr(self.loader, fetch_method_name)(symbol)
         return normalize_live_option_chain(raw_chain, source=self.source, symbol=symbol)
 
+    def get_expiry_candidates(self) -> list:
+        """Return the expiry candidates resolved during the last fetch, if available."""
+        return getattr(self.loader, "_last_expiry_candidates", [])
+
     def close(self):
         """
         Cleanly close any underlying resources.

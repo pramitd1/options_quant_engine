@@ -1191,6 +1191,7 @@ class ICICIBreezeOptionChain:
         """
         symbol = self._normalize_symbol(symbol)
         expiry_candidates = self._resolve_expiry_candidates(symbol)
+        self._last_expiry_candidates = list(expiry_candidates)
         request_symbols = self._resolve_request_symbols(symbol)
 
         last_errors = []

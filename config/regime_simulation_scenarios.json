@@ -1,0 +1,426 @@
+{
+  "scenarios": [
+    {
+      "name": "risk_on_supportive_macro",
+      "description": "Risk-on environment with positive macro and globally supportive conditions",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T11:30:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 3,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T10:05:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "India growth story intact as resilient demand and strong earnings improve the equity outlook",
+          "category": "MACRO",
+          "symbol": "ALL"
+        },
+        {
+          "timestamp": "2026-03-17T10:20:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "FII inflows accelerate as global risk appetite improves on stable liquidity backdrop",
+          "category": "GLOBAL",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": -1.2,
+          "gold_change_24h": -0.5,
+          "copper_change_24h": 1.8,
+          "vix_change_24h": -4.5,
+          "sp500_change_24h": 1.5,
+          "nasdaq_change_24h": 1.8,
+          "us10y_change_bp": -3.0,
+          "usdinr_change_24h": -0.15,
+          "realized_vol_5d": 0.14,
+          "realized_vol_30d": 0.16
+        }
+      }
+    },
+    {
+      "name": "risk_on_moderate",
+      "description": "Moderate risk-on with positive global bias and falling VIX",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T12:00:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 5,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T11:10:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "Global equities firm as soft landing narrative gains traction",
+          "category": "GLOBAL",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 0.3,
+          "gold_change_24h": 0.1,
+          "copper_change_24h": 0.8,
+          "vix_change_24h": -2.5,
+          "sp500_change_24h": 0.8,
+          "nasdaq_change_24h": 1.0,
+          "us10y_change_bp": -1.0,
+          "usdinr_change_24h": -0.05,
+          "realized_vol_5d": 0.15,
+          "realized_vol_30d": 0.17
+        }
+      }
+    },
+    {
+      "name": "risk_neutral_calm",
+      "description": "Risk-neutral with benign cross-asset conditions and no events",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T13:00:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 5,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 0.2,
+          "gold_change_24h": 0.1,
+          "copper_change_24h": -0.1,
+          "vix_change_24h": 0.5,
+          "sp500_change_24h": -0.1,
+          "nasdaq_change_24h": 0.2,
+          "us10y_change_bp": 1.0,
+          "usdinr_change_24h": 0.02,
+          "realized_vol_5d": 0.16,
+          "realized_vol_30d": 0.17
+        }
+      }
+    },
+    {
+      "name": "risk_off_global_selloff",
+      "description": "Risk-off with broad global equity selloff and commodity stress",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T14:00:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 25,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T13:15:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "US futures tumble amid renewed recession fears and hawkish Fed commentary",
+          "category": "GLOBAL",
+          "symbol": "ALL"
+        },
+        {
+          "timestamp": "2026-03-17T13:30:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "FII outflows accelerate as risk-off sentiment grips emerging markets",
+          "category": "MACRO",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 3.5,
+          "gold_change_24h": 2.2,
+          "copper_change_24h": -3.5,
+          "vix_change_24h": 12.0,
+          "sp500_change_24h": -2.8,
+          "nasdaq_change_24h": -3.2,
+          "us10y_change_bp": 8.0,
+          "usdinr_change_24h": 0.6,
+          "realized_vol_5d": 0.22,
+          "realized_vol_30d": 0.19
+        }
+      }
+    },
+    {
+      "name": "vol_compression_pre_breakout",
+      "description": "Volatility compression — realized vol well below implied, breakout conditions building",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T11:00:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 8,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 0.3,
+          "gold_change_24h": 0.1,
+          "copper_change_24h": 0.2,
+          "vix_change_24h": -1.0,
+          "sp500_change_24h": 0.1,
+          "nasdaq_change_24h": 0.3,
+          "us10y_change_bp": 0.5,
+          "usdinr_change_24h": 0.01,
+          "realized_vol_5d": 0.09,
+          "realized_vol_30d": 0.18
+        }
+      }
+    },
+    {
+      "name": "vol_expansion_shock",
+      "description": "Volatility expansion with VIX spike and cross-asset volatility",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T14:30:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 20,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T14:00:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "India VIX spikes 20% intraday as geopolitical tensions escalate",
+          "category": "GLOBAL",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 4.2,
+          "gold_change_24h": 1.8,
+          "copper_change_24h": -2.5,
+          "vix_change_24h": 22.0,
+          "sp500_change_24h": -1.8,
+          "nasdaq_change_24h": -2.1,
+          "us10y_change_bp": 5.0,
+          "usdinr_change_24h": 0.45,
+          "realized_vol_5d": 0.24,
+          "realized_vol_30d": 0.19
+        }
+      }
+    },
+    {
+      "name": "event_lockdown_rbi",
+      "description": "Event lockdown — RBI policy decision imminent",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T09:30:00+05:30",
+      "holding_profile": "OVERNIGHT",
+      "macro_event_state": {
+        "macro_event_risk_score": 85,
+        "event_window_status": "PRE_EVENT_LOCKDOWN",
+        "event_lockdown_flag": true,
+        "event_data_available": true,
+        "next_event_name": "RBI Policy Decision",
+        "minutes_to_next_event": 30
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T09:20:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "Markets await RBI monetary policy decision amid mixed inflation signals",
+          "category": "MONETARY_POLICY",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 0.5,
+          "gold_change_24h": 0.3,
+          "copper_change_24h": -0.2,
+          "vix_change_24h": 3.0,
+          "sp500_change_24h": -0.3,
+          "nasdaq_change_24h": -0.1,
+          "us10y_change_bp": 1.5,
+          "usdinr_change_24h": 0.05,
+          "realized_vol_5d": 0.18,
+          "realized_vol_30d": 0.20
+        }
+      }
+    },
+    {
+      "name": "currency_shock_usdinr",
+      "description": "Currency shock — sharp USD/INR move causing cross-asset stress",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T12:30:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 15,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T12:00:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "Rupee under pressure as dollar surge triggers EM outflows",
+          "category": "MACRO",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 1.5,
+          "gold_change_24h": 0.8,
+          "copper_change_24h": -1.0,
+          "vix_change_24h": 5.0,
+          "sp500_change_24h": -0.5,
+          "nasdaq_change_24h": -0.4,
+          "us10y_change_bp": 6.0,
+          "usdinr_change_24h": 1.2,
+          "realized_vol_5d": 0.19,
+          "realized_vol_30d": 0.18
+        }
+      }
+    },
+    {
+      "name": "oil_shock_commodity_stress",
+      "description": "Oil shock with commodity-led risk-off pressure",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T13:30:00+05:30",
+      "holding_profile": "AUTO",
+      "macro_event_state": {
+        "macro_event_risk_score": 12,
+        "event_window_status": "NO_EVENT_DATA",
+        "event_lockdown_flag": false,
+        "event_data_available": true
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T13:00:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "Crude oil surges 8% on OPEC production cut surprise and Middle East tensions",
+          "category": "GLOBAL",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 8.5,
+          "gold_change_24h": 2.5,
+          "copper_change_24h": -3.8,
+          "vix_change_24h": 6.0,
+          "sp500_change_24h": -1.5,
+          "nasdaq_change_24h": -1.2,
+          "us10y_change_bp": 4.0,
+          "usdinr_change_24h": 0.35,
+          "realized_vol_5d": 0.20,
+          "realized_vol_30d": 0.19
+        }
+      }
+    },
+    {
+      "name": "overnight_risk_elevated",
+      "description": "Overnight hold context with elevated gap risk scores",
+      "symbol": "NIFTY",
+      "as_of": "2026-03-17T15:10:00+05:30",
+      "holding_profile": "OVERNIGHT",
+      "macro_event_state": {
+        "macro_event_risk_score": 40,
+        "event_window_status": "PRE_EVENT_WATCH",
+        "event_lockdown_flag": false,
+        "event_data_available": true,
+        "next_event_name": "US CPI Release",
+        "minutes_to_next_event": 960
+      },
+      "headlines": [
+        {
+          "timestamp": "2026-03-17T15:00:00+05:30",
+          "source": "REGIME_SIMULATION",
+          "headline": "Markets cautious ahead of US CPI release tomorrow; overnight positioning light",
+          "category": "GLOBAL",
+          "symbol": "ALL"
+        }
+      ],
+      "global_market_snapshot": {
+        "provider": "REGIME_SIMULATION",
+        "data_available": true,
+        "neutral_fallback": false,
+        "stale": false,
+        "issues": [],
+        "warnings": [],
+        "market_inputs": {
+          "oil_change_24h": 1.0,
+          "gold_change_24h": 0.4,
+          "copper_change_24h": -0.5,
+          "vix_change_24h": 4.0,
+          "sp500_change_24h": -0.8,
+          "nasdaq_change_24h": -0.5,
+          "us10y_change_bp": 3.0,
+          "usdinr_change_24h": 0.1,
+          "realized_vol_5d": 0.18,
+          "realized_vol_30d": 0.20
+        }
+      }
+    }
+  ]
+}

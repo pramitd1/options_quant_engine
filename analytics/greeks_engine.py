@@ -26,6 +26,62 @@ from utils.numerics import safe_float as _safe_float  # noqa: F401
 from utils.math_helpers import norm_pdf as _norm_pdf, norm_cdf as _norm_cdf  # noqa: F401
 
 
+# ---------------------------------------------------------------------------
+# Newton-Raphson implied-vol estimation (fallback when provider IV is 0/None)
+# ---------------------------------------------------------------------------
+
+def _bs_price_for_iv(spot, strike, t, sigma, option_type, r=RISK_FREE_RATE):
+    """Black-Scholes European price for IV estimation."""
+    if t <= 0 or sigma <= 0 or spot <= 0 or strike <= 0:
+        return max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
+    sqrt_t = math.sqrt(t)
+    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrt_t)
+    d2 = d1 - sigma * sqrt_t
+    if option_type == "CE":
+        return spot * _norm_cdf(d1) - strike * math.exp(-r * t) * _norm_cdf(d2)
+    return strike * math.exp(-r * t) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+
+
+def _bs_vega_for_iv(spot, strike, t, sigma, r=RISK_FREE_RATE):
+    if t <= 0 or sigma <= 0 or spot <= 0 or strike <= 0:
+        return 0.0
+    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    return spot * math.sqrt(t) * _norm_pdf(d1)
+
+
+def estimate_iv_from_price(market_price, spot, strike, t, option_type,
+                           r=RISK_FREE_RATE, tol=1e-6, max_iter=50):
+    """Newton-Raphson IV solver.  Returns IV as percentage points (e.g. 18.0)
+    or 0.0 when estimation fails."""
+    if market_price is None or spot is None or strike is None or t is None:
+        return 0.0
+    market_price = float(market_price)
+    spot = float(spot)
+    strike = float(strike)
+    t = float(t)
+    if market_price <= 0 or spot <= 0 or strike <= 0 or t <= 0:
+        return 0.0
+    intrinsic = max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
+    if market_price <= intrinsic:
+        return 0.0
+    sigma = 0.20
+    for _ in range(max_iter):
+        price = _bs_price_for_iv(spot, strike, t, sigma, option_type, r)
+        vega = _bs_vega_for_iv(spot, strike, t, sigma, r)
+        if vega < 1e-12:
+            break
+        sigma -= (price - market_price) / vega
+        if sigma <= 0:
+            sigma = 0.001
+        if sigma > 5.0:
+            return 500.0
+        if abs(price - market_price) < tol:
+            break
+    if sigma > 5.0:
+        return 500.0
+    return round(sigma * 100.0, 2)
+
+
 def _coerce_valuation_timestamp(value):
     """
     Purpose:
@@ -228,6 +284,18 @@ def enrich_chain_with_greeks(
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    # Pre-coerce valuation timestamp once (avoids re-parsing per row)
+    coerced_valuation_time = _coerce_valuation_timestamp(valuation_time)
+
+    # Cache expiry→TTE lookups (most chains share a single expiry)
+    _tte_cache: dict = {}
+
+    def _cached_parse_expiry_years(expiry_value):
+        key = expiry_value
+        if key not in _tte_cache:
+            _tte_cache[key] = _parse_expiry_years(expiry_value, valuation_time=coerced_valuation_time)
+        return _tte_cache[key]
+
     deltas = []
     gammas = []
     thetas = []
@@ -236,17 +304,29 @@ def enrich_chain_with_greeks(
     vannas = []
     charms = []
     ttes = []
+    ivs = []
 
     for row in df.itertuples(index=False):
         row_dict = row._asdict()
         iv = row_dict.get("IV", row_dict.get("impliedVolatility"))
+
+        # Fallback: estimate IV from market price when provider gives 0/None
+        tte_for_iv = _cached_parse_expiry_years(
+            row_dict.get("EXPIRY_DT"),
+        )
+        if (iv is None or (isinstance(iv, (int, float)) and iv <= 0)) and spot is not None:
+            market_price = row_dict.get("lastPrice", row_dict.get("LAST_PRICE"))
+            opt_type = row_dict.get("OPTION_TYP", "")
+            estimated = estimate_iv_from_price(
+                market_price, spot, row_dict.get("strikePrice"), tte_for_iv, opt_type,
+            )
+            if estimated > 0:
+                iv = estimated
+
         greeks = compute_option_greeks(
             spot=spot,
             strike=row_dict.get("strikePrice"),
-            time_to_expiry_years=_parse_expiry_years(
-                row_dict.get("EXPIRY_DT"),
-                valuation_time=valuation_time,
-            ),
+            time_to_expiry_years=tte_for_iv,
             volatility_pct=iv,
             option_type=row_dict.get("OPTION_TYP"),
             risk_free_rate=risk_free_rate,
@@ -262,6 +342,7 @@ def enrich_chain_with_greeks(
             vannas.append(row_dict.get("VANNA"))
             charms.append(row_dict.get("CHARM"))
             ttes.append(None)
+            ivs.append(row_dict.get("IV", row_dict.get("impliedVolatility")))
             continue
 
         deltas.append(greeks["DELTA"])
@@ -272,6 +353,7 @@ def enrich_chain_with_greeks(
         vannas.append(greeks["VANNA"])
         charms.append(greeks["CHARM"])
         ttes.append(greeks["TTE"])
+        ivs.append(iv)
 
     df["DELTA"] = deltas
     df["GAMMA"] = gammas
@@ -281,6 +363,10 @@ def enrich_chain_with_greeks(
     df["VANNA"] = vannas
     df["CHARM"] = charms
     df["TTE"] = ttes
+
+    # Write back estimated IV so downstream (atm_vol, vol_surface) can use it
+    df["IV"] = ivs
+    df["impliedVolatility"] = ivs
 
     return df
 

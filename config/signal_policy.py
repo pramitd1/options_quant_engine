@@ -497,6 +497,47 @@ def get_trade_modifier_policy_config() -> TradeModifierPolicyConfig:
 
 
 # ---------------------------------------------------------------------------
+# Exit timing policy — controls recommended holding period and time-based
+# exit guidance based on empirical alpha-decay observations.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ExitTimingPolicyConfig:
+    """Weights and thresholds for time-based exit recommendations."""
+
+    # Peak alpha window (minutes from entry)
+    peak_alpha_minutes: int = 120
+    # Maximum recommended holding period before forced exit consideration
+    max_hold_minutes: int = 240
+    # Early session trades get longer runway
+    early_session_cutoff_minutes_from_open: int = 60
+    early_session_peak_alpha_minutes: int = 150
+    # Late session trades get shorter runway
+    late_session_cutoff_minutes_to_close: int = 90
+    late_session_max_hold_minutes: int = 60
+    # Strong signals can hold longer
+    strong_signal_hold_extension_minutes: int = 30
+    strong_signal_threshold: int = 75
+    # High volatility regime shortens holding
+    vol_expansion_hold_reduction_minutes: int = 30
+    # Negative gamma environments favor faster exits
+    negative_gamma_hold_reduction_minutes: int = 20
+    # Exit urgency thresholds (minutes remaining)
+    urgency_critical_minutes: int = 15
+    urgency_high_minutes: int = 30
+    urgency_moderate_minutes: int = 60
+
+
+def get_exit_timing_policy_config() -> ExitTimingPolicyConfig:
+    """Return the exit-timing policy bundle."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config(
+        "signal_engine.exit_timing", ExitTimingPolicyConfig()
+    )
+
+
+# ---------------------------------------------------------------------------
 # Activation score policy — controls the setup-readiness scoring that decides
 # whether a no-direction snapshot is DEAD_INACTIVE, WATCHLIST, or active.
 # ---------------------------------------------------------------------------

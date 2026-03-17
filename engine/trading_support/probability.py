@@ -277,15 +277,27 @@ def _blend_move_probability(rule_prob, ml_prob):
     Notes:
         Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
     """
+    import math
+
     cfg = get_probability_feature_policy_config()
     rule_prob = _safe_float(rule_prob, cfg.probability_default_rule)
     if ml_prob is None:
-        return round(_clip(rule_prob, cfg.probability_floor, cfg.probability_ceiling), 2)
+        raw = round(_clip(rule_prob, cfg.probability_floor, cfg.probability_ceiling), 2)
+    else:
+        ml_prob = _safe_float(ml_prob, rule_prob)
+        hybrid = (cfg.probability_rule_weight * rule_prob) + (cfg.probability_ml_weight * ml_prob)
+        hybrid = cfg.probability_intercept + (cfg.probability_scale * hybrid)
+        raw = round(_clip(hybrid, cfg.probability_floor, cfg.probability_ceiling), 2)
 
-    ml_prob = _safe_float(ml_prob, rule_prob)
-    hybrid = (cfg.probability_rule_weight * rule_prob) + (cfg.probability_ml_weight * ml_prob)
-    hybrid = cfg.probability_intercept + (cfg.probability_scale * hybrid)
-    return round(_clip(hybrid, cfg.probability_floor, cfg.probability_ceiling), 2)
+    # Post-blend logistic recalibration: stretches the compressed distribution
+    # so confident setups reach higher values and weak setups are pushed lower.
+    if cfg.calibration_enabled:
+        exponent = -cfg.calibration_steepness * (raw - cfg.calibration_midpoint)
+        exponent = max(min(exponent, 500.0), -500.0)
+        calibrated = 1.0 / (1.0 + math.exp(exponent))
+        raw = round(_clip(calibrated, cfg.probability_floor, cfg.probability_ceiling), 2)
+
+    return raw
 
 
 def _get_move_predictor():

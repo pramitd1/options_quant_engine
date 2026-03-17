@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from data.global_market_snapshot import build_global_market_snapshot
+from data.global_market_snapshot import build_global_market_snapshot, invalidate_download_cache
 from risk import build_global_risk_state
 from risk.global_risk_features import build_global_risk_features
 
@@ -21,6 +21,7 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         self.assertEqual(snapshot["market_inputs"], {})
 
     def test_build_global_market_snapshot_batches_downloads(self):
+        invalidate_download_cache()
         download_calls = []
 
         def fake_download(tickers, **kwargs):
