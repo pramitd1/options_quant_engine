@@ -141,7 +141,7 @@ These layers are intentionally modifiers and filters. They do not replace the co
 
 ### 3. Historical Backtesting
 
-- runner in [backtest_runner.py](backtest/backtest_runner.py)
+- runner in [holistic_backtest_runner.py](backtest/holistic_backtest_runner.py)
 - three data-source modes controlled by `BACKTEST_DATA_SOURCE` (or interactive prompt):
   - **historical**: real NSE bhav-copy option chains with Newton-Raphson IV computation via [historical_data_adapter.py](data/historical_data_adapter.py)
   - **live**: synthetic option-chain reconstruction from spot bars (legacy default)
@@ -261,19 +261,27 @@ options_quant_engine/
 ├── app/                # shared runner + Streamlit app
 ├── archive/            # historical reference (old trade-centric backtest README)
 ├── backtest/           # backtests, replay helpers, scenario runners
+├── backtests/          # raw backtest output artifacts (git-ignored)
 ├── config/             # runtime, scoring, and overlay policies
 │   └── parameter_packs/# versioned parameter pack overrides
 ├── data/               # provider adapters, validation, historical loaders and adapters
+├── data_store/         # on-disk data caches — historical Parquet, spot history, IV surface (git-ignored)
+├── debug_samples/      # sample debug snapshots (git-ignored)
 ├── engine/             # signal engine, compat facades, trading support, and pluggable predictors
-│   └── predictors/     # MovePredictor protocol, factory, built-in and research predictors
+│   ├── predictors/     # MovePredictor protocol, factory, built-in and research predictors
+│   └── trading_support/# probability state, market state, signal state, trade modifier helpers
+├── logs/               # runtime log output (git-ignored)
 ├── macro/              # scheduled-event and macro/news logic
 ├── models/             # move probability, ML model predictor, feature builders, and trained predictor serialization
 ├── models_store/       # serialized model registry (git-ignored; rebuild via scripts/build_model_registry.py)
 ├── news/               # deterministic news classification
 ├── research/           # signal evaluation, decision policies, ML evaluation, parameter-tuning artifacts
+│   ├── architecture_analysis/ # prediction pipeline architecture reports
 │   ├── decision_policy/# decision-policy definitions, engine, config, evaluation
 │   ├── ml_evaluation/  # robustness analysis, rank-gate sizing, predictor comparison, EV-based sizing research
 │   ├── ml_models/      # GBT ranking + LogReg calibration research models
+│   ├── ml_research/    # ML research results, calibration reports, shadow predictions
+│   ├── parameter_tuning/# parameter-tuning artifacts and promotion state
 │   └── signal_evaluation/ # canonical signal dataset, evaluator, daily reports
 ├── risk/               # overlay layers and regime models
 ├── scripts/            # operational helpers, historical-data download, ML research, model registry builder, daily reports, multiyear backtest
@@ -378,8 +386,8 @@ HEADLINE_RSS_URLS=
 
 ```bash
 GLOBAL_MARKET_DATA_ENABLED=true
-GLOBAL_MARKET_LOOKBACK_DAYS=40
-GLOBAL_MARKET_STALE_DAYS=2
+GLOBAL_MARKET_LOOKBACK_DAYS=90
+GLOBAL_MARKET_STALE_DAYS=5
 ```
 
 ## Parameter Packs
@@ -609,7 +617,7 @@ OQE_ACTIVE_MODEL=GBT_shallow_v1 python main.py
 
 When `ACTIVE_MODEL` is set, the feature builder produces 33-feature expanded vectors (via `models/expanded_feature_builder.py`) and the probability stack loads the corresponding registry model. When unset, the system falls back to the 7-feature rule-based heuristic.
 
-Note: `ACTIVE_MODEL` controls which trained model the ML leg uses internally. `PREDICTION_METHOD` controls which prediction strategy (blended, pure_ml, pure_rule, research_dual_model, research_decision_policy) composes the final `hybrid_move_probability`. Both settings are independent and composable.
+Note: `ACTIVE_MODEL` controls which trained model the ML leg uses internally. `PREDICTION_METHOD` controls which prediction strategy (blended, pure_ml, pure_rule, research_dual_model, research_decision_policy, ev_sizing) composes the final `hybrid_move_probability`. Both settings are independent and composable.
 
 ### Research Scripts
 
@@ -678,7 +686,7 @@ Best result: `rank_gate_40` — 0.74 hit rate, +22.1 bps unsized → +26.1 bps s
 
 Runner: `research/ml_evaluation/predictor_comparison/predictor_comparison_runner.py`
 
-Head-to-head evaluation of all 5 predictor methods on both cumulative (279 rows) and backtest (7,404 rows) datasets:
+Head-to-head evaluation of the original 5 predictor methods on both cumulative (279 rows) and backtest (7,404 rows) datasets (the `ev_sizing` method was added later — see cross-method comparison in `research/ml_evaluation/ev_and_regime_policy/`):
 
 | Predictor | Hit Rate | Avg Return (bps) | Sharpe | Retention |
 |---|---|---|---|---|
@@ -689,6 +697,23 @@ Head-to-head evaluation of all 5 predictor methods on both cumulative (279 rows)
 | pure_rule | 0.50 | -2.49 | -0.033 | 94.26% |
 
 The `decision_policy` predictor dominates on quality metrics; `blended` and `pure_rule` retain nearly all signals but at breakeven-to-negative expected return. Policy filtering is the decisive performance driver.
+
+### 4. EV-Based Sizing & Regime-Switching Policy
+
+Runner: `research/ml_evaluation/ev_and_regime_policy/runner.py`
+
+Two research modules: (1) EV-based sizing using conditional return tables, and (2) regime-switching policy selection. Combined cross-method comparison across 33 sizing/filtering variants in 5 categories:
+
+- EV sizing outperforms confidence sizing: Sharpe 0.349 vs 0.344, avg return +32.89 vs +15.08 bps, cumulative +49,724 vs +22,808 bps (2.2× improvement)
+- Best overall Sharpe: `rank_gate_40` at 0.362
+- Regime switching did not improve over static policies on the evaluated dataset (single volatility regime)
+- 25 output artifacts (JSON, CSV, MD, PNG charts) generated
+
+### 5. Parameter Tuning Research
+
+Runner: `research/ml_evaluation/parameter_tuning/`
+
+ML-informed parameter tuning research with phase-based runners for grid search, focused sweeps, and walk-forward validation.
 
 ### Additional ML Evaluation Reports
 
