@@ -1,9 +1,0 @@
-methodology,label,n,hit_rate_60m,avg_return_60m_bps,avg_return_120m_bps,avg_mfe_60m_bps,avg_mae_60m_bps
-baseline_all_signals,Baseline (all signals),7404,0.5035,-2.5998,-2.5998,0.0,0.0
-baseline_trade_only,Baseline (TRADE only),2654,0.5021,-2.712,-2.712,0.0,0.0
-research_dual_model,Research Dual-Model (conf ≥ 0.50),4044,0.6748,10.9172,10.9172,0.0,0.0
-policy_agreement_only,Policy: agreement_only,4044,0.6748,10.9172,10.9172,0.0,0.0
-policy_dual_threshold,Policy: dual_threshold,3603,0.7412,18.9838,18.9838,0.0,0.0
-policy_sizing_simulation,Policy: sizing_simulation,7404,0.5035,-2.5998,-2.5998,0.0,0.0
-policy_rank_filter_bottom_20pct,Policy: rank_filter_bottom_20pct,5925,0.6571,14.8148,14.8148,0.0,0.0
-policy_rank_filter_bottom_30pct,Policy: rank_filter_bottom_30pct,5183,0.7097,19.3387,19.3387,0.0,0.0

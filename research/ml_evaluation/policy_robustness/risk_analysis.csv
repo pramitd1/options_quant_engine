@@ -1,7 +1,0 @@
-label,n,cumulative_return_bps,max_drawdown_bps,return_volatility_bps,sharpe_proxy
-baseline_all,7404,-7021.97,-15723.51,80.6,-0.03
-agreement_only,4044,13799.32,-2325.59,63.54,0.17
-dual_threshold,3603,20977.13,-931.94,54.54,0.35
-sizing_simulation,7404,-7021.97,-15723.51,80.6,-0.03
-rank_filter_bottom_20pct,5925,26355.51,-1779.2,64.44,0.23
-rank_filter_bottom_30pct,5183,29240.13,-1385.47,62.83,0.31

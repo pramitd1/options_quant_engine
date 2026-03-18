@@ -1,6 +1,0 @@
-predictor,prob_col,threshold,total_signals,evaluable,n_trade,n_no_trade,retention_pct,trade_hit_rate,trade_avg_return_bps,trade_cumulative_bps,trade_max_dd_bps,trade_volatility_bps,trade_sharpe,trade_avg_mfe_bps,trade_avg_mae_bps,no_trade_hit_rate,no_trade_avg_return_bps,prob_return_corr,dataset,description
-blended,hybrid_move_probability,0.5,7404,2701,2697,4,99.85,0.5,-2.36,-6365.17,-15066.71,79.95,-0.0295,0.0,0.0,0.0,-164.2,0.0906,backtest,70/30 rule+ML blend (production)
-pure_rule,rule_move_probability,0.5,7404,2701,2546,155,94.26,0.5,-2.49,-6332.67,-13767.4,76.01,-0.0327,0.0,0.0,0.63,-4.45,-0.0257,backtest,Rule-based Bayesian prior only
-pure_ml,ml_move_probability,0.5,7404,2701,1603,1098,59.35,0.58,5.03,8057.99,-3217.37,64.89,0.0775,0.0,0.0,0.4,-13.73,0.1149,backtest,ML model only
-research_dual,pred_research_dual,0.5,7404,2701,1264,1437,46.8,0.67,10.92,13799.32,-2325.59,63.54,0.1719,0.0,0.0,0.35,-14.49,0.2128,backtest,GBT rank + LogReg calibration
-decision_policy,pred_decision_policy,0.5,7404,2701,1105,1596,40.91,0.74,18.98,20977.13,-931.94,54.54,0.3482,0.0,0.0,0.34,-17.54,0.236,backtest,Dual-model + dual_threshold gate

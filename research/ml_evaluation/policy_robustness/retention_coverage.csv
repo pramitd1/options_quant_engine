@@ -1,6 +1,0 @@
-policy,total,retained,retained_pct,allowed,allowed_pct,blocked,blocked_pct,downgraded,downgraded_pct
-agreement_only,7404,7393,99.85,4044,54.62,11,0.15,3349,45.23
-dual_threshold,7404,5157,69.65,3603,48.66,2247,30.35,1554,20.99
-sizing_simulation,7404,7404,100.0,7404,100.0,0,0.0,0,0.0
-rank_filter_bottom_20pct,7404,5925,80.02,5925,80.02,1479,19.98,0,0.0
-rank_filter_bottom_30pct,7404,5183,70.0,5183,70.0,2221,30.0,0,0.0

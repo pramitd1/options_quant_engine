@@ -1,5 +1,0 @@
-tier,multiplier,n,hit_rate,avg_return_bps
-very_low,0.5,841,0.55,12.44
-low,0.5,1185,0.57,18.94
-medium,1.0,1769,0.64,9.97
-high,1.5,2130,0.71,15.7

@@ -1,8 +1,0 @@
-predictor,prob_col,threshold,total_signals,evaluable,n_trade,n_no_trade,retention_pct,trade_hit_rate,trade_avg_return_bps,trade_cumulative_bps,trade_max_dd_bps,trade_volatility_bps,trade_sharpe,trade_avg_mfe_bps,trade_avg_mae_bps,no_trade_hit_rate,no_trade_avg_return_bps,prob_return_corr
-decision_policy,pred_decision_policy,0.3,7404,2701,1256,1445,46.5,0.68,11.24,14121.59,-2112.86,63.14,0.1781,0.0,0.0,0.35,-14.63,0.236
-decision_policy,pred_decision_policy,0.4,7404,2701,1105,1596,40.91,0.74,18.98,20977.13,-931.94,54.54,0.3482,0.0,0.0,0.34,-17.54,0.236
-decision_policy,pred_decision_policy,0.5,7404,2701,1105,1596,40.91,0.74,18.98,20977.13,-931.94,54.54,0.3482,0.0,0.0,0.34,-17.54,0.236
-decision_policy,pred_decision_policy,0.55,7404,2701,1084,1617,40.13,0.74,19.61,21254.25,-569.7,46.74,0.4197,0.0,0.0,0.35,-17.49,0.236
-decision_policy,pred_decision_policy,0.6,7404,2701,1027,1674,38.02,0.75,19.69,20225.07,-508.86,45.91,0.4292,0.0,0.0,0.35,-16.28,0.236
-decision_policy,pred_decision_policy,0.65,7404,2701,810,1891,29.99,0.76,21.95,17779.57,-399.2,44.02,0.499,0.0,0.0,0.39,-13.12,0.236
-decision_policy,pred_decision_policy,0.7,7404,2701,211,2490,7.81,0.78,25.14,5305.34,-308.12,43.45,0.58,0.0,0.0,0.48,-4.95,0.236

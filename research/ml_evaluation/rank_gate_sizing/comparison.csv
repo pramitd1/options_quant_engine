@@ -1,7 +1,0 @@
-label,n,retention_pct,hit_rate,avg_return_60m_bps,avg_return_120m_bps,avg_mfe_60m_bps,avg_mae_60m_bps,cumulative_return_bps,max_drawdown_bps,volatility_bps,sharpe_proxy,sized_avg_return_bps,sized_cumulative_return_bps,sized_max_drawdown_bps,sized_sharpe_proxy,sizing_improvement_pct
-baseline_all,7404,100.0,0.5,-2.6,-2.6,0.0,0.0,-7021.97,-15723.51,80.6,-0.0323,,,,,
-dual_threshold,3603,48.66,0.74,18.98,18.98,0.0,0.0,20977.13,-931.94,54.54,0.3482,,,,,
-rank_filter_bottom_30pct,5183,70.0,0.71,19.34,19.34,0.0,0.0,29240.13,-1385.47,62.83,0.3079,,,,,
-rank_gate_20,5925,80.02,0.66,14.81,14.81,0.0,0.0,26355.51,-1779.2,64.44,0.23,17.38,30922.84,-2030.18,0.2428,17.33
-rank_gate_30,5183,70.0,0.71,19.34,19.34,0.0,0.0,29240.13,-1385.47,62.83,0.3079,23.16,35019.8,-1167.43,0.3297,19.77
-rank_gate_40,4442,59.99,0.74,22.13,22.13,0.0,0.0,30811.7,-1385.47,61.13,0.3622,26.08,36304.12,-1167.43,0.3842,17.83

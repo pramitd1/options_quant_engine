@@ -1,8 +1,0 @@
-predictor,prob_col,threshold,total_signals,evaluable,n_trade,n_no_trade,retention_pct,trade_hit_rate,trade_avg_return_bps,trade_cumulative_bps,trade_max_dd_bps,trade_volatility_bps,trade_sharpe,trade_avg_mfe_bps,trade_avg_mae_bps,no_trade_hit_rate,no_trade_avg_return_bps,prob_return_corr
-pure_ml,ml_move_probability,0.3,7404,2701,2614,87,96.78,0.51,-2.28,-5952.98,-14452.22,78.53,-0.029,0.0,0.0,0.34,-12.29,0.1149
-pure_ml,ml_move_probability,0.4,7404,2701,2178,523,80.64,0.53,-0.81,-1758.83,-9598.31,77.32,-0.0104,0.0,0.0,0.38,-10.06,0.1149
-pure_ml,ml_move_probability,0.5,7404,2701,1603,1098,59.35,0.58,5.03,8057.99,-3217.37,64.89,0.0775,0.0,0.0,0.4,-13.73,0.1149
-pure_ml,ml_move_probability,0.55,7404,2701,1471,1230,54.46,0.59,6.85,10081.58,-2689.27,64.49,0.1063,0.0,0.0,0.4,-13.91,0.1149
-pure_ml,ml_move_probability,0.6,7404,2701,963,1738,35.65,0.61,9.32,8975.54,-1895.54,69.25,0.1347,0.0,0.0,0.44,-9.2,0.1149
-pure_ml,ml_move_probability,0.65,7404,2701,899,1802,33.28,0.62,9.84,8847.18,-1146.54,65.74,0.1498,0.0,0.0,0.44,-8.81,0.1149
-pure_ml,ml_move_probability,0.7,7404,2701,362,2339,13.4,0.64,10.06,3641.8,-1578.68,64.83,0.1554,0.0,0.0,0.48,-4.56,0.1149

@@ -1,5 +1,0 @@
-reason,count,pct_of_total,hit_rate,avg_return_bps
-low_rank_only,441,5.96,0.21,-45.14
-low_confidence_only,1113,15.03,0.7,30.17
-both_low,2247,30.35,0.25,-26.98
-neither_low (passed),3603,48.66,0.74,18.98

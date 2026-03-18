@@ -1,6 +1,0 @@
-predictor,prob_col,threshold,total_signals,evaluable,n_trade,n_no_trade,retention_pct,trade_hit_rate,trade_avg_return_bps,trade_cumulative_bps,trade_max_dd_bps,trade_volatility_bps,trade_sharpe,trade_avg_mfe_bps,trade_avg_mae_bps,no_trade_hit_rate,no_trade_avg_return_bps,prob_return_corr,dataset,description
-blended,hybrid_move_probability,0.5,279,93,93,0,100.0,0.75,9.38,872.8,-379.53,23.44,0.4026,25.41,-14.35,,,-0.3245,cumulative,70/30 rule+ML blend (production)
-pure_rule,rule_move_probability,0.5,279,93,59,34,63.44,0.71,9.8,577.98,-239.66,20.68,0.4779,27.27,-13.59,0.82,8.67,0.2948,cumulative,Rule-based Bayesian prior only
-pure_ml,ml_move_probability,0.5,279,93,83,10,89.25,0.72,6.84,567.56,-440.09,23.01,0.299,23.99,-15.43,1.0,30.52,-0.3489,cumulative,ML model only
-research_dual,pred_research_dual,0.5,279,93,93,0,100.0,0.75,9.38,872.8,-379.53,23.44,0.4026,25.41,-14.35,,,-0.3479,cumulative,GBT rank + LogReg calibration
-decision_policy,pred_decision_policy,0.5,279,93,93,0,100.0,0.75,9.38,872.8,-379.53,23.44,0.4026,25.41,-14.35,,,-0.3479,cumulative,Dual-model + dual_threshold gate
