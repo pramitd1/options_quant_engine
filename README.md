@@ -108,6 +108,22 @@ python scripts/run_multiyear_backtest.py
 python scripts/build_model_registry.py
 ```
 
+## Repo Hygiene Policy
+
+To keep the repository maintainable and reproducible, use these artifact path conventions.
+
+- Runtime validation and profiling outputs: store under `research/runtime_validation/`.
+- Backtest logs and comparison outputs: store under `research/runtime_validation/backtest_runs/`.
+- Signal-evaluation reports and generated tables: store under `research/signal_evaluation/reports/`.
+- One-off analysis outputs from ad-hoc scripts: store under `research/` with a date-stamped subfolder.
+- Avoid writing generated artifacts to repository root.
+
+Commit hygiene:
+
+- Keep code changes, script reorganization, and generated research artifacts in separate commits.
+- When moving scripts, keep compatibility wrappers at legacy entrypoints until automation is migrated.
+- Do not delete intermediate or final research artifacts that are needed for auditability.
+
 ## Current System Shape
 
 The engine now has five important overlay packages plus a dedicated research-governance stack sitting on top of the core microstructure signal path:

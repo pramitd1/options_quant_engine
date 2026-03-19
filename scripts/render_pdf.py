@@ -28,15 +28,37 @@ Library:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+PDF_COVER_AUTHOR = "Pramit Dutta"
+PDF_COVER_ORGANIZATION = "Quant Engines"
+
+
+BACKEND_CATEGORY = {
+    "tectonic": "latex",
+    "weasyprint": "html_css",
+    "chrome": "browser",
+}
+
+CATEGORY_RENDER_TIME_THRESHOLDS_SECONDS = {
+    "latex": 6.0,
+    "html_css": 2.5,
+    "browser": 4.0,
+    "unknown": 3.0,
+}
 
 # Suppress noisy weasyprint warnings about unsupported CSS properties
 # (overflow-x, box-shadow, text-rendering, @media screen queries) which
@@ -147,6 +169,39 @@ th {
 }
 tr:nth-child(even) { background: #fafbfc; }
 hr { border: none; border-top: 1px solid var(--rule); margin: 1em 0; }
+
+.oqe-cover {
+    min-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 8vh 0;
+    page-break-after: always;
+}
+.oqe-cover-kicker {
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.8rem;
+}
+.oqe-cover-title {
+    font-size: 2.1rem;
+    line-height: 1.2;
+    margin: 0 0 1.4rem;
+    color: var(--ink);
+}
+.oqe-cover-meta {
+    font-size: 1rem;
+    color: #23303d;
+    margin: 0.18rem 0;
+}
+.oqe-cover-rule {
+    width: 78%;
+    border-top: 1px solid var(--rule);
+    margin: 1.2rem 0;
+}
 """
 
 
@@ -185,6 +240,34 @@ def _find_chrome() -> str | None:
     return None
 
 
+def _derive_report_title(md_path: Path, md_text: str) -> str:
+    """Derive report title from first H1 or fallback to filename."""
+    for line in md_text.splitlines():
+        match = re.match(r"^\s*#\s+(.+?)\s*$", line)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1)).strip()
+    return md_path.stem.replace("_", " ").replace("-", " ").strip().title()
+
+
+def _cover_date_string() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _build_cover_html(title: str) -> str:
+    """Generate a deterministic branded cover page for HTML-based backends."""
+    date_str = _cover_date_string()
+    return (
+        '<section class="oqe-cover">'
+        '<div class="oqe-cover-kicker">Quant Research Document</div>'
+        f'<h1 class="oqe-cover-title">{title}</h1>'
+        '<div class="oqe-cover-rule"></div>'
+        f'<p class="oqe-cover-meta"><strong>Author:</strong> {PDF_COVER_AUTHOR}</p>'
+        f'<p class="oqe-cover-meta"><strong>Organisation:</strong> {PDF_COVER_ORGANIZATION}</p>'
+        f'<p class="oqe-cover-meta"><strong>Generated:</strong> {date_str}</p>'
+        '</section>'
+    )
+
+
 def _pandoc_md_to_html(md_path: Path, css_path: Path | None, pandoc: str) -> str:
     """Convert Markdown to standalone HTML via Pandoc."""
     cmd = [
@@ -197,6 +280,7 @@ def _pandoc_md_to_html(md_path: Path, css_path: Path | None, pandoc: str) -> str
         "--toc",
         "--toc-depth=2",
         "--number-sections",
+        "--variable=secnumdepth:2",
     ]
     if css_path and css_path.is_file():
         cmd.extend(["--css", str(css_path)])
@@ -212,6 +296,17 @@ def _inject_css_into_html(html: str, css: str) -> str:
     if "<head>" in html:
         return html.replace("<head>", f"<head>\n{style_tag}", 1)
     return f"<html><head>{style_tag}</head><body>{html}</body></html>"
+
+
+def _inject_cover_into_html(html: str, title: str) -> str:
+    """Inject branded cover page right after <body>."""
+    cover_html = _build_cover_html(title)
+    if "<body" in html:
+        body_match = re.search(r"<body[^>]*>", html, flags=re.IGNORECASE)
+        if body_match:
+            insert_at = body_match.end()
+            return html[:insert_at] + "\n" + cover_html + "\n" + html[insert_at:]
+    return f"<html><body>{cover_html}{html}</body></html>"
 
 
 def _oqe_lib_env() -> dict[str, str]:
@@ -284,6 +379,7 @@ def _render_pandoc_tectonic(
     output_pdf: Path,
     pandoc: str,
     tectonic: str,
+    title: str,
 ) -> Path:
     """Render Markdown to PDF via Pandoc→LaTeX→Tectonic."""
     cmd = [
@@ -294,6 +390,11 @@ def _render_pandoc_tectonic(
         "--toc",
         "--toc-depth=2",
         "--number-sections",
+        "--variable=secnumdepth:2",
+        "-M", f"title={title}",
+        "-M", f"author=Author: {PDF_COVER_AUTHOR}",
+        "-M", f"subtitle=Organisation: {PDF_COVER_ORGANIZATION}",
+        "-M", f"date=Generated: {_cover_date_string()}",
         "-o", str(output_pdf),
     ]
     if _DEFAULT_TEX_HEADER.is_file():
@@ -324,9 +425,12 @@ def _render_pandoc_chrome(
     pandoc: str,
     chrome: str,
     css_path: Path | None = None,
+    title: str = "",
 ) -> Path:
     """Render Markdown → HTML (Pandoc) → PDF (Chrome headless)."""
     html_str = _pandoc_md_to_html(md_path, css_path, pandoc)
+    html_str = _inject_css_into_html(html_str, _REPORT_CSS)
+    html_str = _inject_cover_into_html(html_str, title)
 
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
         f.write(html_str)
@@ -358,7 +462,8 @@ def render_markdown_to_pdf(
     output_pdf: str | Path | None = None,
     css_path: str | Path | None = None,
     backend: str | None = None,
-) -> Path:
+    return_details: bool = False,
+) -> Path | dict[str, Any]:
     """Render a Markdown file to PDF.
 
     Parameters
@@ -376,8 +481,11 @@ def render_markdown_to_pdf(
 
     Returns
     -------
-    Path
-        The path to the generated PDF.
+    Path or dict
+        By default returns the generated PDF path.
+        When ``return_details=True``, returns a dict with
+        ``pdf_path``, ``backend``, ``backend_category``, ``has_math``,
+        and ``backend_order``.
 
     Raises
     ------
@@ -402,11 +510,22 @@ def render_markdown_to_pdf(
     backends_tried: list[str] = []
     errors: list[str] = []
 
+    md_text = md_path.read_text(encoding="utf-8", errors="ignore")
+    math_patterns = (
+        r"\$\$",            # display math
+        r"\\\(",          # inline math \(...\)
+        r"\\\[",          # display math \[...\]
+        r"(?<!\\)\$(?:[^\n$]|\\\$){1,200}(?<!\\)\$",  # inline $...$
+    )
+    has_math = any(re.search(pattern, md_text, flags=re.MULTILINE) for pattern in math_patterns)
+    report_title = _derive_report_title(md_path, md_text)
+
     # Determine backend order
     if backend:
         order = [backend]
     else:
-        order = ["weasyprint", "tectonic", "chrome"]
+        # Prefer LaTeX pipeline for math-heavy docs; keep HTML pipeline first otherwise.
+        order = ["tectonic", "weasyprint", "chrome"] if has_math else ["weasyprint", "tectonic", "chrome"]
 
     for name in order:
         try:
@@ -423,6 +542,7 @@ def render_markdown_to_pdf(
                 html_str = _pandoc_md_to_html(md_path, css_path, pandoc)
                 # Always inject the built-in report CSS for consistent styling
                 html_str = _inject_css_into_html(html_str, _REPORT_CSS)
+                html_str = _inject_cover_into_html(html_str, report_title)
                 _render_weasyprint(html_str, output_pdf)
 
             elif name == "tectonic":
@@ -435,7 +555,7 @@ def render_markdown_to_pdf(
                     errors.append("tectonic: tectonic not found")
                     backends_tried.append(name)
                     continue
-                _render_pandoc_tectonic(md_path, output_pdf, pandoc, tectonic)
+                _render_pandoc_tectonic(md_path, output_pdf, pandoc, tectonic, report_title)
 
             elif name == "chrome":
                 chrome = _find_chrome()
@@ -447,14 +567,26 @@ def render_markdown_to_pdf(
                     errors.append("chrome: Chrome/Chromium not found")
                     backends_tried.append(name)
                     continue
-                _render_pandoc_chrome(md_path, output_pdf, pandoc, chrome, css_path)
+                _render_pandoc_chrome(md_path, output_pdf, pandoc, chrome, css_path, report_title)
 
             else:
                 errors.append(f"unknown backend: {name}")
                 backends_tried.append(name)
                 continue
 
+            backend_category = BACKEND_CATEGORY.get(name, "unknown")
             logger.info("PDF rendered via %s: %s", name, output_pdf)
+            if return_details:
+                return {
+                    "pdf_path": output_pdf,
+                    "backend": name,
+                    "backend_category": backend_category,
+                    "has_math": has_math,
+                    "backend_order": order,
+                    "cover_applied": True,
+                    "cover_author": PDF_COVER_AUTHOR,
+                    "cover_organization": PDF_COVER_ORGANIZATION,
+                }
             return output_pdf
 
         except Exception as exc:
@@ -505,6 +637,25 @@ def render_all_research_notes(output_dir: str | Path | None = None) -> list[Path
     return results
 
 
+def _discover_documentation_markdown(include_archive: bool = False) -> list[Path]:
+    """Discover all Markdown files under documentation, optionally including archive paths."""
+    docs_dir = _ROOT / "documentation"
+    if not docs_dir.is_dir():
+        return []
+
+    md_files = sorted(docs_dir.rglob("*.md"))
+    if include_archive:
+        return md_files
+
+    filtered: list[Path] = []
+    for md_file in md_files:
+        rel = md_file.relative_to(docs_dir).as_posix()
+        if rel.startswith("archive/"):
+            continue
+        filtered.append(md_file)
+    return filtered
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -532,6 +683,21 @@ Examples:
     )
     parser.add_argument("--all-daily", action="store_true", help="Render all daily reports")
     parser.add_argument("--all-research-notes", action="store_true", help="Render all research notes")
+    parser.add_argument("--all-docs", action="store_true", help="Render all Markdown files under documentation/")
+    parser.add_argument(
+        "--include-archive",
+        action="store_true",
+        help="Include documentation/archive/** when used with --all-docs",
+    )
+    parser.add_argument(
+        "--report-json",
+        help="Write render results to a JSON report file",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero if any render target fails",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
@@ -541,31 +707,179 @@ Examples:
         format="%(levelname)s: %(message)s",
     )
 
-    if not args.input and not args.all_daily and not args.all_research_notes:
-        parser.error("Provide a Markdown file or use --all-daily / --all-research-notes")
+    if not args.input and not args.all_daily and not args.all_research_notes and not args.all_docs:
+        parser.error("Provide a Markdown file or use --all-daily / --all-research-notes / --all-docs")
 
     rendered: list[Path] = []
+    failures: list[dict[str, str]] = []
+    report_rows: list[dict[str, str | float]] = []
+
+    def _record_render(
+        md_path: Path,
+        out_pdf: Path,
+        ok: bool,
+        error: str | None = None,
+        *,
+        backend: str = "",
+        backend_category: str = "unknown",
+        has_math: bool = False,
+        cover_applied: bool = True,
+        cover_author: str = PDF_COVER_AUTHOR,
+        cover_organization: str = PDF_COVER_ORGANIZATION,
+    ):
+        expected_category = "latex" if has_math else "html_css"
+        threshold_seconds = CATEGORY_RENDER_TIME_THRESHOLDS_SECONDS.get(
+            backend_category,
+            CATEGORY_RENDER_TIME_THRESHOLDS_SECONDS["unknown"],
+        )
+        row = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "markdown": str(md_path),
+            "pdf": str(out_pdf),
+            "ok": ok,
+            "error": error or "",
+            "backend": backend,
+            "backend_category": backend_category,
+            "has_math": bool(has_math),
+            "cover_applied": bool(cover_applied),
+            "cover_author": cover_author,
+            "cover_organization": cover_organization,
+            "expected_backend_category": expected_category,
+            "render_time_threshold_seconds": float(threshold_seconds),
+            "performance_alert": False,
+            "quality_alert": False,
+            "alerts": [],
+        }
+        report_rows.append(row)
+
+    def _render_many(md_files: list[Path]):
+        for md_file in md_files:
+            out_pdf = md_file.with_suffix(".pdf")
+            started = time.time()
+            try:
+                result = render_markdown_to_pdf(
+                    md_file,
+                    output_pdf=out_pdf,
+                    css_path=args.css,
+                    backend=args.backend,
+                    return_details=True,
+                )
+                elapsed = round(time.time() - started, 3)
+                pdf = result["pdf_path"]
+                rendered.append(pdf)
+                _record_render(
+                    md_file,
+                    pdf,
+                    True,
+                    backend=str(result.get("backend", "")),
+                    backend_category=str(result.get("backend_category", "unknown")),
+                    has_math=bool(result.get("has_math", False)),
+                    cover_applied=bool(result.get("cover_applied", True)),
+                    cover_author=str(result.get("cover_author", PDF_COVER_AUTHOR)),
+                    cover_organization=str(result.get("cover_organization", PDF_COVER_ORGANIZATION)),
+                )
+                report_rows[-1]["elapsed_seconds"] = elapsed
+                threshold = float(report_rows[-1]["render_time_threshold_seconds"])
+                if elapsed > threshold:
+                    report_rows[-1]["performance_alert"] = True
+                    report_rows[-1]["alerts"].append(
+                        f"render_time_exceeded:{elapsed}>{threshold}"
+                    )
+                if bool(report_rows[-1]["has_math"]) and report_rows[-1]["backend_category"] != "latex":
+                    report_rows[-1]["quality_alert"] = True
+                    report_rows[-1]["alerts"].append("math_doc_rendered_without_latex_backend")
+                print(f"  OK: {md_file}")
+            except Exception as exc:
+                elapsed = round(time.time() - started, 3)
+                _record_render(md_file, out_pdf, False, str(exc))
+                report_rows[-1]["elapsed_seconds"] = elapsed
+                report_rows[-1]["performance_alert"] = True
+                report_rows[-1]["alerts"].append("render_failure")
+                failures.append({"markdown": str(md_file), "error": str(exc)})
+                print(f"  FAIL: {md_file} — {exc}", file=sys.stderr)
 
     if args.all_daily:
         print("Rendering daily reports...")
-        rendered.extend(render_all_daily_reports())
+        _render_many(sorted((_ROOT / "documentation" / "daily_reports").glob("*.md")))
 
     if args.all_research_notes:
         print("Rendering research notes...")
-        rendered.extend(render_all_research_notes())
+        _render_many(sorted((_ROOT / "documentation" / "research_notes").glob("*.md")))
+
+    if args.all_docs:
+        print("Rendering all documentation markdown files...")
+        _render_many(_discover_documentation_markdown(include_archive=args.include_archive))
 
     if args.input:
-        pdf = render_markdown_to_pdf(
-            args.input,
-            output_pdf=args.output,
-            css_path=args.css,
-            backend=args.backend,
-        )
-        rendered.append(pdf)
-        print(f"PDF: {pdf}")
+        started = time.time()
+        try:
+            result = render_markdown_to_pdf(
+                args.input,
+                output_pdf=args.output,
+                css_path=args.css,
+                backend=args.backend,
+                return_details=True,
+            )
+            elapsed = round(time.time() - started, 3)
+            pdf = result["pdf_path"]
+            rendered.append(pdf)
+            _record_render(
+                Path(args.input).resolve(),
+                pdf,
+                True,
+                backend=str(result.get("backend", "")),
+                backend_category=str(result.get("backend_category", "unknown")),
+                has_math=bool(result.get("has_math", False)),
+                cover_applied=bool(result.get("cover_applied", True)),
+                cover_author=str(result.get("cover_author", PDF_COVER_AUTHOR)),
+                cover_organization=str(result.get("cover_organization", PDF_COVER_ORGANIZATION)),
+            )
+            report_rows[-1]["elapsed_seconds"] = elapsed
+            threshold = float(report_rows[-1]["render_time_threshold_seconds"])
+            if elapsed > threshold:
+                report_rows[-1]["performance_alert"] = True
+                report_rows[-1]["alerts"].append(
+                    f"render_time_exceeded:{elapsed}>{threshold}"
+                )
+            if bool(report_rows[-1]["has_math"]) and report_rows[-1]["backend_category"] != "latex":
+                report_rows[-1]["quality_alert"] = True
+                report_rows[-1]["alerts"].append("math_doc_rendered_without_latex_backend")
+            print(f"PDF: {pdf}")
+        except Exception as exc:
+            elapsed = round(time.time() - started, 3)
+            target = Path(args.input).resolve()
+            out_pdf = Path(args.output).resolve() if args.output else target.with_suffix(".pdf")
+            _record_render(target, out_pdf, False, str(exc))
+            report_rows[-1]["elapsed_seconds"] = elapsed
+            report_rows[-1]["performance_alert"] = True
+            report_rows[-1]["alerts"].append("render_failure")
+            failures.append({"markdown": str(target), "error": str(exc)})
+            print(f"FAIL: {target} — {exc}", file=sys.stderr)
+
+    if args.report_json:
+        report_path = Path(args.report_json).resolve()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_payload = {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "rendered_count": len(rendered),
+            "failure_count": len(failures),
+            "performance_alert_count": sum(1 for row in report_rows if row.get("performance_alert")),
+            "quality_alert_count": sum(1 for row in report_rows if row.get("quality_alert")),
+            "strict": bool(args.strict),
+            "thresholds": {
+                "backend_category_seconds": CATEGORY_RENDER_TIME_THRESHOLDS_SECONDS,
+            },
+            "rows": report_rows,
+        }
+        report_path.write_text(json.dumps(report_payload, indent=2))
+        print(f"Render report: {report_path}")
 
     if rendered:
         print(f"\n{len(rendered)} PDF(s) rendered successfully.")
+        if failures:
+            print(f"{len(failures)} target(s) failed.", file=sys.stderr)
+            if args.strict:
+                sys.exit(2)
     else:
         print("No PDFs rendered.", file=sys.stderr)
         sys.exit(1)

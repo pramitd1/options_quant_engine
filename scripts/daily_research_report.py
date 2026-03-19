@@ -36,6 +36,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from research.signal_evaluation.daily_research_report import (
     generate_daily_report,
     DEFAULT_DATASET_PATH,
+    DEFAULT_CUMULATIVE_DATASET_PATH,
     DEFAULT_OUTPUT_DIR,
 )
 
@@ -53,8 +54,11 @@ def main() -> None:
     parser.add_argument(
         "--dataset-path",
         type=str,
-        default=str(DEFAULT_DATASET_PATH),
-        help="Path to signals_dataset.csv.",
+        default=None,
+        help=(
+            "Path to signals CSV. Defaults to signals_dataset.csv for daily mode "
+            "and signals_dataset_cumul.csv for cumulative mode."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -92,6 +96,12 @@ def main() -> None:
         default=False,
         help="Skip PDF rendering.",
     )
+    parser.add_argument(
+        "--skip-evaluation",
+        action="store_true",
+        default=False,
+        help="Skip signal outcome evaluation step (use pre-computed results in the dataset).",
+    )
 
     args = parser.parse_args()
     if args.no_pdf:
@@ -104,12 +114,17 @@ def main() -> None:
     modes = ["daily", "cumulative"] if args.both else [args.mode]
 
     for m in modes:
+        # Pass None when no explicit path is given — the library auto-selects
+        # signals_dataset_cumul.csv as the base for both modes.
+        ds_path = args.dataset_path or None
+
         report_path = generate_daily_report(
             report_date=report_date,
-            dataset_path=args.dataset_path,
+            dataset_path=ds_path,
             output_dir=args.output_dir,
             narrative=args.narrative,
             mode=m,
+            run_evaluation=not args.skip_evaluation,
         )
 
         label = "Daily" if m == "daily" else "Cumulative"
