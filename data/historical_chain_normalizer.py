@@ -42,6 +42,11 @@ CANONICAL_COLUMNS = [
 ]
 
 
+# Cache normalized yearly chains to avoid repeating expensive schema recovery
+# and NaT-expiry reconstruction on every backtest day.
+_normalized_chain_cache: dict[tuple, pd.DataFrame] = {}
+
+
 # ---------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------
@@ -74,6 +79,19 @@ def load_normalized_chain(
     """
     if isinstance(years, int):
         years = [years]
+    if years is not None:
+        years = sorted(int(y) for y in years)
+
+    cache_key = (
+        symbol.strip().upper(),
+        tuple(years) if years is not None else None,
+        bool(options_only),
+        bool(recover_nat_expiry),
+        bool(fill_underlying),
+    )
+    cached = _normalized_chain_cache.get(cache_key)
+    if cached is not None:
+        return cached.copy()
 
     parquet_files = sorted(NSE_FO_DIR.glob(f"fo_bhav_{symbol}_*.parquet"))
     if not parquet_files:
@@ -118,7 +136,9 @@ def load_normalized_chain(
 
     log.info("Loaded %d rows across %d trading days", len(combined),
              combined["trade_date"].nunique())
-    return combined
+
+    _normalized_chain_cache[cache_key] = combined
+    return combined.copy()
 
 
 def load_normalized_day(

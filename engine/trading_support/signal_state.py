@@ -349,6 +349,7 @@ def decide_direction(
     vanna_regime=None,
     charm_regime=None,
     backtest_mode=False,
+    volatility_shock_score=None,
 ):
     """
     Purpose:
@@ -368,12 +369,14 @@ def decide_direction(
         vanna_regime (Any): Input associated with vanna regime.
         charm_regime (Any): Input associated with charm regime.
         backtest_mode (Any): Input associated with backtest mode.
+        volatility_shock_score (Any): Macro-derived volatility shock indicator for regime-aware weighting.
     
     Returns:
         Any: Result returned by the helper.
     
     Notes:
         Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+        Volatility shock score allows dynamic regime weighting: high vol favors puts (bearish direction).
     """
     direction_weights = get_direction_vote_weights()
     direction_thresholds = get_direction_thresholds()
@@ -451,6 +454,15 @@ def decide_direction(
 
     bullish_score = round(sum(weight for _, weight in bullish_votes), 2)
     bearish_score = round(sum(weight for _, weight in bearish_votes), 2)
+    
+    # Apply regime-aware weighting: in elevated volatility, boost bearish (PUT) advantage
+    # to prevent extreme call bias in risk-off environments (fix for 6.55:1 call/put ratio)
+    volatility_shock = float(volatility_shock_score or 0.0)
+    if volatility_shock > 0.3:
+        # Regime weight ranges from 1.0 (low vol) to 1.4 (extreme shock)
+        regime_multiplier = 1.0 + (min(volatility_shock, 1.0) * 0.4)
+        bearish_score = round(bearish_score * regime_multiplier, 2)
+    
     score_margin = round(abs(bullish_score - bearish_score), 2)
 
     def build_source(votes):
@@ -537,6 +549,7 @@ def _compute_signal_state(
         vanna_regime=market_state["greek_exposures"].get("vanna_regime"),
         charm_regime=market_state["greek_exposures"].get("charm_regime"),
         backtest_mode=backtest_mode,
+        volatility_shock_score=market_state.get("volatility_shock_score", 0.0),
     )
 
     if direction is None:

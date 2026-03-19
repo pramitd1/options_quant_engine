@@ -23,11 +23,13 @@ import pandas as pd
 
 from utils.numerics import safe_float
 from research.signal_evaluation.narrative_provider import generate_narrative as _ai_narrative
+from research.signal_evaluation.evaluator import update_signal_dataset_outcomes
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET_PATH = PROJECT_ROOT / "research" / "signal_evaluation" / "signals_dataset.csv"
+DEFAULT_CUMULATIVE_DATASET_PATH = PROJECT_ROOT / "research" / "signal_evaluation" / "signals_dataset_cumul.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "documentation" / "daily_reports"
 
 # ---------------------------------------------------------------------------
@@ -2413,6 +2415,7 @@ def generate_daily_report(
     output_dir: str | Path | None = None,
     narrative: bool = False,
     mode: str = "daily",
+    run_evaluation: bool = True,
 ) -> Path:
     """Generate a signal research report.
 
@@ -2443,7 +2446,21 @@ def generate_daily_report(
     if mode not in ("daily", "cumulative"):
         raise ValueError(f"mode must be 'daily' or 'cumulative', got {mode!r}")
 
-    ds_path = Path(dataset_path) if dataset_path else DEFAULT_DATASET_PATH
+    # Always load the cumulative dataset for historical context when no explicit path
+    # is given. Daily mode filters analysis_df down to today; cumulative uses all rows.
+    if dataset_path:
+        ds_path = Path(dataset_path)
+    elif DEFAULT_CUMULATIVE_DATASET_PATH.exists():
+        ds_path = DEFAULT_CUMULATIVE_DATASET_PATH
+    else:
+        ds_path = DEFAULT_DATASET_PATH
+
+    # Backfill realized outcomes for any PENDING signals before building the report.
+    if run_evaluation and ds_path.exists():
+        logger.info("Evaluating signal outcomes in %s before report generation ...", ds_path.name)
+        update_signal_dataset_outcomes(dataset_path=ds_path)
+        logger.info("Signal outcome evaluation complete.")
+
     out_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 

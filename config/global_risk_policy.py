@@ -31,9 +31,11 @@ class GlobalRiskPolicyConfig:
     Attributes:
         oil_shock_extreme_change_pct (float): Value supplied for oil shock extreme change percentage.
         oil_shock_medium_change_pct (float): Value supplied for oil shock medium change percentage.
+        oil_shock_notable_change_pct (float): Value supplied for oil shock notable change percentage (early warning tier).
         oil_shock_relief_change_pct (float): Value supplied for oil shock relief change percentage.
         oil_shock_extreme_score (float): Score value for oil shock extreme.
         oil_shock_medium_score (float): Score value for oil shock medium.
+        oil_shock_notable_score (float): Score value for oil shock notable (early warning).
         oil_shock_relief_score (float): Score value for oil shock relief.
         gold_risk_extreme_change_pct (float): Value supplied for gold risk extreme change percentage.
         gold_risk_medium_change_pct (float): Value supplied for gold risk medium change percentage.
@@ -177,10 +179,12 @@ class GlobalRiskPolicyConfig:
         Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
     """
     oil_shock_extreme_change_pct: float = 7.0
-    oil_shock_medium_change_pct: float = 4.0
+    oil_shock_medium_change_pct: float = 2.5
+    oil_shock_notable_change_pct: float = 1.5
     oil_shock_relief_change_pct: float = -5.0
     oil_shock_extreme_score: float = 1.0
     oil_shock_medium_score: float = 0.7
+    oil_shock_notable_score: float = 0.3
     oil_shock_relief_score: float = -0.5
     gold_risk_extreme_change_pct: float = 3.0
     gold_risk_medium_change_pct: float = 2.0
@@ -193,9 +197,9 @@ class GlobalRiskPolicyConfig:
     commodity_risk_oil_weight: float = 0.5
     commodity_risk_gold_weight: float = 0.3
     commodity_risk_copper_weight: float = 0.2
-    vix_shock_extreme_change_pct: float = 15.0
-    vix_shock_medium_change_pct: float = 10.0
-    vix_shock_low_change_pct: float = 5.0
+    vix_shock_extreme_change_pct: float = 12.0
+    vix_shock_medium_change_pct: float = 7.0
+    vix_shock_low_change_pct: float = 3.0
     vix_shock_extreme_score: float = 1.0
     vix_shock_medium_score: float = 0.7
     vix_shock_low_score: float = 0.4

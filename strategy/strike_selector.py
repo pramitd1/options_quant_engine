@@ -119,25 +119,22 @@ def _normalize_candidate_rows(rows: pd.DataFrame) -> pd.DataFrame:
     Notes:
         Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
     """
+    def _first_numeric(df: pd.DataFrame, primary: str, fallback=None, *, default: float = 0.0) -> pd.Series:
+        if primary in df.columns:
+            source = df[primary]
+        elif fallback is not None and fallback in df.columns:
+            source = df[fallback]
+        else:
+            return pd.Series(default, index=df.index, dtype="float64")
+        return pd.to_numeric(source, errors="coerce").fillna(default)
+
     normalized = rows.copy()
-    normalized["_normalized_strike"] = pd.to_numeric(normalized.get("strikePrice"), errors="coerce")
-    normalized["_normalized_last_price"] = pd.to_numeric(
-        normalized.get("lastPrice", normalized.get("LAST_PRICE")),
-        errors="coerce",
-    ).fillna(0.0)
-    normalized["_normalized_volume"] = pd.to_numeric(
-        normalized.get("totalTradedVolume", normalized.get("VOLUME")),
-        errors="coerce",
-    ).fillna(0.0)
-    normalized["_normalized_open_interest"] = pd.to_numeric(
-        normalized.get("openInterest", normalized.get("OPEN_INT")),
-        errors="coerce",
-    ).fillna(0.0)
-    normalized["_normalized_iv"] = pd.to_numeric(
-        normalized.get("impliedVolatility", normalized.get("IV")),
-        errors="coerce",
-    ).fillna(0.0)
-    return normalized.dropna(subset=["_normalized_strike"]).copy()
+    normalized["_normalized_strike"] = _first_numeric(normalized, "strikePrice", default=np.nan)
+    normalized["_normalized_last_price"] = _first_numeric(normalized, "lastPrice", "LAST_PRICE", default=0.0)
+    normalized["_normalized_volume"] = _first_numeric(normalized, "totalTradedVolume", "VOLUME", default=0.0)
+    normalized["_normalized_open_interest"] = _first_numeric(normalized, "openInterest", "OPEN_INT", default=0.0)
+    normalized["_normalized_iv"] = _first_numeric(normalized, "impliedVolatility", "IV", default=0.0)
+    return normalized[normalized["_normalized_strike"].notna()].copy()
 
 
 def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
@@ -587,6 +584,7 @@ def rank_strike_candidates(
     atm_iv=None,
     days_to_expiry=None,
     vol_surface_regime=None,
+    volatility_shock_score=None,
 ):
     """
     Purpose:
@@ -629,6 +627,17 @@ def rank_strike_candidates(
         if strike_window_steps is None
         else strike_window_steps
     )
+
+    # Apply volatility-aware strike distance adjustment (PRIORITY 3).
+    # If the caller did not explicitly override strike_window_steps, we map
+    # the runtime volatility regime to a dynamic strike window.
+    vol_shock = float(volatility_shock_score or 0.0)
+    if strike_window_steps is None and vol_shock > 0.0:
+        adjusted_window = 4 + (min(vol_shock, 1.0) * 11)
+        effective_window_steps = int(round(adjusted_window))
+
+    effective_window_steps = max(int(effective_window_steps), 1)
+    
     rows = _apply_strike_window(rows, spot=spot, window_steps=effective_window_steps)
     rows = _normalize_candidate_rows(rows)
     if rows.empty:
@@ -665,48 +674,70 @@ def rank_strike_candidates(
         resistance_wall=resistance_wall,
     )
     _has_enhanced = not enhanced.empty
-
-    # Merge enhanced columns into the scored frame so they appear in each
-    # per-candidate record dict without needing a secondary index lookup.
     if _has_enhanced:
-        for col in enhanced.columns:
-            rows[col] = enhanced[col]
+        rows = rows.join(enhanced, how="left")
+
+    # When no external hook mutates scores, we can pre-rank and trim the
+    # candidate set before expensive IV/Greeks fallback work.
+    if not callable(candidate_score_hook) and len(rows) > top_n:
+        pre_rank = rows.copy()
+        pre_rank["_spot_distance"] = (pre_rank["_normalized_strike"].astype(float) - float(spot)).abs()
+        pre_rank["_price_tiebreak"] = pre_rank["_normalized_last_price"].where(
+            pre_rank["_normalized_last_price"] > 0,
+            10**9,
+        )
+        pre_rank = pre_rank.sort_values(
+            by=["_base_score", "_spot_distance", "_price_tiebreak", "_normalized_strike"],
+            ascending=[False, True, True, True],
+        )
+        pre_limit = max(int(top_n) * 6, 25)
+        rows = pre_rank.head(pre_limit).drop(columns=["_spot_distance", "_price_tiebreak"], errors="ignore")
 
     # Convert the scored dataframe into plain records because the final engine
     # payload and downstream reporting stack work with JSON-friendly structures.
     candidates = []
-    for row in rows.to_dict(orient="records"):
-        strike = _safe_float(row.get("_normalized_strike", row.get("strikePrice")), None)
+    row_columns = list(rows.columns)
+    col_index = {col: idx for idx, col in enumerate(row_columns)}
+    for row in rows.itertuples(index=False, name=None):
+        def _row_get(col_name, default=None):
+            idx = col_index.get(col_name)
+            if idx is None:
+                return default
+            return row[idx]
+
+        strike = _safe_float(_row_get("_normalized_strike", _row_get("strikePrice")), None)
         if strike is None:
             continue
 
-        premium = _safe_float(row.get("_normalized_last_price"), _safe_float(row.get("lastPrice"), 0.0))
-        volume = _safe_float(row.get("_normalized_volume"), _safe_float(row.get("totalTradedVolume"), row.get("VOLUME", 0.0)))
-        oi = _safe_float(row.get("_normalized_open_interest"), _safe_float(row.get("openInterest"), row.get("OPEN_INT", 0.0)))
-        iv = _safe_float(row.get("_normalized_iv"), _safe_float(row.get("impliedVolatility"), row.get("IV", 0.0)))
+        premium = _safe_float(_row_get("_normalized_last_price"), _safe_float(_row_get("lastPrice"), 0.0))
+        volume = _safe_float(_row_get("_normalized_volume"), _safe_float(_row_get("totalTradedVolume"), _row_get("VOLUME", 0.0)))
+        oi = _safe_float(_row_get("_normalized_open_interest"), _safe_float(_row_get("openInterest"), _row_get("OPEN_INT", 0.0)))
+        iv = _safe_float(_row_get("_normalized_iv"), _safe_float(_row_get("impliedVolatility"), _row_get("IV", 0.0)))
+        tte = None
 
         # Fallback: estimate IV from market price when upstream enrichment missed this row
         if (iv is None or iv <= 0) and premium > 0 and strike and spot:
-            tte = _parse_expiry_years(row.get("EXPIRY_DT"))
+            tte = _parse_expiry_years(_row_get("EXPIRY_DT"))
             estimated_iv = estimate_iv_from_price(premium, spot, strike, tte, option_type)
             if estimated_iv and estimated_iv > 0:
                 iv = estimated_iv
 
         score_breakdown = {
-            "moneyness_score": int(row.get("_moneyness_score", 0)),
-            "directional_side_score": int(row.get("_directional_side_score", 0)),
-            "premium_score": int(row.get("_premium_score", 0)),
-            "liquidity_score": int(row.get("_liquidity_score", 0)),
-            "wall_distance_score": int(row.get("_wall_distance_score", 0)),
-            "gamma_cluster_score": int(row.get("_gamma_cluster_score", 0)),
-            "iv_score": int(row.get("_iv_score", 0)),
+            "moneyness_score": int(_row_get("_moneyness_score", 0)),
+            "directional_side_score": int(_row_get("_directional_side_score", 0)),
+            "premium_score": int(_row_get("_premium_score", 0)),
+            "liquidity_score": int(_row_get("_liquidity_score", 0)),
+            "wall_distance_score": int(_row_get("_wall_distance_score", 0)),
+            "gamma_cluster_score": int(_row_get("_gamma_cluster_score", 0)),
+            "iv_score": int(_row_get("_iv_score", 0)),
         }
 
         hook_payload = {}
         if callable(candidate_score_hook):
             try:
+                row_payload = {col: row[idx] for col, idx in col_index.items()}
                 hook_payload = candidate_score_hook(
-                    row,
+                    row_payload,
                     {
                         "strike": _to_python_number(strike),
                         "last_price": round(premium, 2),
@@ -724,12 +755,13 @@ def rank_strike_candidates(
         if efficiency_score_adjustment:
             score_breakdown["option_efficiency_score_adjustment"] = efficiency_score_adjustment
 
-        total_score = int(row.get("_base_score", 0)) + efficiency_score_adjustment
-        delta_raw = _safe_float(row.get("DELTA"), None)
+        total_score = int(_row_get("_base_score", 0)) + efficiency_score_adjustment
+        delta_raw = _safe_float(_row_get("DELTA"), None)
 
         # Fallback: compute delta from estimated IV when upstream enrichment missed
         if (delta_raw is None or (isinstance(delta_raw, float) and not (delta_raw == delta_raw))) and iv and iv > 0 and strike and spot:
-            tte = _parse_expiry_years(row.get("EXPIRY_DT"))
+            if tte is None:
+                tte = _parse_expiry_years(_row_get("EXPIRY_DT"))
             if tte is not None:
                 greeks = compute_option_greeks(
                     spot=spot, strike=strike, time_to_expiry_years=tte,
@@ -767,7 +799,7 @@ def rank_strike_candidates(
                 "liquidity_ok", "premium_reasonable",
             )
             for field in _enhanced_fields:
-                val = row.get(field)
+                val = _row_get(field)
                 if val is not None:
                     record[field] = _to_python_number(val) if isinstance(val, (np.integer, np.floating)) else val
 
@@ -804,6 +836,7 @@ def select_best_strike(
     atm_iv=None,
     days_to_expiry=None,
     vol_surface_regime=None,
+    volatility_shock_score=None,
 ):
     """
     Purpose:
@@ -850,6 +883,7 @@ def select_best_strike(
         atm_iv=atm_iv,
         days_to_expiry=days_to_expiry,
         vol_surface_regime=vol_surface_regime,
+        volatility_shock_score=volatility_shock_score,
     )
 
     if not ranked:

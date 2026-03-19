@@ -184,6 +184,8 @@ def _oil_shock_score(change_24h, *, cfg):
         return cfg.oil_shock_extreme_score
     if change_24h > cfg.oil_shock_medium_change_pct:
         return cfg.oil_shock_medium_score
+    if change_24h > cfg.oil_shock_notable_change_pct:
+        return cfg.oil_shock_notable_score
     if change_24h < cfg.oil_shock_relief_change_pct:
         return cfg.oil_shock_relief_score
     return 0.0
@@ -437,7 +439,7 @@ def _market_input_state(market_inputs, *, market_data_usable, market_data_stale)
         neutralization_reason = None
     else:
         effective_market_inputs = {key: None for key in MARKET_INPUT_KEYS}
-        neutralized = available_count > 0
+        neutralized = True
         neutralization_reason = "market_data_stale" if market_data_stale else "market_data_unavailable"
 
     return {

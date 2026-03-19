@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import re
+from functools import lru_cache
 
 import pandas as pd
 
@@ -133,7 +134,7 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
         match = re.fullmatch(r"T\+(\d+)", raw)
         if match:
             return max(float(match.group(1)) / 365.0, 1.0 / (365.0 * 24.0))
-        parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
+        parsed = _parse_expiry_timestamp_cached(expiry_value)
     else:
         parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
 
@@ -146,6 +147,16 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
 
     time_years = (parsed - now_ts).total_seconds() / (365.0 * 24 * 3600.0)
     return max(float(time_years), 1.0 / (365.0 * 24.0))
+
+
+@lru_cache(maxsize=2048)
+def _parse_expiry_timestamp_cached(expiry_value: str):
+    parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(expiry_value, errors="coerce", dayfirst=True, utc=True)
+        if pd.isna(parsed):
+            return None
+    return parsed
 
 
 def compute_option_greeks(
@@ -307,42 +318,50 @@ def enrich_chain_with_greeks(
     ivs = []
 
     for row in df.itertuples(index=False):
-        row_dict = row._asdict()
-        iv = row_dict.get("IV", row_dict.get("impliedVolatility"))
+        iv = getattr(row, "IV", None)
+        if iv is None:
+            iv = getattr(row, "impliedVolatility", None)
+
+        expiry_value = getattr(row, "EXPIRY_DT", None)
+        strike_value = getattr(row, "strikePrice", None)
+        option_type_value = getattr(row, "OPTION_TYP", "")
 
         # Fallback: estimate IV from market price when provider gives 0/None
-        tte_for_iv = _cached_parse_expiry_years(
-            row_dict.get("EXPIRY_DT"),
-        )
+        tte_for_iv = _cached_parse_expiry_years(expiry_value)
         if (iv is None or (isinstance(iv, (int, float)) and iv <= 0)) and spot is not None:
-            market_price = row_dict.get("lastPrice", row_dict.get("LAST_PRICE"))
-            opt_type = row_dict.get("OPTION_TYP", "")
+            market_price = getattr(row, "lastPrice", None)
+            if market_price is None:
+                market_price = getattr(row, "LAST_PRICE", None)
             estimated = estimate_iv_from_price(
-                market_price, spot, row_dict.get("strikePrice"), tte_for_iv, opt_type,
+                market_price,
+                spot,
+                strike_value,
+                tte_for_iv,
+                option_type_value,
             )
             if estimated > 0:
                 iv = estimated
 
         greeks = compute_option_greeks(
             spot=spot,
-            strike=row_dict.get("strikePrice"),
+            strike=strike_value,
             time_to_expiry_years=tte_for_iv,
             volatility_pct=iv,
-            option_type=row_dict.get("OPTION_TYP"),
+            option_type=option_type_value,
             risk_free_rate=risk_free_rate,
             dividend_yield=dividend_yield,
         )
 
         if greeks is None:
-            deltas.append(row_dict.get("DELTA"))
-            gammas.append(row_dict.get("GAMMA"))
-            thetas.append(row_dict.get("THETA"))
-            vegas.append(row_dict.get("VEGA"))
-            rhos.append(row_dict.get("RHO"))
-            vannas.append(row_dict.get("VANNA"))
-            charms.append(row_dict.get("CHARM"))
+            deltas.append(getattr(row, "DELTA", None))
+            gammas.append(getattr(row, "GAMMA", None))
+            thetas.append(getattr(row, "THETA", None))
+            vegas.append(getattr(row, "VEGA", None))
+            rhos.append(getattr(row, "RHO", None))
+            vannas.append(getattr(row, "VANNA", None))
+            charms.append(getattr(row, "CHARM", None))
             ttes.append(None)
-            ivs.append(row_dict.get("IV", row_dict.get("impliedVolatility")))
+            ivs.append(getattr(row, "IV", getattr(row, "impliedVolatility", None)))
             continue
 
         deltas.append(greeks["DELTA"])

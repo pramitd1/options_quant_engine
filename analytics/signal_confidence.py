@@ -107,21 +107,42 @@ def _market_stability_component(trade: dict) -> float:
     # Higher vol shock → lower stability; invert and normalise (0–100 scale)
     vol_stability = _clip(100 - vol_shock, 0, 100)
 
+    gamma_vol = _safe_float(
+        trade.get("gamma_vol_acceleration_score_normalized", trade.get("gamma_vol_acceleration_score")),
+        0,
+    )
+    gamma_stability = _clip(100 - _clip(gamma_vol, 0, 100), 0, 100)
+
     return _clip(
-        0.35 * regime_score + 0.35 * risk_score + 0.30 * vol_stability,
+        0.30 * regime_score + 0.30 * risk_score + 0.20 * vol_stability + 0.20 * gamma_stability,
         0, 100,
     )
 
 
 def _data_integrity_component(trade: dict) -> float:
     """Derived from data_quality_score and provider_health."""
-    dq = _safe_float(trade.get("data_quality_score"), 50)
-    dq_norm = _clip(dq, 0, 100)
+    dq_status = str(trade.get("data_quality_status") or "").upper().strip()
+    dq_status_map = {
+        "STRONG": 100,
+        "GOOD": 85,
+        "CAUTION": 60,
+        "WEAK": 35,
+    }
+    dq_norm = dq_status_map.get(dq_status)
+    if dq_norm is None:
+        dq_norm = _clip(_safe_float(trade.get("data_quality_score"), 50), 0, 100)
 
     ph = trade.get("provider_health")
     if isinstance(ph, dict):
         status = str(ph.get("summary_status") or "").upper().strip()
-        ph_map = {"HEALTHY": 100, "DEGRADED": 55, "UNHEALTHY": 15}
+        ph_map = {
+            "HEALTHY": 100,
+            "GOOD": 90,
+            "DEGRADED": 55,
+            "CAUTION": 45,
+            "WEAK": 20,
+            "UNHEALTHY": 15,
+        }
         ph_score = ph_map.get(status, 50)
     else:
         ph_score = 50.0

@@ -50,10 +50,37 @@ ENHANCED_SCORE_WEIGHTS = {
 
 def _rank_normalize(series: pd.Series) -> pd.Series:
     """Rank-normalize a series to [0, 1] using average rank."""
-    if series.empty or series.max() == series.min():
+    if series.empty:
         return pd.Series(0.5, index=series.index)
-    ranked = series.rank(method="average", ascending=True)
-    return (ranked - ranked.min()) / max(ranked.max() - ranked.min(), 1e-9)
+
+    values = pd.to_numeric(series, errors="coerce").fillna(0.0).to_numpy(dtype=float, copy=False)
+    n = values.size
+    if n <= 1:
+        return pd.Series(0.5, index=series.index)
+
+    vmin = float(values.min())
+    vmax = float(values.max())
+    if abs(vmax - vmin) < 1e-12:
+        return pd.Series(0.5, index=series.index)
+
+    order = np.argsort(values, kind="mergesort")
+    sorted_vals = values[order]
+    ranks = np.empty(n, dtype=float)
+    ranks[order] = np.arange(1, n + 1, dtype=float)
+
+    # Assign average ranks for tie groups to preserve previous behavior.
+    tie_bounds = np.flatnonzero(
+        np.concatenate(([True], sorted_vals[1:] != sorted_vals[:-1], [True]))
+    )
+    for idx in range(len(tie_bounds) - 1):
+        start = tie_bounds[idx]
+        end = tie_bounds[idx + 1]
+        if end - start > 1:
+            avg_rank = (start + 1 + end) / 2.0
+            ranks[order[start:end]] = avg_rank
+
+    normalized = (ranks - 1.0) / (n - 1.0)
+    return pd.Series(normalized, index=series.index)
 
 
 def _safe_series(rows: pd.DataFrame, *col_names) -> pd.Series:
@@ -229,15 +256,15 @@ def compute_payoff_efficiency(
     support_wall: float | None = None,
     resistance_wall: float | None = None,
     expected_move: float | None = None,
-) -> tuple[pd.Series, pd.DataFrame]:
+) -> tuple[pd.Series, dict[str, pd.Series]]:
     """Compute per-strike payoff efficiency and sub-component scores.
 
     Returns
     -------
     payoff_score : pd.Series
         0–100 composite payoff efficiency score.
-    components : pd.DataFrame
-        Columns: pe_premium_eff, pe_delta_align, pe_liquidity,
+    components : dict[str, pd.Series]
+        Keys: pe_premium_eff, pe_delta_align, pe_liquidity,
         pe_dist_target, pe_iv_eff (each 0–100).
     """
     if expected_move is None:
@@ -293,12 +320,13 @@ def compute_payoff_efficiency(
         + w["iv_efficiency"] * pe_iv
     ).round(1)
 
-    components = pd.DataFrame(index=rows.index)
-    components["pe_premium_eff"] = pe_norm.round(1)
-    components["pe_delta_align"] = pe_delta.round(1)
-    components["pe_liquidity"] = pe_liq.round(1)
-    components["pe_dist_target"] = pe_dist.round(1)
-    components["pe_iv_eff"] = pe_iv.round(1)
+    components = {
+        "pe_premium_eff": pe_norm.round(1),
+        "pe_delta_align": pe_delta.round(1),
+        "pe_liquidity": pe_liq.round(1),
+        "pe_dist_target": pe_dist.round(1),
+        "pe_iv_eff": pe_iv.round(1),
+    }
 
     return composite, components
 
@@ -320,7 +348,7 @@ def compute_tradeability_flags(
     atm_iv: float | None,
     days_to_expiry: float | None,
     expected_move: float | None = None,
-) -> pd.DataFrame:
+) -> dict[str, pd.Series]:
     volume = _safe_series(rows, "_normalized_volume", "totalTradedVolume", "VOLUME")
     oi = _safe_series(rows, "_normalized_open_interest", "openInterest", "OPEN_INT")
     premium = _safe_series(rows, "_normalized_last_price", "lastPrice", "LAST_PRICE")
@@ -332,11 +360,12 @@ def compute_tradeability_flags(
         dte = max(safe_float(days_to_expiry, 1.0), 0.1)
         expected_move = float(spot) * iv_val * math.sqrt(dte / 365.0)
 
-    flags = pd.DataFrame(index=rows.index)
-    flags["tradable_intraday"] = volume >= _MIN_INTRADAY_VOLUME
-    flags["tradable_overnight"] = volume >= _MIN_OVERNIGHT_VOLUME
-    flags["liquidity_ok"] = oi >= _MIN_LIQUIDITY_OI
-    flags["premium_reasonable"] = premium <= max(expected_move * _MAX_PREMIUM_RATIO, 1.0)
+    flags = {
+        "tradable_intraday": volume >= _MIN_INTRADAY_VOLUME,
+        "tradable_overnight": volume >= _MIN_OVERNIGHT_VOLUME,
+        "liquidity_ok": oi >= _MIN_LIQUIDITY_OI,
+        "premium_reasonable": premium <= max(expected_move * _MAX_PREMIUM_RATIO, 1.0),
+    }
 
     return flags
 
@@ -436,25 +465,25 @@ def compute_enhanced_strike_scores(
         expected_move=_expected_move,
     )
 
-    result = pd.DataFrame(index=rows.index)
-    result["liquidity_score"] = liquidity
-    result["gamma_magnetism"] = gamma_mag
-    result["dealer_pressure"] = dealer
-    result["convexity_score"] = convexity
-    result["premium_efficiency"] = prem_eff
-    result["enhanced_strike_score"] = enhanced_score
-    result["payoff_efficiency_score"] = payoff_score
-    for col in payoff_components.columns:
-        result[col] = payoff_components[col]
-    result["distance_from_spot_pts"] = dist_pts
-    result["distance_from_spot_pct"] = dist_pct
-    result["gamma_regime"] = gamma_regime or ""
-    result["spot_vs_flip"] = spot_vs_flip or ""
-    result["dealer_hedging_bias"] = dealer_hedging_bias or ""
-    result["vol_surface_regime"] = vol_surface_regime or ""
-    result["tradable_intraday"] = flags["tradable_intraday"]
-    result["tradable_overnight"] = flags["tradable_overnight"]
-    result["liquidity_ok"] = flags["liquidity_ok"]
-    result["premium_reasonable"] = flags["premium_reasonable"]
+    result_data = {
+        "liquidity_score": liquidity,
+        "gamma_magnetism": gamma_mag,
+        "dealer_pressure": dealer,
+        "convexity_score": convexity,
+        "premium_efficiency": prem_eff,
+        "enhanced_strike_score": enhanced_score,
+        "payoff_efficiency_score": payoff_score,
+        **payoff_components,
+        "distance_from_spot_pts": dist_pts,
+        "distance_from_spot_pct": dist_pct,
+        "gamma_regime": gamma_regime or "",
+        "spot_vs_flip": spot_vs_flip or "",
+        "dealer_hedging_bias": dealer_hedging_bias or "",
+        "vol_surface_regime": vol_surface_regime or "",
+        "tradable_intraday": flags["tradable_intraday"],
+        "tradable_overnight": flags["tradable_overnight"],
+        "liquidity_ok": flags["liquidity_ok"],
+        "premium_reasonable": flags["premium_reasonable"],
+    }
 
-    return result
+    return pd.DataFrame(result_data, index=rows.index)

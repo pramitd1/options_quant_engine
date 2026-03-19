@@ -72,7 +72,8 @@ CONSENSUS_SCORE_CONFIG = {
 }
 
 TRADE_RUNTIME_THRESHOLDS = {
-    "min_trade_strength": 45,
+    "min_trade_strength": 60,
+    "min_composite_score": 55,
     "strong_signal_threshold": 75,
     "medium_signal_threshold": 60,
     "weak_signal_threshold": 40,
@@ -80,6 +81,17 @@ TRADE_RUNTIME_THRESHOLDS = {
     "directional_bias_threshold": 55,
     "neutral_flow_probability_floor": 0.55,
     "wall_proximity_buffer": 50,
+    "max_intraday_hold_minutes": 90,
+    "toxic_regime_hold_cap_minutes": 60,
+    "provider_health_caution_blocks_trade": 1,
+    "at_flip_trade_strength_penalty": 8,
+    "at_flip_size_cap": 0.75,
+    "at_flip_toxic_size_cap": 0.50,
+    "regime_strength_add_at_flip": 4,
+    "regime_strength_add_toxic": 8,
+    "regime_composite_add_at_flip": 3,
+    "regime_composite_add_toxic": 6,
+    "gamma_vol_normalization_scale": 100,
 }
 
 CONFIRMATION_FILTER_CONFIG = {

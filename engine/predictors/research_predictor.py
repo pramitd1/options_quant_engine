@@ -50,15 +50,15 @@ class ResearchDualModelPredictor:
 
             result = infer_single(model_features)
             if result is not None:
-                rank_score = result.rank_score
-                confidence_score = result.confidence_score
+                rank_score = result.ml_rank_score
+                confidence_score = result.ml_confidence_score
                 # Use the calibrated confidence as hybrid probability.
                 if confidence_score is not None:
                     research_prob = confidence_score
                 elif rank_score is not None:
                     research_prob = rank_score
         except Exception:
-            logger.debug("Research dual-model inference unavailable, falling back to engine blend")
+            logger.debug("Research dual-model inference unavailable, falling back to engine blend", exc_info=True)
 
         # Enrich components with research scores.
         components["research_rank_score"] = rank_score

@@ -154,6 +154,112 @@ def _collect_neutralization_states(payload):
     }
 
 
+def _normalize_gamma_vol_score(raw_score, normalization_scale):
+    scale = max(_safe_float(normalization_scale, 100.0), 1.0)
+    raw = _safe_float(raw_score, 0.0)
+    return int(_clip((raw / scale) * 100.0, 0, 100))
+
+
+def _compute_runtime_composite_score(
+    *,
+    trade_strength,
+    hybrid_move_probability,
+    confirmation_status,
+    data_quality_status,
+    gamma_vol_acceleration_score_normalized,
+):
+    confirmation_map = {
+        "STRONG_CONFIRMATION": 100,
+        "CONFIRMED": 85,
+        "MIXED": 55,
+        "CONFLICT": 25,
+        "NO_DIRECTION": 10,
+    }
+    data_quality_map = {
+        "STRONG": 100,
+        "GOOD": 85,
+        "CAUTION": 60,
+        "WEAK": 35,
+    }
+
+    trade_strength_score = _clip(_safe_float(trade_strength, 0.0), 0, 100)
+    move_probability_score = _clip(_safe_float(hybrid_move_probability, 0.0) * 100.0, 0, 100)
+    confirmation_score = confirmation_map.get(_as_upper(confirmation_status), 45)
+    data_quality_score = data_quality_map.get(_as_upper(data_quality_status), 50)
+    gamma_stability_score = 100.0 - _clip(_safe_float(gamma_vol_acceleration_score_normalized, 0.0), 0, 100)
+
+    composite = (
+        0.50 * trade_strength_score
+        + 0.20 * move_probability_score
+        + 0.15 * confirmation_score
+        + 0.10 * data_quality_score
+        + 0.05 * gamma_stability_score
+    )
+    return int(_clip(round(composite), 0, 100))
+
+
+def _resolve_regime_thresholds(*, runtime_thresholds, base_min_trade_strength, base_min_composite_score, market_state):
+    adjustments = []
+    effective_trade_strength = int(base_min_trade_strength)
+    effective_composite = int(base_min_composite_score)
+
+    spot_vs_flip = _as_upper(market_state.get("spot_vs_flip"))
+    gamma_regime = _as_upper(market_state.get("gamma_regime"))
+    dealer_position = _as_upper(market_state.get("dealer_pos"))
+    toxic_gamma = gamma_regime in {"NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"}
+    dealer_short_gamma = ("SHORT" in dealer_position) and ("GAMMA" in dealer_position)
+
+    if spot_vs_flip == "AT_FLIP":
+        add_strength = int(_safe_float(runtime_thresholds.get("regime_strength_add_at_flip"), 4.0))
+        add_composite = int(_safe_float(runtime_thresholds.get("regime_composite_add_at_flip"), 3.0))
+        effective_trade_strength += add_strength
+        effective_composite += add_composite
+        adjustments.append("at_flip_threshold_tightening")
+
+    if toxic_gamma or dealer_short_gamma:
+        add_strength = int(_safe_float(runtime_thresholds.get("regime_strength_add_toxic"), 8.0))
+        add_composite = int(_safe_float(runtime_thresholds.get("regime_composite_add_toxic"), 6.0))
+        effective_trade_strength += add_strength
+        effective_composite += add_composite
+        adjustments.append("toxic_regime_threshold_tightening")
+
+    return {
+        "effective_min_trade_strength": int(_clip(effective_trade_strength, 0, 100)),
+        "effective_min_composite_score": int(_clip(effective_composite, 0, 100)),
+        "adjustments": adjustments,
+        "toxic_context": bool(toxic_gamma or dealer_short_gamma),
+    }
+
+
+def _compute_structural_imbalance_audit(*, market_state, direction):
+    dealer_metrics = market_state.get("dealer_metrics") if isinstance(market_state, dict) else {}
+    dealer_metrics = dealer_metrics if isinstance(dealer_metrics, dict) else {}
+    call_oi_change = _safe_float(dealer_metrics.get("call_oi_change"), 0.0)
+    put_oi_change = _safe_float(dealer_metrics.get("put_oi_change"), 0.0)
+    directional_imbalance = call_oi_change - put_oi_change
+
+    direction = _as_upper(direction)
+    alignment = "NEUTRAL"
+    severity = "LOW"
+    if direction == "CALL":
+        alignment = "ALIGNED" if directional_imbalance >= 0 else "CONFLICT"
+    elif direction == "PUT":
+        alignment = "ALIGNED" if directional_imbalance <= 0 else "CONFLICT"
+
+    abs_imbalance = abs(directional_imbalance)
+    if abs_imbalance >= 200000:
+        severity = "HIGH"
+    elif abs_imbalance >= 80000:
+        severity = "MEDIUM"
+
+    return {
+        "call_put_imbalance_score": round(directional_imbalance, 2),
+        "call_put_imbalance_abs": round(abs_imbalance, 2),
+        "call_put_alignment": alignment,
+        "call_put_imbalance_severity": severity,
+    }
+
+
 def _build_decision_explainability(payload, *, trade_status, min_trade_strength):
     direction = payload.get("direction")
     flow_signal = _as_upper(payload.get("final_flow_signal") or payload.get("flow_signal"))
@@ -554,6 +660,10 @@ def generate_trade(
         "days_to_expiry": _estimate_days_to_expiry(option_chain_validation, valuation_time),
         "weekday": _safe_weekday(valuation_time),
     }
+    
+    # Inject volatility shock score into market_state for regime-aware direction weighting
+    # This allows the direction decision to be sensitive to elevated volatility environments
+    market_state["volatility_shock_score"] = _grf.get("volatility_shock_score", 0.0)
 
     probability_state = _compute_probability_state(
         df,
@@ -747,7 +857,55 @@ def generate_trade(
             100,
         )
     )
+    runtime_thresholds = get_trade_runtime_thresholds()
+    min_trade_strength = (
+        BACKTEST_MIN_TRADE_STRENGTH
+        if backtest_mode
+        else runtime_thresholds["min_trade_strength"]
+    )
+    min_composite_score = int(_safe_float(runtime_thresholds.get("min_composite_score"), 55.0))
+
+    regime_thresholds = _resolve_regime_thresholds(
+        runtime_thresholds=runtime_thresholds,
+        base_min_trade_strength=min_trade_strength,
+        base_min_composite_score=min_composite_score,
+        market_state=market_state,
+    )
+    min_trade_strength = regime_thresholds["effective_min_trade_strength"]
+    min_composite_score = regime_thresholds["effective_min_composite_score"]
+
+    provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
+    provider_health = provider_health if isinstance(provider_health, dict) else {}
+    provider_health_summary = _as_upper(provider_health.get("summary_status"))
+
+    at_flip_penalty_applied = 0
+    at_flip_size_cap = 1.0
+    at_flip_toxic_context = False
+    if _as_upper(market_state["spot_vs_flip"]) == "AT_FLIP":
+        at_flip_penalty_applied = int(_safe_float(runtime_thresholds.get("at_flip_trade_strength_penalty"), 8.0))
+        adjusted_trade_strength = int(_clip(adjusted_trade_strength - at_flip_penalty_applied, 0, 100))
+        dealer_position_upper = _as_upper(market_state.get("dealer_pos"))
+        at_flip_toxic_context = (
+            _as_upper(market_state.get("gamma_regime")) == "POSITIVE_GAMMA"
+            and ("SHORT" in dealer_position_upper)
+            and ("GAMMA" in dealer_position_upper)
+        )
+        at_flip_size_cap = _safe_float(
+            runtime_thresholds.get("at_flip_toxic_size_cap" if at_flip_toxic_context else "at_flip_size_cap"),
+            0.50 if at_flip_toxic_context else 0.75,
+        )
+
+    gamma_vol_acceleration_score_normalized = _normalize_gamma_vol_score(
+        gamma_vol_trade_modifiers["gamma_vol_acceleration_score"],
+        runtime_thresholds.get("gamma_vol_normalization_scale"),
+    )
+    structural_imbalance_audit = _compute_structural_imbalance_audit(
+        market_state=market_state,
+        direction=direction,
+    )
+
     scoring_breakdown["base_trade_strength"] = trade_strength
+    scoring_breakdown["at_flip_trade_strength_penalty"] = -at_flip_penalty_applied
     scoring_breakdown["total_score"] = adjusted_trade_strength
     signal_regime = classify_signal_regime(
         direction=direction,
@@ -757,13 +915,6 @@ def generate_trade(
         confirmation_status=confirmation["status"],
         event_lockdown_flag=event_lockdown_flag or macro_news_adjustments["event_lockdown_flag"],
         data_quality_status=data_quality["status"],
-    )
-
-    runtime_thresholds = get_trade_runtime_thresholds()
-    min_trade_strength = (
-        BACKTEST_MIN_TRADE_STRENGTH
-        if backtest_mode
-        else runtime_thresholds["min_trade_strength"]
     )
 
     # This payload is intentionally verbose because it serves three audiences:
@@ -818,6 +969,7 @@ def generate_trade(
         "spot_validation": spot_validation,
         "option_chain_validation": option_chain_validation,
         "provider_health": option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else None,
+        "provider_health_summary": provider_health_summary,
         "data_quality_score": data_quality["score"],
         "data_quality_status": data_quality["status"],
         "data_quality_reasons": data_quality["reasons"],
@@ -855,6 +1007,7 @@ def generate_trade(
         "overnight_trade_block": global_risk_trade_modifiers["overnight_trade_block"],
         "global_risk_adjustment_score": global_risk_adjustment_score,
         "gamma_vol_acceleration_score": gamma_vol_trade_modifiers["gamma_vol_acceleration_score"],
+        "gamma_vol_acceleration_score_normalized": gamma_vol_acceleration_score_normalized,
         "squeeze_risk_state": gamma_vol_trade_modifiers["squeeze_risk_state"],
         "directional_convexity_state": gamma_vol_trade_modifiers["directional_convexity_state"],
         "upside_squeeze_risk": gamma_vol_trade_modifiers["upside_squeeze_risk"],
@@ -888,6 +1041,10 @@ def generate_trade(
         "volatility_explosion_probability": global_risk_trade_modifiers["volatility_explosion_probability"],
         "global_risk_features": global_risk_state.get("global_risk_features") if isinstance(global_risk_state, dict) else {},
         "global_risk_diagnostics": global_risk_state.get("global_risk_diagnostics") if isinstance(global_risk_state, dict) else {},
+        "call_put_imbalance_score": structural_imbalance_audit["call_put_imbalance_score"],
+        "call_put_imbalance_abs": structural_imbalance_audit["call_put_imbalance_abs"],
+        "call_put_alignment": structural_imbalance_audit["call_put_alignment"],
+        "call_put_imbalance_severity": structural_imbalance_audit["call_put_imbalance_severity"],
         "gamma_vol_features": gamma_vol_state.get("gamma_vol_features") if isinstance(gamma_vol_state, dict) else {},
         "gamma_vol_diagnostics": gamma_vol_state.get("gamma_vol_diagnostics") if isinstance(gamma_vol_state, dict) else {},
         "dealer_pressure_features": dealer_pressure_state.get("dealer_pressure_features") if isinstance(dealer_pressure_state, dict) else {},
@@ -896,6 +1053,14 @@ def generate_trade(
         "lot_size": lot_size,
         "requested_lots": requested_lots,
         "max_capital_per_trade": max_capital,
+        "at_flip_trade_strength_penalty": at_flip_penalty_applied,
+        "at_flip_size_cap": round(at_flip_size_cap, 2),
+        "at_flip_toxic_context": at_flip_toxic_context,
+        "regime_toxic_context": regime_thresholds["toxic_context"],
+        "regime_threshold_adjustments": regime_thresholds["adjustments"],
+        "min_trade_strength_threshold": min_trade_strength,
+        "min_composite_score_threshold": min_composite_score,
+        "runtime_composite_score": None,
         "backtest_mode": backtest_mode,
     }
 
@@ -1149,6 +1314,7 @@ def generate_trade(
             atm_iv=market_state["atm_iv"],
             days_to_expiry=_estimate_days_to_expiry(option_chain_validation, valuation_time),
             vol_surface_regime=market_state["surface_regime"],
+            volatility_shock_score=market_state.get("volatility_shock_score", 0.0),
         )
 
     base_payload["ranked_strike_candidates"] = ranked_strikes
@@ -1186,6 +1352,17 @@ def generate_trade(
         minutes_since_open=_mso,
         minutes_to_close=_mtc,
     )
+    hold_cap_minutes = int(_safe_float(runtime_thresholds.get("max_intraday_hold_minutes"), 90.0))
+    if regime_thresholds["toxic_context"] or at_flip_toxic_context:
+        hold_cap_minutes = min(
+            hold_cap_minutes,
+            int(_safe_float(runtime_thresholds.get("toxic_regime_hold_cap_minutes"), 60.0)),
+        )
+    recommended_hold_minutes = min(int(exit_timing["recommended_hold_minutes"]), hold_cap_minutes)
+    max_hold_minutes = min(int(exit_timing["max_hold_minutes"]), hold_cap_minutes)
+    exit_timing_reasons = list(exit_timing.get("exit_timing_reasons") or [])
+    if recommended_hold_minutes < int(exit_timing["recommended_hold_minutes"]) or max_hold_minutes < int(exit_timing["max_hold_minutes"]):
+        exit_timing_reasons.append(f"hard_hold_cap_applied_{hold_cap_minutes}m")
 
     option_row_dict = option_row.iloc[0].to_dict()
 
@@ -1252,10 +1429,10 @@ def generate_trade(
         "entry_price": round(entry_price, 2),
         "target": round(target, 2),
         "stop_loss": round(stop_loss, 2),
-        "recommended_hold_minutes": exit_timing["recommended_hold_minutes"],
-        "max_hold_minutes": exit_timing["max_hold_minutes"],
+        "recommended_hold_minutes": recommended_hold_minutes,
+        "max_hold_minutes": max_hold_minutes,
         "exit_urgency": exit_timing["exit_urgency"],
-        "exit_timing_reasons": exit_timing["exit_timing_reasons"],
+        "exit_timing_reasons": exit_timing_reasons,
         "expected_move_points": option_efficiency_trade_modifiers["expected_move_points"],
         "expected_move_pct": option_efficiency_trade_modifiers["expected_move_pct"],
         "expected_move_quality": option_efficiency_trade_modifiers["expected_move_quality"],
@@ -1330,7 +1507,8 @@ def generate_trade(
 
     # Macro and global-risk size caps can reduce exposure without vetoing the
     # idea entirely, which is useful for elevated-risk but still actionable setups.
-    risk_size_cap = global_risk["global_risk_size_cap"]
+    risk_size_cap = min(_safe_float(global_risk["global_risk_size_cap"], 1.0), _safe_float(at_flip_size_cap, 1.0))
+    base_payload["effective_size_cap"] = round(risk_size_cap, 2)
     suggested_lots = max(0, int(base_payload["number_of_lots"] * risk_size_cap))
     if base_payload["number_of_lots"] > 0 and suggested_lots == 0 and risk_size_cap > 0:
         suggested_lots = 1
@@ -1347,6 +1525,30 @@ def generate_trade(
 
     if global_risk["risk_trade_status"] == "WATCHLIST":
         return _finalize(base_payload, "WATCHLIST", global_risk["risk_message"])
+
+    runtime_composite_score = _compute_runtime_composite_score(
+        trade_strength=adjusted_trade_strength,
+        hybrid_move_probability=probability_state["hybrid_move_probability"],
+        confirmation_status=confirmation["status"],
+        data_quality_status=data_quality["status"],
+        gamma_vol_acceleration_score_normalized=gamma_vol_acceleration_score_normalized,
+    )
+    base_payload["runtime_composite_score"] = runtime_composite_score
+
+    if runtime_composite_score < min_composite_score:
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            f"Runtime composite score {runtime_composite_score} below threshold {min_composite_score}",
+        )
+
+    caution_blocks_trade = bool(int(_safe_float(runtime_thresholds.get("provider_health_caution_blocks_trade"), 1.0)))
+    if caution_blocks_trade and provider_health_summary in {"CAUTION", "WEAK"}:
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            f"Provider health {provider_health_summary} blocks TRADE and routes to WATCHLIST",
+        )
 
     if apply_budget_constraint:
         base_payload["message"] = "Tradable signal generated with budget optimization"

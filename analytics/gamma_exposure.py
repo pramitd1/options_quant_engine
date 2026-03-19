@@ -56,30 +56,29 @@ def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
 
     df = option_chain.copy()
 
+    strike_col = "strikePrice" if "strikePrice" in df.columns else "STRIKE_PR"
+    oi_col = "openInterest" if "openInterest" in df.columns else "OPEN_INT"
+    type_col = "OPTION_TYP"
+
+    if strike_col not in df.columns or oi_col not in df.columns or type_col not in df.columns:
+        return 0.0
+
+    strikes = pd.to_numeric(df[strike_col], errors="coerce")
+    oi = pd.to_numeric(df[oi_col], errors="coerce").fillna(0.0)
+    option_type = df[type_col].astype(str).str.upper()
+
     if spot is None:
-        spot = df["strikePrice"].median()
+        spot = float(strikes.median()) if strikes.notna().any() else 0.0
 
     if "GAMMA" in df.columns:
         gamma = pd.to_numeric(df["GAMMA"], errors="coerce").fillna(0.0)
-        oi = pd.to_numeric(df["openInterest"], errors="coerce").fillna(0.0)
-        signed = np.where(df["OPTION_TYP"].astype(str).eq("PE"), -1.0, 1.0)
-        return float(np.sum(gamma * oi * signed))
+    else:
+        distance = (strikes - float(spot)).abs().fillna(np.inf)
+        gamma = 1.0 / (1.0 + distance)
 
-    exposures = []
-
-    for _, row in df.iterrows():
-        strike = row["strikePrice"]
-        oi = row["openInterest"]
-
-        gamma = approximate_gamma(strike, spot)
-        exposure = gamma * oi
-
-        if row["OPTION_TYP"] == "PE":
-            exposure *= -1
-
-        exposures.append(exposure)
-
-    return float(np.sum(exposures))
+    signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
+    exposure = gamma * oi * signed
+    return float(np.nansum(exposure.values))
 
 
 def gamma_signal(option_chain: pd.DataFrame, spot=None):

@@ -593,7 +593,57 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         print(f"{'execution_regime':26}: {d.get('execution_regime')}")
     else:
         print("  No trade yet. Waiting for confirmation.")
-        # Potential trigger conditions
+
+        # ── Threshold status ─────────────────────────────────────────────
+        if trade:
+            from config.signal_policy import get_trade_runtime_thresholds
+            _thresholds = get_trade_runtime_thresholds()
+            _min_strength = int(_thresholds.get("min_trade_strength", 60))
+            _cur_strength = int(trade.get("trade_strength") or 0)
+            _confirmation = str(
+                trade.get("confirmation_status")
+                or trade.get("confirmation")
+                or ""
+            ).upper()
+            _no_direction = _confirmation == "NO_DIRECTION" or not trade.get("direction")
+
+            print(f"\n  Trade Strength Threshold")
+            if _no_direction:
+                print("    current  : N/A (no direction yet)")
+                print(f"    required : {_min_strength}")
+                print(f"    progress : [{'░' * 20}] N/A/{_min_strength}")
+            else:
+                _gap = _min_strength - _cur_strength
+                _bar_filled = max(0, min(20, round(20 * _cur_strength / max(_min_strength, 1))))
+                _bar = "█" * _bar_filled + "░" * (20 - _bar_filled)
+                _gap_str = f"  ({_gap:+d} to threshold)" if _gap > 0 else "  ✓ threshold met"
+                print(f"    current  : {_cur_strength}")
+                print(f"    required : {_min_strength}{_gap_str}")
+                print(f"    progress : [{_bar}] {_cur_strength}/{_min_strength}")
+
+        # ── Best strike candidate ────────────────────────────────────────
+        if trade:
+            _ranked = trade.get("ranked_strike_candidates") or []
+            if _ranked:
+                _best = _ranked[0]
+                _b_strike = _best.get("strike", "-")
+                _b_type = _best.get("option_type", "-")
+                _b_score = _best.get("score")
+                _b_ltp = _best.get("last_price", "-")
+                _b_delta = _best.get("delta")
+                _b_iv = _best.get("iv")
+                _b_dir = trade.get("direction") or "-"
+                print(f"\n  Best Strike Candidate  [{_b_dir}]")
+                print(f"    strike   : {_b_strike} {_b_type}")
+                print(f"    ltp      : {_b_ltp}")
+                if _b_score is not None:
+                    print(f"    score    : {round(float(_b_score), 2)}")
+                if _b_delta is not None:
+                    print(f"    delta    : {round(float(_b_delta), 4)}")
+                if _b_iv is not None:
+                    print(f"    iv       : {round(float(_b_iv), 2)}")
+
+        # ── Potential trigger conditions ─────────────────────────────────
         triggers = []
         if trade:
             ntr = trade.get("no_trade_reason")
