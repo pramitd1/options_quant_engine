@@ -145,6 +145,23 @@ class ZerodhaOptionChain:
                     options["instrument_token"] == token
                 ].iloc[0]
 
+                depth = q.get("depth") if isinstance(q, dict) else {}
+                buy_depth = depth.get("buy") if isinstance(depth, dict) else []
+                sell_depth = depth.get("sell") if isinstance(depth, dict) else []
+
+                bid_price = 0.0
+                ask_price = 0.0
+                try:
+                    if buy_depth:
+                        bid_price = float((buy_depth[0] or {}).get("price", 0) or 0)
+                except Exception:
+                    bid_price = 0.0
+                try:
+                    if sell_depth:
+                        ask_price = float((sell_depth[0] or {}).get("price", 0) or 0)
+                except Exception:
+                    ask_price = 0.0
+
                 strike = inst["strike"]
                 expiry = str(inst.get("expiry", "NEAR"))
 
@@ -156,6 +173,8 @@ class ZerodhaOptionChain:
                     "strikePrice": strike,
                     "OPTION_TYP": inst["instrument_type"],
                     "lastPrice": last_price,
+                    "bidPrice": bid_price,
+                    "askPrice": ask_price,
                     "openInterest": oi,
                     "totalTradedVolume": volume,
                     "changeinOI": 0,
@@ -165,6 +184,8 @@ class ZerodhaOptionChain:
                     "OPEN_INT": oi,
                     "STRIKE_PR": strike,
                     "LAST_PRICE": last_price,
+                    "BID_PRICE": bid_price,
+                    "ASK_PRICE": ask_price,
                     "EXPIRY_DT": expiry,
                 })
 

@@ -13,6 +13,7 @@ from research.signal_evaluation.daily_research_report import (
     generate_daily_report,
     _directional_rows,
     _section_executive_summary,
+    _section_signal_generation,
     _section_horizon_performance,
     _section_alpha_decay,
     _section_score_calibration,
@@ -82,12 +83,14 @@ def _sample_dataset() -> pd.DataFrame:
 
 
 class TestDirectionalRows:
-    def test_filters_trade_signals_only(self):
+    def test_includes_directional_non_trade_rows(self):
         df = _sample_dataset()
         df["signal_timestamp"] = pd.to_datetime(df["signal_timestamp"])
+        # Ensure directional rows are not filtered by trade_status.
+        df.loc[0, "trade_status"] = "WATCHLIST"
         result = _directional_rows(df)
         assert len(result) == 7
-        assert all(result["trade_status"] == "TRADE")
+        assert "WATCHLIST" in set(result["trade_status"].astype(str))
 
     def test_empty_when_no_direction(self):
         df = _sample_dataset()
@@ -185,6 +188,23 @@ class TestSectionBuilders:
         text = "\n".join(lines)
         assert "Feature Variance Check" in text
         assert "Std Dev" in text
+
+    def test_signal_generation_summary_count_parity(self):
+        df = pd.DataFrame(
+            {
+                "direction": ["CALL", "PUT", "CALL", None, None, "PUT"],
+                "trade_status": ["TRADE", "WATCHLIST", "NO_SIGNAL", "NO_SIGNAL", "NO_TRADE", "WATCHLIST"],
+            }
+        )
+
+        lines = _section_signal_generation(df)
+        text = "\n".join(lines)
+
+        assert "| Total signal snapshots | 6 |" in text
+        assert "| Directional signals | 4 |" in text
+        assert "| Neutral / no-direction | 2 |" in text
+        assert "| Qualified trade signals | 1 |" in text
+        assert "| Watchlist / no-signal | 5 |" in text
 
 
 class TestGenerateReport:

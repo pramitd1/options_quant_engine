@@ -464,6 +464,64 @@ def _format_output_value(value, max_items=8):
     return value
 
 
+def _build_trade_triggers(trade):
+    """Return a short, human-readable list of execution triggers."""
+    if not isinstance(trade, dict):
+        return []
+
+    triggers = []
+    direction = str(trade.get("direction") or "").upper().strip()
+    flow_signal = str(trade.get("final_flow_signal") or "").upper().strip()
+    spot_vs_flip = str(trade.get("spot_vs_flip") or "").upper().strip()
+    dealer_bias = str(trade.get("dealer_hedging_bias") or "").upper().strip()
+    confirmation = str(trade.get("confirmation_status") or "").upper().strip()
+    macro_regime = str(trade.get("macro_regime") or "").upper().strip()
+    move_prob = trade.get("hybrid_move_probability")
+
+    if flow_signal == "BEARISH_FLOW" and direction == "PUT":
+        triggers.append("Bearish flow aligned with PUT direction")
+    elif flow_signal == "BULLISH_FLOW" and direction == "CALL":
+        triggers.append("Bullish flow aligned with CALL direction")
+
+    if spot_vs_flip == "BELOW_FLIP" and direction == "PUT":
+        triggers.append("Spot trading below gamma flip supports downside setup")
+    elif spot_vs_flip == "ABOVE_FLIP" and direction == "CALL":
+        triggers.append("Spot trading above gamma flip supports upside setup")
+    elif spot_vs_flip == "AT_FLIP":
+        triggers.append("Spot holding near gamma flip keeps move sensitivity elevated")
+
+    if dealer_bias == "DOWNSIDE_PINNING" and direction == "PUT":
+        triggers.append("Dealer hedging bias favors downside pressure")
+    elif dealer_bias == "UPSIDE_PINNING" and direction == "CALL":
+        triggers.append("Dealer hedging bias favors upside pressure")
+    elif dealer_bias in {"UPSIDE_HEDGING_ACCELERATION", "DOWNSIDE_HEDGING_ACCELERATION"}:
+        triggers.append("Dealer hedging acceleration is aligned with the move")
+
+    if confirmation == "STRONG_CONFIRMATION":
+        triggers.append("Confirmation filter is fully aligned")
+    elif confirmation == "CONFIRMED":
+        triggers.append("Confirmation filter supports execution")
+
+    if isinstance(move_prob, (int, float)):
+        if move_prob >= 0.65:
+            triggers.append(f"Move probability elevated at {move_prob:.0%}")
+        elif move_prob >= 0.55:
+            triggers.append(f"Move probability supportive at {move_prob:.0%}")
+
+    if macro_regime == "RISK_OFF" and direction == "PUT":
+        triggers.append("Risk-off macro regime supports PUT exposure")
+    elif macro_regime == "RISK_ON" and direction == "CALL":
+        triggers.append("Risk-on macro regime supports CALL exposure")
+
+    deduped = []
+    seen = set()
+    for trigger in triggers:
+        if trigger not in seen:
+            deduped.append(trigger)
+            seen.add(trigger)
+    return deduped[:5]
+
+
 def print_dealer_dashboard(summary: dict):
     """
     Purpose:
@@ -615,7 +673,8 @@ def print_signal_summary(trade):
         "macro_position_size_multiplier": trade.get("macro_position_size_multiplier"),
         "macro_suggested_lots": trade.get("macro_suggested_lots"),
         "global_risk_state": trade.get("global_risk_state"),
-        "global_risk_score": trade.get("global_risk_score"),
+        "global_risk_state_score": trade.get("global_risk_state_score"),
+        "global_risk_overlay_score": trade.get("global_risk_overlay_score", trade.get("global_risk_score")),
         "gamma_vol_acceleration_score": trade.get("gamma_vol_acceleration_score"),
         "squeeze_risk_state": trade.get("squeeze_risk_state"),
         "directional_convexity_state": trade.get("directional_convexity_state"),
@@ -640,6 +699,14 @@ def print_signal_summary(trade):
         "message": trade.get("message"),
     }
     print_key_value_block("QUANT TRADE SIGNAL", compact)
+
+    if trade.get("direction"):
+        triggers = _build_trade_triggers(trade)
+        if triggers:
+            print("\nTRADE TRIGGERS")
+            print("---------------------------")
+            for trigger in triggers:
+                print(f"  • {trigger}")
 
     explainability = {
         "decision_classification": trade.get("decision_classification"),
@@ -733,7 +800,8 @@ def print_diagnostics(trade):
         "confirmation_veto",
         "confirmation_reasons",
         "confirmation_breakdown",
-        "global_risk_reasons",
+        "global_risk_state_reasons",
+        "global_risk_overlay_reasons",
         "global_risk_diagnostics",
         "global_risk_features",
         "gamma_vol_reasons",

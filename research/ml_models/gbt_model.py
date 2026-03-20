@@ -43,7 +43,16 @@ def _load_model():
         return None, None
 
     try:
-        _cached_model = joblib.load(GBT_MODEL_PATH)
+        import warnings as _w
+        with _w.catch_warnings(record=True) as _caught:
+            _w.simplefilter("always")
+            _cached_model = joblib.load(GBT_MODEL_PATH)
+        for _cw in _caught:
+            logger.warning(
+                "sklearn version mismatch loading GBT model "
+                "— rebuild with `python scripts/build_model_registry.py`: %s",
+                _cw.message,
+            )
         if GBT_META_PATH.exists():
             with open(GBT_META_PATH) as f:
                 _cached_meta = json.load(f)

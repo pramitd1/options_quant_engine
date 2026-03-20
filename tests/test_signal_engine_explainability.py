@@ -105,3 +105,73 @@ def test_directionless_low_activation_setup_is_classified_as_inactive():
     assert explainability["watchlist_flag"] is False
     assert explainability["setup_activation_score"] < 35
     assert explainability["explainability_confidence"] in {"LOW", "MEDIUM", "HIGH"}
+
+
+def test_watchlist_provider_health_classification_does_not_depend_on_message_text():
+    payload = {
+        "direction": "PUT",
+        "signal_quality": "MEDIUM",
+        "trade_strength": 73,
+        "confirmation_status": "STRONG_CONFIRMATION",
+        "provider_health_summary": "CAUTION",
+        "data_quality_status": "GOOD",
+        "message": "Execution routed to watchlist",
+        "spot": 23100,
+    }
+
+    explainability = _build_decision_explainability(
+        payload,
+        trade_status="WATCHLIST",
+        min_trade_strength=60,
+    )
+
+    assert explainability["decision_classification"] == "BLOCKED_SETUP"
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_CAUTION_BLOCK"
+    assert "provider_health" in explainability["blocked_by"]
+
+
+def test_watchlist_keeps_primary_reason_and_tracks_low_strength_as_secondary_detail():
+    payload = {
+        "direction": "PUT",
+        "signal_quality": "MEDIUM",
+        "trade_strength": 48,
+        "confirmation_status": "CONFIRMED",
+        "provider_health_summary": "WEAK",
+        "data_quality_status": "GOOD",
+        "message": "Provider health weak blocks trade execution",
+        "spot": 23100,
+    }
+
+    explainability = _build_decision_explainability(
+        payload,
+        trade_status="WATCHLIST",
+        min_trade_strength=60,
+    )
+
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
+    details = explainability["no_trade_reason_details"]
+    assert any("secondary_blocker" in detail for detail in details)
+
+
+def test_preserves_preexisting_no_trade_reason_code_and_reason_from_payload():
+    payload = {
+        "direction": "PUT",
+        "signal_quality": "MEDIUM",
+        "trade_strength": 52,
+        "confirmation_status": "CONFLICT",
+        "provider_health_summary": "GOOD",
+        "data_quality_status": "GOOD",
+        "no_trade_reason_code": "UPSTREAM_REASON_CODE",
+        "no_trade_reason": "Upstream policy vetoed this trade",
+        "message": "watchlist",
+        "spot": 23100,
+    }
+
+    explainability = _build_decision_explainability(
+        payload,
+        trade_status="WATCHLIST",
+        min_trade_strength=60,
+    )
+
+    assert explainability["no_trade_reason_code"] == "UPSTREAM_REASON_CODE"
+    assert explainability["no_trade_reason"] == "Upstream policy vetoed this trade"

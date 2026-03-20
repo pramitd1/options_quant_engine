@@ -18,6 +18,7 @@ from __future__ import annotations
 
 
 STRIKE_SELECTION_SCORE_CONFIG = {
+    "strike_scoring_mode": "continuous",
     "atm_distance_pct": 0.20,
     "near_distance_pct": 0.40,
     "mid_distance_pct": 0.70,

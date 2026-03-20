@@ -233,6 +233,88 @@ def _print_validation(title, validation):
             print(f"{key:26}: {value}")
 
 
+def _build_trade_triggers(trade):
+    """Return a short, human-readable list of execution triggers."""
+    if not isinstance(trade, dict):
+        return []
+
+    triggers = []
+    direction = str(trade.get("direction") or "").upper().strip()
+    flow_signal = str(trade.get("final_flow_signal") or "").upper().strip()
+    spot_vs_flip = str(trade.get("spot_vs_flip") or "").upper().strip()
+    dealer_bias = str(trade.get("dealer_hedging_bias") or "").upper().strip()
+    confirmation = str(trade.get("confirmation_status") or "").upper().strip()
+    macro_regime = str(trade.get("macro_regime") or "").upper().strip()
+    move_prob = trade.get("hybrid_move_probability")
+
+    if flow_signal == "BEARISH_FLOW" and direction == "PUT":
+        triggers.append("Bearish flow aligned with PUT direction")
+    elif flow_signal == "BULLISH_FLOW" and direction == "CALL":
+        triggers.append("Bullish flow aligned with CALL direction")
+
+    if spot_vs_flip == "BELOW_FLIP" and direction == "PUT":
+        triggers.append("Spot trading below gamma flip supports downside setup")
+    elif spot_vs_flip == "ABOVE_FLIP" and direction == "CALL":
+        triggers.append("Spot trading above gamma flip supports upside setup")
+    elif spot_vs_flip == "AT_FLIP":
+        triggers.append("Spot holding near gamma flip keeps move sensitivity elevated")
+
+    if dealer_bias == "DOWNSIDE_PINNING" and direction == "PUT":
+        triggers.append("Dealer hedging bias favors downside pressure")
+    elif dealer_bias == "UPSIDE_PINNING" and direction == "CALL":
+        triggers.append("Dealer hedging bias favors upside pressure")
+    elif dealer_bias in {"UPSIDE_HEDGING_ACCELERATION", "DOWNSIDE_HEDGING_ACCELERATION"}:
+        triggers.append("Dealer hedging acceleration is aligned with the move")
+
+    if confirmation == "STRONG_CONFIRMATION":
+        triggers.append("Confirmation filter is fully aligned")
+    elif confirmation == "CONFIRMED":
+        triggers.append("Confirmation filter supports execution")
+
+    if isinstance(move_prob, (int, float)):
+        if move_prob >= 0.65:
+            triggers.append(f"Move probability elevated at {move_prob:.0%}")
+        elif move_prob >= 0.55:
+            triggers.append(f"Move probability supportive at {move_prob:.0%}")
+
+    if macro_regime == "RISK_OFF" and direction == "PUT":
+        triggers.append("Risk-off macro regime supports PUT exposure")
+    elif macro_regime == "RISK_ON" and direction == "CALL":
+        triggers.append("Risk-on macro regime supports CALL exposure")
+
+    seen = set()
+    deduped = []
+    for trigger in triggers:
+        if trigger not in seen:
+            deduped.append(trigger)
+            seen.add(trigger)
+    return deduped[:5]
+
+
+def _dedupe_potential_triggers(triggers):
+    """Deduplicate near-identical trigger lines while preserving order."""
+    deduped = []
+    seen = set()
+
+    for trigger in triggers:
+        text = str(trigger or "").strip()
+        if not text:
+            continue
+
+        normalized = text.lower()
+        normalized = normalized.replace("decisive move below", "break below")
+        normalized = normalized.replace("decisive move above", "break above")
+        normalized = normalized.replace("clean move away from", "move away from")
+        normalized = " ".join(normalized.split())
+
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(text)
+
+    return deduped
+
+
 # ---------------------------------------------------------------------------
 # Ranked strikes rendering
 # ---------------------------------------------------------------------------
@@ -316,14 +398,26 @@ def _render_strike_efficiency(trade, ranked):
         return
 
     premium = best.get("last_price", 0)
-    iv_val = trade.get("atm_iv") or best.get("iv") or 0.15
-    # atm_iv and ranked-candidate iv are in percentage points (e.g. 15.8);
-    # convert to decimal for Black-Scholes expected-move calculation.
-    if isinstance(iv_val, (int, float)) and iv_val > 1.5:
-        iv_val = iv_val / 100.0
-    spot = trade.get("spot") or trade.get("entry_price") or 0
-    dte = trade.get("days_to_expiry") or 1
-    expected_move = float(spot) * float(iv_val) * math.sqrt(max(float(dte), 0.1) / 365.0) if spot else 0
+
+    # Prefer the canonical expected move from option-efficiency layer so this
+    # display matches engine scoring and research capture exactly.
+    expected_move = trade.get("expected_move_points")
+    try:
+        expected_move = float(expected_move) if expected_move is not None else None
+    except (TypeError, ValueError):
+        expected_move = None
+
+    # Fallback only if canonical value is unavailable.
+    if expected_move is None:
+        iv_val = trade.get("atm_iv") or best.get("iv") or 0.15
+        # atm_iv and ranked-candidate iv are in percentage points (e.g. 15.8);
+        # convert to decimal for Black-Scholes expected-move calculation.
+        if isinstance(iv_val, (int, float)) and iv_val > 1.5:
+            iv_val = iv_val / 100.0
+        spot = trade.get("spot") or trade.get("entry_price") or 0
+        dte = trade.get("days_to_expiry") or 1
+        expected_move = float(spot) * float(iv_val) * math.sqrt(max(float(dte), 0.1) / 365.0) if spot else 0.0
+
     eff_ratio = f"{expected_move / premium:.2f}" if premium and premium > 0 else "-"
 
     strike_label = f"{best['strike']} {best.get('option_type', '')}"
@@ -467,6 +561,82 @@ _CONFIDENCE_ICONS = {
 }
 
 
+def _render_provider_health_compact_detail(trade):
+    """Print compact provider-health diagnostics when summary is CAUTION."""
+    if not isinstance(trade, dict):
+        return
+
+    provider_health = trade.get("provider_health")
+    if not isinstance(provider_health, dict):
+        return
+
+    summary = str(provider_health.get("summary_status") or "").upper().strip()
+    if summary != "CAUTION":
+        return
+
+    ocv = trade.get("option_chain_validation") if isinstance(trade.get("option_chain_validation"), dict) else {}
+    source = provider_health.get("source") or "-"
+
+    print("\n  Provider Health Detail")
+    print(f"    source    : {source}")
+    print(
+        "    checks    : "
+        f"row={provider_health.get('row_health', '-')}, "
+        f"pricing={provider_health.get('pricing_health', '-')}, "
+        f"pairing={provider_health.get('pairing_health', '-')}, "
+        f"iv={provider_health.get('iv_health', '-')}, "
+        f"duplicates={provider_health.get('duplicate_health', '-')}"
+    )
+
+    priced_rows = ocv.get("priced_rows")
+    row_count = ocv.get("row_count")
+    priced_ratio = ocv.get("priced_ratio")
+    quoted_rows = ocv.get("quoted_rows")
+    quoted_ratio = ocv.get("quoted_ratio")
+    effective_rows = ocv.get("effective_priced_rows")
+    effective_ratio = ocv.get("effective_priced_ratio")
+    pricing_basis = provider_health.get("pricing_basis")
+    quote_coverage_mode = provider_health.get("quote_coverage_mode")
+    trade_price_health = provider_health.get("trade_price_health")
+    quote_health = provider_health.get("quote_health")
+    row_escalated = bool(provider_health.get("row_health_escalation_applied"))
+    bid_present_rows = ocv.get("bid_present_rows")
+    ask_present_rows = ocv.get("ask_present_rows")
+    one_sided_quote_rows = ocv.get("one_sided_quote_rows")
+
+    if trade_price_health or quote_health is not None:
+        print(
+            "    price sub : "
+            f"trade={trade_price_health or '-'}, "
+            f"quote={quote_health if quote_health is not None else 'N/A'}"
+        )
+    if pricing_basis:
+        print(f"    basis     : {pricing_basis}")
+    if quote_coverage_mode:
+        print(f"    quote md  : {quote_coverage_mode}")
+    if row_escalated:
+        print("    note      : THIN row health escalated to CAUTION by policy")
+
+    if priced_rows is not None and row_count is not None:
+        print(f"    traded    : {priced_rows}/{row_count} rows")
+    if quoted_rows is not None and row_count is not None and quote_health is not None:
+        print(f"    quoted    : {quoted_rows}/{row_count} rows")
+    if row_count is not None and isinstance(bid_present_rows, (int, float)) and isinstance(ask_present_rows, (int, float)):
+        print(f"    bid/ask   : {int(bid_present_rows)}/{int(ask_present_rows)} rows")
+    if isinstance(one_sided_quote_rows, (int, float)) and one_sided_quote_rows > 0:
+        print(f"    one-sided : {int(one_sided_quote_rows)} rows")
+    if effective_rows is not None and row_count is not None:
+        print(f"    effective : {effective_rows}/{row_count} rows")
+
+    print("    threshold : pricing GOOD >= 0.55, CAUTION >= 0.35")
+    if isinstance(effective_ratio, (int, float)):
+        print(f"    ratio     : {float(effective_ratio):.4f}")
+    elif isinstance(priced_ratio, (int, float)):
+        print(f"    ratio     : {float(priced_ratio):.4f}")
+    if isinstance(quoted_ratio, (int, float)):
+        print(f"    quote rt  : {float(quoted_ratio):.4f}")
+
+
 def _render_signal_confidence(trade, *, show_components=True):
     """Print the SIGNAL CONFIDENCE block."""
     result = compute_signal_confidence(trade)
@@ -503,7 +673,8 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         7. OVERNIGHT HOLD
     """
     display = execution_trade or trade
-    has_trade = bool(trade and trade.get("direction"))
+    trade_status = str((trade or {}).get("trade_status") or "").upper()
+    has_trade = bool(trade and trade.get("direction") and trade_status == "TRADE")
 
     # ── 1. MARKET SUMMARY ────────────────────────────────────────────────
     spot = spot_summary.get("spot")
@@ -591,15 +762,29 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         print(f"{'capital_required':26}: {d.get('capital_required')}")
         print(f"{'expiry':26}: {d.get('selected_expiry')}")
         print(f"{'execution_regime':26}: {d.get('execution_regime')}")
+
+        triggers = _build_trade_triggers(trade)
+        if triggers:
+            print(f"\n  Trade triggers:")
+            for trigger in triggers:
+                print(f"    • {trigger}")
     else:
         print("  No trade yet. Waiting for confirmation.")
 
         # ── Threshold status ─────────────────────────────────────────────
         if trade:
-            from config.signal_policy import get_trade_runtime_thresholds
-            _thresholds = get_trade_runtime_thresholds()
-            _min_strength = int(_thresholds.get("min_trade_strength", 60))
-            _cur_strength = int(trade.get("trade_strength") or 0)
+            _raw_min_strength = trade.get("min_trade_strength_threshold")
+            if _raw_min_strength in (None, "", "N/A"):
+                from config.signal_policy import get_trade_runtime_thresholds
+                _thresholds = get_trade_runtime_thresholds()
+                _raw_min_strength = _thresholds.get("min_trade_strength", 60)
+            try:
+                _min_strength = int(float(_raw_min_strength))
+            except (TypeError, ValueError):
+                _min_strength = 60
+            _raw_strength = trade.get("trade_strength")
+            _has_strength = _raw_strength not in (None, "", "N/A")
+            _cur_strength = int(_raw_strength) if _has_strength else 0
             _confirmation = str(
                 trade.get("confirmation_status")
                 or trade.get("confirmation")
@@ -608,18 +793,15 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             _no_direction = _confirmation == "NO_DIRECTION" or not trade.get("direction")
 
             print(f"\n  Trade Strength Threshold")
+            _gap = _min_strength - _cur_strength
+            _bar_filled = max(0, min(20, round(20 * _cur_strength / max(_min_strength, 1))))
+            _bar = "█" * _bar_filled + "░" * (20 - _bar_filled)
+            _gap_str = f"  ({_gap:+d} to threshold)" if _gap > 0 else "  ✓ threshold met"
             if _no_direction:
-                print("    current  : N/A (no direction yet)")
-                print(f"    required : {_min_strength}")
-                print(f"    progress : [{'░' * 20}] N/A/{_min_strength}")
-            else:
-                _gap = _min_strength - _cur_strength
-                _bar_filled = max(0, min(20, round(20 * _cur_strength / max(_min_strength, 1))))
-                _bar = "█" * _bar_filled + "░" * (20 - _bar_filled)
-                _gap_str = f"  ({_gap:+d} to threshold)" if _gap > 0 else "  ✓ threshold met"
-                print(f"    current  : {_cur_strength}")
-                print(f"    required : {_min_strength}{_gap_str}")
-                print(f"    progress : [{_bar}] {_cur_strength}/{_min_strength}")
+                _gap_str += " (direction pending)"
+            print(f"    current  : {_cur_strength}")
+            print(f"    required : {_min_strength}{_gap_str}")
+            print(f"    progress : [{_bar}] {_cur_strength}/{_min_strength}")
 
         # ── Best strike candidate ────────────────────────────────────────
         if trade:
@@ -646,6 +828,15 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         # ── Potential trigger conditions ─────────────────────────────────
         triggers = []
         if trade:
+            _confirmation = str(
+                trade.get("confirmation_status")
+                or trade.get("confirmation")
+                or ""
+            ).upper()
+            _direction_pending = _confirmation == "NO_DIRECTION" or not trade.get("direction")
+            if _direction_pending:
+                triggers.append("Direction confirmation pending")
+
             ntr = trade.get("no_trade_reason")
             if ntr:
                 triggers.append(ntr)
@@ -654,10 +845,17 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             lt = trade.get("likely_next_trigger")
             if lt:
                 triggers.append(lt)
+            triggers = _dedupe_potential_triggers(triggers)
         if triggers:
             print(f"\n  Potential triggers:")
             for t in triggers:
                 print(f"    • {t}")
+
+        _reason_code = trade.get("no_trade_reason_code") if trade else None
+        if _reason_code:
+            print(f"\n  [debug] no_trade_reason_code = {_reason_code}")
+
+        _render_provider_health_compact_detail(trade)
 
     # ── 5. RANKED STRIKES ────────────────────────────────────────────────
     ranked = trade.get("ranked_strike_candidates") if trade else None
@@ -688,7 +886,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 
     risk_fields = {
         "global_risk": global_risk_state.get("global_risk_state"),
-        "global_risk_score": global_risk_state.get("global_risk_score"),
+        "global_risk_state_score": global_risk_state.get("global_risk_score"),
         "event_lockdown": event_lock if event_lock else None,
         "watchlist": watchlist if watchlist else None,
         "macro_news_status": trade.get("macro_news_status"),
@@ -741,7 +939,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
 
     _print_section("GLOBAL RISK STATE", {
         "global_risk_state": global_risk_state.get("global_risk_state"),
-        "global_risk_score": global_risk_state.get("global_risk_score"),
+        "global_risk_state_score": trade.get("global_risk_state_score") if trade else global_risk_state.get("global_risk_score"),
+        "global_risk_overlay_score": trade.get("global_risk_overlay_score") if trade else None,
         "overnight_hold_allowed": global_risk_state.get("overnight_hold_allowed"),
     })
 
@@ -912,7 +1111,8 @@ _DIAGNOSTIC_KEYS = [
     "confirmation_veto",
     "confirmation_reasons",
     "confirmation_breakdown",
-    "global_risk_reasons",
+    "global_risk_state_reasons",
+    "global_risk_overlay_reasons",
     "global_risk_diagnostics",
     "global_risk_features",
     "gamma_vol_reasons",
@@ -1005,7 +1205,8 @@ def _render_full_signal_summary(trade):
         "macro_position_size_multiplier": trade.get("macro_position_size_multiplier"),
         "macro_suggested_lots": trade.get("macro_suggested_lots"),
         "global_risk_state": trade.get("global_risk_state"),
-        "global_risk_score": trade.get("global_risk_score"),
+        "global_risk_state_score": trade.get("global_risk_state_score"),
+        "global_risk_overlay_score": trade.get("global_risk_overlay_score", trade.get("global_risk_score")),
         "gamma_vol_acceleration_score": trade.get("gamma_vol_acceleration_score"),
         "squeeze_risk_state": trade.get("squeeze_risk_state"),
         "directional_convexity_state": trade.get("directional_convexity_state"),
@@ -1093,14 +1294,16 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
 
     _print_section("GLOBAL RISK STATE", {
         "global_risk_state": global_risk_state.get("global_risk_state"),
-        "global_risk_score": global_risk_state.get("global_risk_score"),
+        "global_risk_state_score": trade.get("global_risk_state_score") if trade else global_risk_state.get("global_risk_score"),
+        "global_risk_overlay_score": trade.get("global_risk_overlay_score") if trade else None,
         "overnight_gap_risk_score": global_risk_state.get("overnight_gap_risk_score"),
         "volatility_expansion_risk_score": global_risk_state.get("volatility_expansion_risk_score"),
         "overnight_hold_allowed": global_risk_state.get("overnight_hold_allowed"),
         "overnight_hold_reason": global_risk_state.get("overnight_hold_reason"),
         "overnight_risk_penalty": global_risk_state.get("overnight_risk_penalty"),
         "global_risk_adjustment_score": global_risk_state.get("global_risk_adjustment_score"),
-        "global_risk_reasons": global_risk_state.get("global_risk_reasons"),
+        "global_risk_state_reasons": trade.get("global_risk_state_reasons") if trade else global_risk_state.get("global_risk_reasons"),
+        "global_risk_overlay_reasons": trade.get("global_risk_overlay_reasons") if trade else None,
     })
 
     market_inputs = global_market_snapshot.get("market_inputs", {})

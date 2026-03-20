@@ -167,6 +167,19 @@ class LiveEnginePolicyTests(unittest.TestCase):
         self.assertTrue(modifiers["force_no_trade"])
         self.assertTrue(modifiers["overnight_trade_block"])
 
+    def test_global_risk_trade_modifiers_force_no_trade_when_global_veto_is_active(self):
+        modifiers = derive_global_risk_trade_modifiers(
+            {
+                "global_risk_state": "VOL_SHOCK",
+                "global_risk_veto": True,
+                "global_risk_adjustment_score": -8,
+                "overnight_hold_allowed": False,
+                "global_risk_features": {},
+            }
+        )
+
+        self.assertTrue(modifiers["force_no_trade"])
+
     def test_global_risk_trade_modifiers_do_not_penalize_neutralized_market_features(self):
         modifiers = derive_global_risk_trade_modifiers(
             {

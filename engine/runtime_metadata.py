@@ -102,7 +102,8 @@ TRADER_VIEW_KEYS = list(dict.fromkeys([
     "macro_position_size_multiplier",
     "macro_suggested_lots",
     "global_risk_state",
-    "global_risk_score",
+    "global_risk_state_score",
+    "global_risk_overlay_score",
     "overnight_gap_risk_score",
     "volatility_expansion_risk_score",
     "overnight_hold_allowed",
@@ -259,6 +260,7 @@ def empty_scoring_breakdown():
         Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
     """
     return {
+        "trade_strength_scoring_mode": "continuous",
         "flow_signal_score": 0,
         "smart_money_flow_score": 0,
         "gamma_event_score": 0,

@@ -178,6 +178,42 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
         df["pred_decision_policy"] = np.nan
         df["policy_decision"] = "MISSING"
 
+    # ev_sizing: uses same ml_confidence_score as research_dual (offline; CRT lookup
+    # requires live market context and is not replayable from the signal row alone)
+    if "ml_confidence_score" in df.columns:
+        df["pred_ev_sizing"] = df["ml_confidence_score"]
+    else:
+        df["pred_ev_sizing"] = np.nan
+
+    # research_rank_gate: block signals where rank < 0.55; otherwise use confidence
+    _RANK_GATE_THRESHOLD = 0.55
+    if "ml_rank_score" in df.columns and "ml_confidence_score" in df.columns:
+        rank = df["ml_rank_score"]
+        conf = df["ml_confidence_score"]
+        gate_pass = rank >= _RANK_GATE_THRESHOLD
+        effective_rg = conf.copy()
+        effective_rg[~gate_pass] = 0.0
+        effective_rg[rank.isna() | conf.isna()] = np.nan
+        df["pred_research_rank_gate"] = effective_rg
+    else:
+        df["pred_research_rank_gate"] = np.nan
+
+    # research_uncertainty_adjusted: discount confidence by disagreement + ambiguity
+    if "ml_confidence_score" in df.columns and "hybrid_move_probability" in df.columns:
+        conf = df["ml_confidence_score"]
+        hybrid = df["hybrid_move_probability"]
+        disagreement = (conf - hybrid).abs()
+        ambiguity = 1.0 - (2.0 * conf - 1.0).abs()
+        multiplier = 1.0 - 0.80 * disagreement - 0.35 * ambiguity
+        multiplier = multiplier.clip(lower=0.0)
+        effective_ua = conf * multiplier
+        # block if effective probability too low
+        effective_ua[effective_ua < 0.35] = 0.0
+        effective_ua[conf.isna() | hybrid.isna()] = np.nan
+        df["pred_research_uncertainty_adjusted"] = effective_ua
+    else:
+        df["pred_research_uncertainty_adjusted"] = np.nan
+
     return df
 
 
@@ -186,11 +222,14 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
 # ═════════════════════════════════════════════════════════════════════
 
 PREDICTORS = {
-    "blended":          {"col": "hybrid_move_probability", "desc": "70/30 rule+ML blend (production)"},
-    "pure_rule":        {"col": "rule_move_probability",   "desc": "Rule-based Bayesian prior only"},
-    "pure_ml":          {"col": "ml_move_probability",     "desc": "ML model only"},
-    "research_dual":    {"col": "pred_research_dual",      "desc": "GBT rank + LogReg calibration"},
-    "decision_policy":  {"col": "pred_decision_policy",    "desc": "Dual-model + dual_threshold gate"},
+    "blended":              {"col": "hybrid_move_probability",          "desc": "70/30 rule+ML blend (production)"},
+    "pure_rule":            {"col": "rule_move_probability",             "desc": "Rule-based Bayesian prior only"},
+    "pure_ml":              {"col": "ml_move_probability",               "desc": "ML model only"},
+    "research_dual":        {"col": "pred_research_dual",                "desc": "GBT rank + LogReg calibration"},
+    "decision_policy":      {"col": "pred_decision_policy",              "desc": "Dual-model + dual_threshold gate"},
+    "ev_sizing":            {"col": "pred_ev_sizing",                    "desc": "EV-based sizing (offline: maps to research_dual; CRT requires live context)"},
+    "research_rank_gate":   {"col": "pred_research_rank_gate",           "desc": "Dual-model + rank ≥ 0.55 gate (block below threshold)"},
+    "uncertainty_adjusted": {"col": "pred_research_uncertainty_adjusted", "desc": "Dual-model + disagreement/ambiguity discount"},
 }
 
 
@@ -358,6 +397,9 @@ def _generate_charts(
         "pure_ml": "#9C27B0",
         "research_dual": "#4CAF50",
         "decision_policy": "#F44336",
+        "ev_sizing": "#00BCD4",
+        "research_rank_gate": "#8BC34A",
+        "uncertainty_adjusted": "#FF5722",
     }
 
     # ── Chart 1: Head-to-head comparison (backtest dataset) ──────────
@@ -660,8 +702,11 @@ def _render_report(
             by_sharpe = sorted(valid, key=lambda r: r.get("trade_sharpe", 0) or 0, reverse=True)
             by_cum = sorted(valid, key=lambda r: r.get("trade_cumulative_bps", 0) or 0, reverse=True)
 
-            _h("| Metric | #1 | #2 | #3 | #4 | #5 |")
-            _h("|--------|----|----|----|----|-----|")
+            n_methods = len(valid)
+            header_cols = " | ".join(f"#{i+1}" for i in range(n_methods))
+            sep_cols = " | ".join("----" for _ in range(n_methods))
+            _h(f"| Metric | {header_cols} |")
+            _h(f"|--------|{sep_cols}|")
             _h(f"| Hit Rate | {'| '.join(r['predictor'] for r in by_hr)} |")
             _h(f"| Avg Return | {'| '.join(r['predictor'] for r in by_ret)} |")
             _h(f"| Sharpe | {'| '.join(r['predictor'] for r in by_sharpe)} |")

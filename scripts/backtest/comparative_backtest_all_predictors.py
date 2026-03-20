@@ -19,6 +19,8 @@ Prediction Methods Tested:
     4. research_dual_model (GBT + LogReg research)
     5. research_decision_policy (dual-model + policy overlay)
     6. ev_sizing (EV-based position sizing)
+    7. research_rank_gate (dual-model + rank-threshold gate)
+    8. research_uncertainty_adjusted (dual-model + uncertainty discount)
 
 Output:
     • Individual backtest results for each method
@@ -78,6 +80,8 @@ PREDICTION_METHODS = [
     "research_dual_model",
     "research_decision_policy",
     "ev_sizing",
+    "research_rank_gate",
+    "research_uncertainty_adjusted",
 ]
 
 # Method descriptions
@@ -88,6 +92,8 @@ METHOD_DESCRIPTIONS = {
     "research_dual_model": "Research: GBT ranking + LogReg calibration",
     "research_decision_policy": "Research: dual-model + policy decision overlay",
     "ev_sizing": "Research: EV-based position sizing and probability scaling",
+    "research_rank_gate": "Research: dual-model + rank-threshold gating",
+    "research_uncertainty_adjusted": "Research: dual-model + uncertainty discounting",
 }
 
 

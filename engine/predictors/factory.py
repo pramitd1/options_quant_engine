@@ -35,6 +35,8 @@ def _ensure_registry() -> dict[str, type]:
     from engine.predictors.research_predictor import ResearchDualModelPredictor
     from engine.predictors.decision_policy_predictor import ResearchDecisionPolicyPredictor
     from engine.predictors.ev_sizing_predictor import EVSizingPredictor
+    from engine.predictors.rank_gate_predictor import ResearchRankGatePredictor
+    from engine.predictors.uncertainty_adjusted_predictor import ResearchUncertaintyAdjustedPredictor
 
     _REGISTRY["blended"] = DefaultBlendedPredictor
     _REGISTRY["pure_ml"] = PureMLPredictor
@@ -42,6 +44,8 @@ def _ensure_registry() -> dict[str, type]:
     _REGISTRY["research_dual_model"] = ResearchDualModelPredictor
     _REGISTRY["research_decision_policy"] = ResearchDecisionPolicyPredictor
     _REGISTRY["ev_sizing"] = EVSizingPredictor
+    _REGISTRY["research_rank_gate"] = ResearchRankGatePredictor
+    _REGISTRY["research_uncertainty_adjusted"] = ResearchUncertaintyAdjustedPredictor
     return _REGISTRY
 
 

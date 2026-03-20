@@ -587,10 +587,14 @@ class NSEOptionChainDownloader:
 
             ce = item.get("CE")
             if isinstance(ce, dict):
+                ce_bid = self._safe_float(ce.get("bidprice", ce.get("bidPrice", ce.get("bestBidPrice", 0))), 0.0)
+                ce_ask = self._safe_float(ce.get("askPrice", ce.get("askprice", ce.get("bestAskPrice", 0))), 0.0)
                 rows.append({
                     "strikePrice": strike,
                     "OPTION_TYP": "CE",
                     "lastPrice": self._safe_float(ce.get("lastPrice", 0), 0.0),
+                    "bidPrice": ce_bid,
+                    "askPrice": ce_ask,
                     "openInterest": self._safe_float(ce.get("openInterest", 0), 0.0),
                     "changeinOI": self._safe_float(ce.get("changeinOpenInterest", 0), 0.0),
                     "impliedVolatility": self._safe_float(ce.get("impliedVolatility", 0), 0.0),
@@ -600,15 +604,21 @@ class NSEOptionChainDownloader:
                     "OPEN_INT": self._safe_float(ce.get("openInterest", 0), 0.0),
                     "STRIKE_PR": strike,
                     "LAST_PRICE": self._safe_float(ce.get("lastPrice", 0), 0.0),
+                    "BID_PRICE": ce_bid,
+                    "ASK_PRICE": ce_ask,
                     "EXPIRY_DT": ce.get("expiryDate", item_expiry),
                 })
 
             pe = item.get("PE")
             if isinstance(pe, dict):
+                pe_bid = self._safe_float(pe.get("bidprice", pe.get("bidPrice", pe.get("bestBidPrice", 0))), 0.0)
+                pe_ask = self._safe_float(pe.get("askPrice", pe.get("askprice", pe.get("bestAskPrice", 0))), 0.0)
                 rows.append({
                     "strikePrice": strike,
                     "OPTION_TYP": "PE",
                     "lastPrice": self._safe_float(pe.get("lastPrice", 0), 0.0),
+                    "bidPrice": pe_bid,
+                    "askPrice": pe_ask,
                     "openInterest": self._safe_float(pe.get("openInterest", 0), 0.0),
                     "changeinOI": self._safe_float(pe.get("changeinOpenInterest", 0), 0.0),
                     "impliedVolatility": self._safe_float(pe.get("impliedVolatility", 0), 0.0),
@@ -618,6 +628,8 @@ class NSEOptionChainDownloader:
                     "OPEN_INT": self._safe_float(pe.get("openInterest", 0), 0.0),
                     "STRIKE_PR": strike,
                     "LAST_PRICE": self._safe_float(pe.get("lastPrice", 0), 0.0),
+                    "BID_PRICE": pe_bid,
+                    "ASK_PRICE": pe_ask,
                     "EXPIRY_DT": pe.get("expiryDate", item_expiry),
                 })
 

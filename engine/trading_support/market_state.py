@@ -64,6 +64,46 @@ def _summarize_market_gamma(market_gex):
             if value is not None:
                 summary[key] = round(_safe_float(value), 2)
         return summary or market_gex
+    if isinstance(market_gex, pd.Series):
+        numeric = pd.to_numeric(market_gex, errors="coerce").dropna()
+        if numeric.empty:
+            return {"strike_count": int(len(market_gex))}
+
+        peak_abs_idx = numeric.abs().idxmax()
+        summary = {
+            "strike_count": int(len(numeric)),
+            "net_gamma": round(float(numeric.sum()), 2),
+            "peak_abs_strike": _to_python_number(peak_abs_idx),
+            "peak_abs_gamma": round(_safe_float(numeric.loc[peak_abs_idx]), 2),
+        }
+
+        positive = numeric[numeric > 0]
+        negative = numeric[numeric < 0]
+        if not positive.empty:
+            pos_idx = positive.idxmax()
+            summary["peak_positive_strike"] = _to_python_number(pos_idx)
+            summary["peak_positive_gamma"] = round(_safe_float(positive.loc[pos_idx]), 2)
+        if not negative.empty:
+            neg_idx = negative.idxmin()
+            summary["peak_negative_strike"] = _to_python_number(neg_idx)
+            summary["peak_negative_gamma"] = round(_safe_float(negative.loc[neg_idx]), 2)
+        return summary
+    if isinstance(market_gex, pd.DataFrame):
+        numeric_cols = [
+            col for col in market_gex.columns
+            if pd.api.types.is_numeric_dtype(market_gex[col])
+        ]
+        if "GAMMA_EXPOSURE" in market_gex.columns:
+            series = market_gex["GAMMA_EXPOSURE"]
+            index = market_gex.get("strikePrice")
+            if index is not None:
+                series = pd.Series(series.to_numpy(), index=index)
+            return _summarize_market_gamma(series)
+        if numeric_cols:
+            return {
+                "row_count": int(len(market_gex)),
+                "numeric_columns": numeric_cols[:5],
+            }
     return market_gex
 
 

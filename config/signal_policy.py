@@ -92,9 +92,15 @@ TRADE_RUNTIME_THRESHOLDS = {
     "regime_composite_add_at_flip": 3,
     "regime_composite_add_toxic": 6,
     "gamma_vol_normalization_scale": 100,
+    "trade_strength_scoring_mode": "continuous",
 }
 
 CONFIRMATION_FILTER_CONFIG = {
+    "confirmation_scoring_mode": "continuous",
+    "continuous_open_alignment": 1,
+    "continuous_prev_close_alignment": 1,
+    "continuous_range_expansion": 1,
+    "continuous_move_probability": 1,
     "strong_confirmation_threshold": 6,
     "confirmed_threshold": 2,
     "mixed_threshold": -3,
@@ -286,6 +292,26 @@ class TradeModifierPolicyConfig:
     dealer_conflict_penalty: int = -3
     alignment_score_floor: int = -6
     alignment_score_cap: int = 8
+
+
+@dataclass(frozen=True)
+class TradeStrengthContinuousPolicyConfig:
+    """Configuration for continuous trade-strength component scoring."""
+
+    hybrid_probability_floor: float = 0.30
+    hybrid_probability_ceiling: float = 0.80
+    hybrid_max_score: int = 12
+    ml_probability_floor: float = 0.30
+    ml_probability_ceiling: float = 0.80
+    ml_max_score: int = 6
+    overlap_hybrid_threshold: float = 0.65
+    overlap_ml_threshold: float = 0.65
+    overlap_penalty: int = 1
+    probability_total_score_cap: int = 14
+    wall_distance_cap_multiplier: float = 1.0
+    liquidity_path_distance_cap_multiplier: float = 3.0
+    flip_distance_cap_pct: float = 0.8
+    spot_flip_conflict_floor: float = -2.0
 
 
 def get_direction_vote_weights():
@@ -509,6 +535,16 @@ def get_trade_modifier_policy_config() -> TradeModifierPolicyConfig:
     from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("signal_engine.trade_modifiers", TradeModifierPolicyConfig())
+
+
+def get_trade_strength_continuous_policy_config() -> TradeStrengthContinuousPolicyConfig:
+    """Return the continuous trade-strength scoring policy bundle."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config(
+        "signal_engine.trade_strength_continuous",
+        TradeStrengthContinuousPolicyConfig(),
+    )
 
 
 # ---------------------------------------------------------------------------

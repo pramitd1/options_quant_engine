@@ -115,12 +115,11 @@ def _numeric(series: pd.Series) -> pd.Series:
 
 
 def _directional_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Return rows that have a non-null direction (CALL/PUT) and are trade-qualified."""
+    """Return rows that have an explicit directional call (CALL/PUT)."""
     if "direction" not in df.columns:
         return df.iloc[0:0]
-    has_direction = df["direction"].isin(["CALL", "PUT"])
-    is_trade = df.get("trade_status", pd.Series(dtype=str)) == "TRADE"
-    return df.loc[has_direction & is_trade].copy()
+    has_direction = df["direction"].astype(str).str.upper().isin(["CALL", "PUT"])
+    return df.loc[has_direction].copy()
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +324,10 @@ def _section_signal_generation(day_df: pd.DataFrame) -> list[str]:
     dir_rows = _directional_rows(day_df)
     directional = len(dir_rows)
     neutral = total - directional
-    trade = int((day_df.get("trade_status", pd.Series()) == "TRADE").sum())
-    watchlist = int((day_df.get("trade_status", pd.Series()) == "NO_SIGNAL").sum())
+    status = day_df.get("trade_status", pd.Series(index=day_df.index, dtype=str)).astype(str).str.upper()
+    trade = int((status == "TRADE").sum())
+    # Keep this bucket aligned with its label by counting all non-trade snapshots.
+    watchlist = int((status != "TRADE").sum())
 
     lines = [
         "## 4. Signal Generation Summary",
@@ -900,6 +901,9 @@ def _section_model_diagnostics(day_df: pd.DataFrame) -> list[str]:
             lines.append(f"| {label} | {mode} | — | — | — |")
         else:
             s = _numeric(vals)
+            if s.dropna().empty:
+                lines.append(f"| {label} | — | — | — | — |")
+                continue
             lines.append(
                 f"| {label} | {_r(s.mean(), 2)} | {_r(s.median(), 2)} | {_r(s.min(), 2)} | {_r(s.max(), 2)} |"
             )
@@ -1468,7 +1472,7 @@ def _summarize_executive(df: pd.DataFrame, day_df: pd.DataFrame, report_date: da
         "indicate higher false-positive risk and reduced confidence in directional predictions."
     )
     return (
-        f"The engine produced {total} signal snapshots with {directional} directional trades. "
+        f"The engine produced {total} signal snapshots with {directional} directional signals. "
         f"Mean composite score of {_r(mean_cs, 1)} reflects {quality} signal conviction. {note}"
     )
 

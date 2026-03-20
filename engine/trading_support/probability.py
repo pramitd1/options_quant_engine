@@ -338,7 +338,28 @@ def _get_move_predictor():
                 if active_name:
                     registry_path = project_root / "models_store" / "registry" / active_name / "model.joblib"
                     if registry_path.exists():
-                        base_model = joblib.load(registry_path)
+                        import sklearn as _sklearn
+                        import warnings as _warnings
+                        import logging as _plog
+
+                        _version_seen = set()
+
+                        def _sklearn_version_handler(message, category, filename, lineno, file=None, line=None):
+                            key = str(message)
+                            if key not in _version_seen:
+                                _version_seen.add(key)
+                                _plog.getLogger(__name__).warning(
+                                    "sklearn version mismatch loading model from %s "
+                                    "(installed: %s). Rebuild with: "
+                                    "python scripts/build_model_registry.py — %s",
+                                    registry_path, _sklearn.__version__, message,
+                                )
+
+                        with _warnings.catch_warnings():
+                            _warnings.simplefilter("always")
+                            _warnings.showwarning = _sklearn_version_handler
+                            base_model = joblib.load(registry_path)
+
 
 
             except Exception:

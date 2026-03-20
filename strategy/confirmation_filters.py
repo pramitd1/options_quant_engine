@@ -19,6 +19,45 @@ from config.symbol_microstructure import DEFAULT_MICROSTRUCTURE_CONFIG, get_micr
 from utils.numerics import safe_float as _safe_float  # noqa: F401
 
 
+def _as_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    try:
+        text = str(value).strip().lower()
+    except Exception:
+        return default
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _continuous_mode(cfg) -> bool:
+    mode = str(cfg.get("confirmation_scoring_mode", "continuous") or "continuous").strip().lower()
+    return mode == "continuous"
+
+
+def _linear_interp(value, lo, hi, out_lo, out_hi):
+    span = max(float(hi) - float(lo), 1e-9)
+    t = (float(value) - float(lo)) / span
+    t = max(0.0, min(1.0, t))
+    return float(out_lo) + (float(out_hi) - float(out_lo)) * t
+
+
+def _signed_alignment_score(signed_edge, support_score, conflict_score, scale):
+    """Map signed directional edge into a smooth support/conflict score."""
+    if signed_edge is None:
+        return 0.0
+    scale = max(float(scale), 1e-9)
+    normalized = max(-1.0, min(1.0, float(signed_edge) / scale))
+    if normalized >= 0:
+        return normalized * float(support_score)
+    return (-normalized) * float(conflict_score)
+
+
 def _sign_label(score, cfg):
     """
     Purpose:
@@ -72,15 +111,15 @@ def compute_confirmation_filters(
     """
 
     breakdown = {
-        "open_alignment_score": 0,
-        "prev_close_alignment_score": 0,
-        "range_expansion_score": 0,
-        "flow_confirmation_score": 0,
-        "hedging_confirmation_score": 0,
-        "gamma_event_confirmation_score": 0,
-        "move_probability_confirmation_score": 0,
-        "flip_alignment_score": 0,
-        "flip_zone_gamma_score": 0,
+        "open_alignment_score": 0.0,
+        "prev_close_alignment_score": 0.0,
+        "range_expansion_score": 0.0,
+        "flow_confirmation_score": 0.0,
+        "hedging_confirmation_score": 0.0,
+        "gamma_event_confirmation_score": 0.0,
+        "move_probability_confirmation_score": 0.0,
+        "flip_alignment_score": 0.0,
+        "flip_zone_gamma_score": 0.0,
     }
 
     reasons = []
@@ -93,6 +132,11 @@ def compute_confirmation_filters(
     move_prob = _safe_float(hybrid_move_probability, None)
     micro_cfg = get_microstructure_config(symbol)
     cfg = get_confirmation_filter_config()
+    continuous_mode = _continuous_mode(cfg)
+    cont_open = continuous_mode and _as_bool(cfg.get("continuous_open_alignment", 1), default=True)
+    cont_prev_close = continuous_mode and _as_bool(cfg.get("continuous_prev_close_alignment", 1), default=True)
+    cont_range = continuous_mode and _as_bool(cfg.get("continuous_range_expansion", 1), default=True)
+    cont_move_prob = continuous_mode and _as_bool(cfg.get("continuous_move_probability", 1), default=True)
 
     if direction not in ["CALL", "PUT"]:
         return {
@@ -109,53 +153,121 @@ def compute_confirmation_filters(
     # 1) Spot vs session open
     # Softer than before: open is useful, but not definitive by itself.
     if spot is not None and open_px is not None:
-        if bullish:
-            if spot >= open_px:
-                breakdown["open_alignment_score"] = cfg["open_alignment_support"]
-                reasons.append("spot_above_open_confirms_call")
+        if cont_open:
+            edge = ((spot - open_px) / max(abs(open_px), 1e-6)) if bullish else ((open_px - spot) / max(abs(open_px), 1e-6))
+            score = _signed_alignment_score(
+                edge,
+                support_score=cfg["open_alignment_support"],
+                conflict_score=abs(float(cfg["open_alignment_conflict"])),
+                scale=0.004,
+            )
+            breakdown["open_alignment_score"] = score
+            if score >= 0:
+                reasons.append("spot_open_alignment_support")
             else:
-                breakdown["open_alignment_score"] = cfg["open_alignment_conflict"]
-                reasons.append("spot_below_open_conflicts_call")
-        elif bearish:
-            if spot <= open_px:
-                breakdown["open_alignment_score"] = cfg["open_alignment_support"]
-                reasons.append("spot_below_open_confirms_put")
-            else:
-                breakdown["open_alignment_score"] = cfg["open_alignment_conflict"]
-                reasons.append("spot_above_open_conflicts_put")
+                reasons.append("spot_open_alignment_conflict")
+        else:
+            if bullish:
+                if spot >= open_px:
+                    breakdown["open_alignment_score"] = cfg["open_alignment_support"]
+                    reasons.append("spot_above_open_confirms_call")
+                else:
+                    breakdown["open_alignment_score"] = cfg["open_alignment_conflict"]
+                    reasons.append("spot_below_open_conflicts_call")
+            elif bearish:
+                if spot <= open_px:
+                    breakdown["open_alignment_score"] = cfg["open_alignment_support"]
+                    reasons.append("spot_below_open_confirms_put")
+                else:
+                    breakdown["open_alignment_score"] = cfg["open_alignment_conflict"]
+                    reasons.append("spot_above_open_conflicts_put")
 
     # 2) Spot vs previous close
     # Even softer: prev close is informative, but gap days can distort it.
     if spot is not None and prev_close_px is not None:
-        if bullish:
-            if spot >= prev_close_px:
-                breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_support"]
-                reasons.append("spot_above_prev_close_confirms_call")
+        if cont_prev_close:
+            edge = ((spot - prev_close_px) / max(abs(prev_close_px), 1e-6)) if bullish else ((prev_close_px - spot) / max(abs(prev_close_px), 1e-6))
+            score = _signed_alignment_score(
+                edge,
+                support_score=cfg["prev_close_alignment_support"],
+                conflict_score=abs(float(cfg["prev_close_alignment_conflict"])),
+                scale=0.006,
+            )
+            breakdown["prev_close_alignment_score"] = score
+            if score >= 0:
+                reasons.append("prev_close_alignment_support")
             else:
-                breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_conflict"]
-                reasons.append("spot_below_prev_close_conflicts_call")
-        elif bearish:
-            if spot <= prev_close_px:
-                breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_support"]
-                reasons.append("spot_below_prev_close_confirms_put")
-            else:
-                breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_conflict"]
-                reasons.append("spot_above_prev_close_conflicts_put")
+                reasons.append("prev_close_alignment_conflict")
+        else:
+            if bullish:
+                if spot >= prev_close_px:
+                    breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_support"]
+                    reasons.append("spot_above_prev_close_confirms_call")
+                else:
+                    breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_conflict"]
+                    reasons.append("spot_below_prev_close_conflicts_call")
+            elif bearish:
+                if spot <= prev_close_px:
+                    breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_support"]
+                    reasons.append("spot_below_prev_close_confirms_put")
+                else:
+                    breakdown["prev_close_alignment_score"] = cfg["prev_close_alignment_conflict"]
+                    reasons.append("spot_above_prev_close_conflicts_put")
 
     # 3) Range expansion confirmation
     if range_pct is not None:
-        if range_pct >= micro_cfg.get("range_expansion_strong", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_strong"]):
-            breakdown["range_expansion_score"] = cfg["range_expansion_strong_score"]
-            reasons.append("strong_intraday_range_expansion")
-        elif range_pct >= micro_cfg.get("range_expansion_moderate", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_moderate"]):
-            breakdown["range_expansion_score"] = cfg["range_expansion_moderate_score"]
-            reasons.append("moderate_intraday_range_expansion")
-        elif range_pct >= micro_cfg.get("range_expansion_low", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_low"]):
-            breakdown["range_expansion_score"] = cfg["range_expansion_low_score"]
-            reasons.append("early_intraday_range_expansion")
-        elif range_pct < micro_cfg.get("range_expansion_cold", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_cold"]):
-            breakdown["range_expansion_score"] = cfg["range_expansion_cold_score"]
-            reasons.append("very_low_intraday_range_expansion")
+        strong_th = micro_cfg.get("range_expansion_strong", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_strong"])
+        moderate_th = micro_cfg.get("range_expansion_moderate", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_moderate"])
+        low_th = micro_cfg.get("range_expansion_low", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_low"])
+        cold_th = micro_cfg.get("range_expansion_cold", DEFAULT_MICROSTRUCTURE_CONFIG["range_expansion_cold"])
+
+        if cont_range:
+            if range_pct >= strong_th:
+                breakdown["range_expansion_score"] = float(cfg["range_expansion_strong_score"])
+                reasons.append("strong_intraday_range_expansion")
+            elif range_pct >= moderate_th:
+                breakdown["range_expansion_score"] = _linear_interp(
+                    range_pct,
+                    moderate_th,
+                    strong_th,
+                    cfg["range_expansion_moderate_score"],
+                    cfg["range_expansion_strong_score"],
+                )
+                reasons.append("moderate_intraday_range_expansion")
+            elif range_pct >= low_th:
+                breakdown["range_expansion_score"] = _linear_interp(
+                    range_pct,
+                    low_th,
+                    moderate_th,
+                    cfg["range_expansion_low_score"],
+                    cfg["range_expansion_moderate_score"],
+                )
+                reasons.append("early_intraday_range_expansion")
+            elif range_pct >= cold_th:
+                breakdown["range_expansion_score"] = _linear_interp(
+                    range_pct,
+                    cold_th,
+                    low_th,
+                    cfg["range_expansion_cold_score"],
+                    cfg["range_expansion_low_score"],
+                )
+                reasons.append("cold_to_early_range_transition")
+            else:
+                breakdown["range_expansion_score"] = float(cfg["range_expansion_cold_score"])
+                reasons.append("very_low_intraday_range_expansion")
+        else:
+            if range_pct >= strong_th:
+                breakdown["range_expansion_score"] = cfg["range_expansion_strong_score"]
+                reasons.append("strong_intraday_range_expansion")
+            elif range_pct >= moderate_th:
+                breakdown["range_expansion_score"] = cfg["range_expansion_moderate_score"]
+                reasons.append("moderate_intraday_range_expansion")
+            elif range_pct >= low_th:
+                breakdown["range_expansion_score"] = cfg["range_expansion_low_score"]
+                reasons.append("early_intraday_range_expansion")
+            elif range_pct < cold_th:
+                breakdown["range_expansion_score"] = cfg["range_expansion_cold_score"]
+                reasons.append("very_low_intraday_range_expansion")
 
     # 4) Flow confirmation
     if bullish:
@@ -197,18 +309,58 @@ def compute_confirmation_filters(
 
     # 7) Hybrid move probability confirmation
     if move_prob is not None:
-        if move_prob >= cfg["move_probability_high_threshold"]:
-            breakdown["move_probability_confirmation_score"] = cfg["move_probability_high_score"]
-            reasons.append("high_hybrid_move_probability")
-        elif move_prob >= cfg["move_probability_moderate_threshold"]:
-            breakdown["move_probability_confirmation_score"] = cfg["move_probability_moderate_score"]
-            reasons.append("moderate_hybrid_move_probability")
-        elif move_prob >= cfg["move_probability_low_support_threshold"]:
-            breakdown["move_probability_confirmation_score"] = cfg["move_probability_low_support_score"]
-            reasons.append("acceptable_hybrid_move_probability")
-        elif move_prob < cfg["move_probability_conflict_threshold"]:
-            breakdown["move_probability_confirmation_score"] = cfg["move_probability_conflict_score"]
-            reasons.append("low_hybrid_move_probability")
+        high_th = float(cfg["move_probability_high_threshold"])
+        moderate_th = float(cfg["move_probability_moderate_threshold"])
+        low_th = float(cfg["move_probability_low_support_threshold"])
+        conflict_th = float(cfg["move_probability_conflict_threshold"])
+
+        if cont_move_prob:
+            if move_prob >= high_th:
+                breakdown["move_probability_confirmation_score"] = float(cfg["move_probability_high_score"])
+                reasons.append("high_hybrid_move_probability")
+            elif move_prob >= moderate_th:
+                breakdown["move_probability_confirmation_score"] = _linear_interp(
+                    move_prob,
+                    moderate_th,
+                    high_th,
+                    cfg["move_probability_moderate_score"],
+                    cfg["move_probability_high_score"],
+                )
+                reasons.append("moderate_hybrid_move_probability")
+            elif move_prob >= low_th:
+                breakdown["move_probability_confirmation_score"] = _linear_interp(
+                    move_prob,
+                    low_th,
+                    moderate_th,
+                    cfg["move_probability_low_support_score"],
+                    cfg["move_probability_moderate_score"],
+                )
+                reasons.append("acceptable_hybrid_move_probability")
+            elif move_prob >= conflict_th:
+                breakdown["move_probability_confirmation_score"] = _linear_interp(
+                    move_prob,
+                    conflict_th,
+                    low_th,
+                    cfg["move_probability_conflict_score"],
+                    cfg["move_probability_low_support_score"],
+                )
+                reasons.append("borderline_hybrid_move_probability")
+            else:
+                breakdown["move_probability_confirmation_score"] = float(cfg["move_probability_conflict_score"])
+                reasons.append("low_hybrid_move_probability")
+        else:
+            if move_prob >= high_th:
+                breakdown["move_probability_confirmation_score"] = cfg["move_probability_high_score"]
+                reasons.append("high_hybrid_move_probability")
+            elif move_prob >= moderate_th:
+                breakdown["move_probability_confirmation_score"] = cfg["move_probability_moderate_score"]
+                reasons.append("moderate_hybrid_move_probability")
+            elif move_prob >= low_th:
+                breakdown["move_probability_confirmation_score"] = cfg["move_probability_low_support_score"]
+                reasons.append("acceptable_hybrid_move_probability")
+            elif move_prob < conflict_th:
+                breakdown["move_probability_confirmation_score"] = cfg["move_probability_conflict_score"]
+                reasons.append("low_hybrid_move_probability")
 
     # 8) Spot vs flip alignment
     if bullish:
@@ -255,7 +407,7 @@ def compute_confirmation_filters(
         reasons.append("confirmation_veto_due_to_multi_factor_conflict")
 
     return {
-        "score_adjustment": int(total),
+        "score_adjustment": round(float(total), 2),
         "status": _sign_label(total, cfg),
         "veto": veto,
         "reasons": reasons,

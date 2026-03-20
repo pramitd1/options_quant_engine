@@ -137,6 +137,17 @@ def _normalize_candidate_rows(rows: pd.DataFrame) -> pd.DataFrame:
     return normalized[normalized["_normalized_strike"].notna()].copy()
 
 
+def _continuous_mode(cfg) -> bool:
+    mode = str(cfg.get("strike_scoring_mode", "continuous") or "continuous").strip().lower()
+    return mode == "continuous"
+
+
+def _linear_decay(*, value: pd.Series, lower: float, upper: float, high_score: float, low_score: float) -> pd.Series:
+    span = max(float(upper) - float(lower), 1e-6)
+    t = ((value.astype(float) - float(lower)) / span).clip(0.0, 1.0)
+    return high_score + (low_score - high_score) * t
+
+
 def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
     """
     Purpose:
@@ -157,6 +168,33 @@ def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
         Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
     """
     distance_pct = (strikes.astype(float) - float(spot)).abs() / max(float(spot), 1e-6) * 100.0
+
+    if _continuous_mode(cfg):
+        atm = float(cfg["atm_distance_pct"])
+        far = float(cfg["far_distance_pct"])
+        deep = float(cfg["moneyness_deep_penalty"])
+        atm_score = float(cfg["moneyness_atm_score"])
+        far_score = float(cfg["moneyness_far_score"])
+
+        near_curve = _linear_decay(
+            value=distance_pct,
+            lower=atm,
+            upper=far,
+            high_score=atm_score,
+            low_score=far_score,
+        )
+        tail_span = max(1.5 * far, far + 1e-6)
+        tail_curve = _linear_decay(
+            value=distance_pct,
+            lower=far,
+            upper=tail_span,
+            high_score=far_score,
+            low_score=deep,
+        )
+        score = near_curve.where(distance_pct <= far, tail_curve)
+        score = score.where(distance_pct <= tail_span, deep)
+        return score.astype("float64")
+
     scores = np.select(
         [
             distance_pct <= cfg["atm_distance_pct"],
@@ -172,7 +210,7 @@ def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
         ],
         default=int(cfg["moneyness_deep_penalty"]),
     )
-    return pd.Series(scores, index=strikes.index, dtype="int64")
+    return pd.Series(scores, index=strikes.index, dtype="float64")
 
 
 def _score_directional_side_series(strikes: pd.Series, *, direction, spot, cfg) -> pd.Series:
@@ -196,21 +234,40 @@ def _score_directional_side_series(strikes: pd.Series, *, direction, spot, cfg) 
         Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
     """
     strikes = strikes.astype(float)
+    if _continuous_mode(cfg):
+        spot_val = max(float(spot), 1e-6)
+        signed = (strikes - float(spot)) / spot_val * 100.0
+        width = max(float(cfg.get("near_distance_pct", 0.4)) * 0.5, 0.05)
+
+        if direction == "CALL":
+            t = ((signed + width) / (2.0 * width)).clip(0.0, 1.0)
+            lo = float(cfg["call_below_spot_score"])
+            hi = float(cfg["call_above_spot_score"])
+            return (lo + (hi - lo) * t).astype("float64")
+
+        if direction == "PUT":
+            t = ((-signed + width) / (2.0 * width)).clip(0.0, 1.0)
+            lo = float(cfg["put_above_spot_score"])
+            hi = float(cfg["put_below_spot_score"])
+            return (lo + (hi - lo) * t).astype("float64")
+
+        return pd.Series(0.0, index=strikes.index, dtype="float64")
+
     if direction == "CALL":
         scores = np.where(
             strikes >= float(spot),
             int(cfg["call_above_spot_score"]),
             int(cfg["call_below_spot_score"]),
         )
-        return pd.Series(scores, index=strikes.index, dtype="int64")
+        return pd.Series(scores, index=strikes.index, dtype="float64")
     if direction == "PUT":
         scores = np.where(
             strikes <= float(spot),
             int(cfg["put_below_spot_score"]),
             int(cfg["put_above_spot_score"]),
         )
-        return pd.Series(scores, index=strikes.index, dtype="int64")
-    return pd.Series(0, index=strikes.index, dtype="int64")
+        return pd.Series(scores, index=strikes.index, dtype="float64")
+    return pd.Series(0.0, index=strikes.index, dtype="float64")
 
 
 def _score_premium_series(
@@ -240,38 +297,73 @@ def _score_premium_series(
         Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
     """
     premium_series = premiums.astype(float)
-    scores = np.select(
-        [
-            premium_series <= 0,
-            premium_series.between(cfg["premium_optimal_min"], cfg["premium_optimal_max"], inclusive="both"),
-            premium_series.between(cfg["premium_secondary_min"], cfg["premium_optimal_min"], inclusive="left"),
-            premium_series.gt(cfg["premium_optimal_max"]) & premium_series.le(cfg["premium_secondary_max"]),
-            premium_series.between(cfg["premium_lower_tail_min"], cfg["premium_secondary_min"], inclusive="left"),
-        ],
-        [
-            int(cfg["premium_invalid_penalty"]),
-            int(cfg["premium_optimal_score"]),
-            int(cfg["premium_secondary_score"]),
-            int(cfg["premium_upper_mid_score"]),
-            int(cfg["premium_lower_tail_score"]),
-        ],
-        default=int(cfg["premium_default_score"]),
-    )
-    premium_scores = pd.Series(scores, index=premium_series.index, dtype="int64")
+
+    if _continuous_mode(cfg):
+        invalid_penalty = float(cfg["premium_invalid_penalty"])
+        optimal_score = float(cfg["premium_optimal_score"])
+        secondary_score = float(cfg["premium_secondary_score"])
+        default_score = float(cfg["premium_default_score"])
+
+        pmin = float(cfg["premium_optimal_min"])
+        pmax = float(cfg["premium_optimal_max"])
+        low_tail = float(cfg["premium_lower_tail_min"])
+        high_tail = float(cfg["premium_secondary_max"])
+
+        premium_scores = pd.Series(default_score, index=premium_series.index, dtype="float64")
+        premium_scores = premium_scores.mask(premium_series <= 0, invalid_penalty)
+
+        left = _linear_decay(
+            value=premium_series,
+            lower=low_tail,
+            upper=pmin,
+            high_score=secondary_score,
+            low_score=optimal_score,
+        )
+        premium_scores = premium_scores.mask((premium_series > 0) & (premium_series < pmin), left)
+        premium_scores = premium_scores.mask((premium_series >= pmin) & (premium_series <= pmax), optimal_score)
+
+        right = _linear_decay(
+            value=premium_series,
+            lower=pmax,
+            upper=high_tail,
+            high_score=optimal_score,
+            low_score=default_score,
+        )
+        premium_scores = premium_scores.mask((premium_series > pmax) & (premium_series <= high_tail), right)
+        premium_scores = premium_scores.mask(premium_series > high_tail, default_score)
+    else:
+        scores = np.select(
+            [
+                premium_series <= 0,
+                premium_series.between(cfg["premium_optimal_min"], cfg["premium_optimal_max"], inclusive="both"),
+                premium_series.between(cfg["premium_secondary_min"], cfg["premium_optimal_min"], inclusive="left"),
+                premium_series.gt(cfg["premium_optimal_max"]) & premium_series.le(cfg["premium_secondary_max"]),
+                premium_series.between(cfg["premium_lower_tail_min"], cfg["premium_secondary_min"], inclusive="left"),
+            ],
+            [
+                int(cfg["premium_invalid_penalty"]),
+                int(cfg["premium_optimal_score"]),
+                int(cfg["premium_secondary_score"]),
+                int(cfg["premium_upper_mid_score"]),
+                int(cfg["premium_lower_tail_score"]),
+            ],
+            default=int(cfg["premium_default_score"]),
+        )
+        premium_scores = pd.Series(scores, index=premium_series.index, dtype="float64")
 
     if max_capital is not None and lot_size is not None:
         capital_per_lot = premium_series * float(lot_size)
         premium_scores = premium_scores.mask(
             capital_per_lot > float(max_capital),
-            premium_scores + int(cfg["premium_over_budget_penalty"]),
+            premium_scores + float(cfg["premium_over_budget_penalty"]),
         )
         premium_scores = premium_scores.mask(
             (capital_per_lot <= float(max_capital))
             & (capital_per_lot > (float(cfg["premium_near_budget_ratio"]) * float(max_capital))),
-            premium_scores + int(cfg["premium_near_budget_penalty"]),
+            premium_scores + float(cfg["premium_near_budget_penalty"]),
         )
 
-    return premium_scores.astype("int64")
+    return premium_scores.astype("float64")
 
 
 def _score_liquidity_series(volume: pd.Series, open_interest: pd.Series, *, cfg) -> pd.Series:
@@ -295,6 +387,15 @@ def _score_liquidity_series(volume: pd.Series, open_interest: pd.Series, *, cfg)
     """
     vol = volume.astype(float)
     oi = open_interest.astype(float)
+
+    if _continuous_mode(cfg):
+        v_hi = max(float(cfg["volume_high_threshold"]), 1.0)
+        oi_hi = max(float(cfg["oi_high_threshold"]), 1.0)
+        v_ratio = np.log1p(np.clip(vol, a_min=0.0, a_max=None)) / np.log1p(v_hi)
+        oi_ratio = np.log1p(np.clip(oi, a_min=0.0, a_max=None)) / np.log1p(oi_hi)
+        volume_scores = np.clip(v_ratio, 0.0, 1.0) * float(cfg["volume_high_score"])
+        oi_scores = np.clip(oi_ratio, 0.0, 1.0) * float(cfg["oi_high_score"])
+        return pd.Series(volume_scores + oi_scores, index=vol.index, dtype="float64")
 
     volume_scores = np.select(
         [
@@ -322,7 +423,7 @@ def _score_liquidity_series(volume: pd.Series, open_interest: pd.Series, *, cfg)
         ],
         default=0,
     )
-    return pd.Series(volume_scores + oi_scores, index=vol.index, dtype="int64")
+    return pd.Series(volume_scores + oi_scores, index=vol.index, dtype="float64")
 
 
 def _score_wall_distance_series(
@@ -354,12 +455,26 @@ def _score_wall_distance_series(
         Only the wall that matters for the current direction is considered because that is the nearer execution obstacle.
     """
     strikes = strikes.astype(float)
-    score = pd.Series(0, index=strikes.index, dtype="int64")
+    score = pd.Series(0.0, index=strikes.index, dtype="float64")
     support = _safe_float(support_wall, None)
     resistance = _safe_float(resistance_wall, None)
 
     if direction == "CALL" and resistance is not None:
         dist = (strikes - resistance).abs()
+        if _continuous_mode(cfg):
+            near = float(cfg["wall_near_distance_points"])
+            medium = max(float(cfg["wall_medium_distance_points"]), near + 1e-6)
+            near_pen = float(cfg["wall_near_penalty"])
+            med_pen = float(cfg["wall_medium_penalty"])
+            mid_curve = _linear_decay(
+                value=dist,
+                lower=near,
+                upper=medium,
+                high_score=near_pen,
+                low_score=med_pen,
+            )
+            values = np.where(dist <= near, near_pen, np.where(dist <= medium, mid_curve.to_numpy(), 0.0))
+            return pd.Series(values, index=strikes.index, dtype="float64")
         score = pd.Series(
             np.select(
                 [
@@ -373,10 +488,24 @@ def _score_wall_distance_series(
                 default=0,
             ),
             index=strikes.index,
-            dtype="int64",
+            dtype="float64",
         )
     elif direction == "PUT" and support is not None:
         dist = (strikes - support).abs()
+        if _continuous_mode(cfg):
+            near = float(cfg["wall_near_distance_points"])
+            medium = max(float(cfg["wall_medium_distance_points"]), near + 1e-6)
+            near_pen = float(cfg["wall_near_penalty"])
+            med_pen = float(cfg["wall_medium_penalty"])
+            mid_curve = _linear_decay(
+                value=dist,
+                lower=near,
+                upper=medium,
+                high_score=near_pen,
+                low_score=med_pen,
+            )
+            values = np.where(dist <= near, near_pen, np.where(dist <= medium, mid_curve.to_numpy(), 0.0))
+            return pd.Series(values, index=strikes.index, dtype="float64")
         score = pd.Series(
             np.select(
                 [
@@ -390,7 +519,7 @@ def _score_wall_distance_series(
                 default=0,
             ),
             index=strikes.index,
-            dtype="int64",
+            dtype="float64",
         )
 
     return score
@@ -416,7 +545,7 @@ def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, 
         This is a structural heuristic meant to keep trade construction aligned with the surrounding dealer-positioning map.
     """
     if not gamma_clusters:
-        return pd.Series(0, index=strikes.index, dtype="int64")
+        return pd.Series(0.0, index=strikes.index, dtype="float64")
 
     clean_clusters = []
     for cluster in gamma_clusters:
@@ -426,11 +555,27 @@ def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, 
             continue
 
     if not clean_clusters:
-        return pd.Series(0, index=strikes.index, dtype="int64")
+        return pd.Series(0.0, index=strikes.index, dtype="float64")
 
     strike_values = strikes.astype(float).to_numpy(dtype=float)
     cluster_values = np.asarray(clean_clusters, dtype=float)
     nearest = np.min(np.abs(strike_values[:, None] - cluster_values[None, :]), axis=1)
+    if _continuous_mode(cfg):
+        near = float(cfg["gamma_cluster_near_distance_points"])
+        medium = max(float(cfg["gamma_cluster_medium_distance_points"]), near + 1e-6)
+        near_pen = float(cfg["gamma_cluster_near_penalty"])
+        med_pen = float(cfg["gamma_cluster_medium_penalty"])
+        far_bonus = float(cfg["gamma_cluster_far_bonus"])
+        mid_curve = _linear_decay(
+            value=pd.Series(nearest),
+            lower=near,
+            upper=medium,
+            high_score=near_pen,
+            low_score=med_pen,
+        )
+        values = np.where(nearest <= near, near_pen, np.where(nearest <= medium, mid_curve.to_numpy(), far_bonus))
+        return pd.Series(values, index=strikes.index, dtype="float64")
+
     scores = np.select(
         [
             nearest <= cfg["gamma_cluster_near_distance_points"],
@@ -442,7 +587,7 @@ def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, 
         ],
         default=int(cfg["gamma_cluster_far_bonus"]),
     )
-    return pd.Series(scores, index=strikes.index, dtype="int64")
+    return pd.Series(scores, index=strikes.index, dtype="float64")
 
 
 def _score_iv_series(iv: pd.Series, *, cfg) -> pd.Series:
@@ -464,6 +609,39 @@ def _score_iv_series(iv: pd.Series, *, cfg) -> pd.Series:
         Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
     """
     iv_values = iv.astype(float)
+
+    if _continuous_mode(cfg):
+        iv_low_min = float(cfg["iv_low_min"])
+        iv_low_max = float(cfg["iv_low_max"])
+        iv_mid_max = float(cfg["iv_mid_max"])
+        iv_high = float(cfg["iv_high_threshold"])
+        low_score = float(cfg["iv_low_score"])
+        mid_score = float(cfg["iv_mid_score"])
+        high_pen = float(cfg["iv_high_penalty"])
+
+        score = pd.Series(0.0, index=iv.index, dtype="float64")
+        left = _linear_decay(
+            value=iv_values,
+            lower=iv_low_min,
+            upper=iv_low_max,
+            high_score=low_score,
+            low_score=mid_score,
+        )
+        right = _linear_decay(
+            value=iv_values,
+            lower=iv_mid_max,
+            upper=max(iv_high, iv_mid_max + 1e-6),
+            high_score=mid_score,
+            low_score=high_pen,
+        )
+
+        score = score.mask(iv_values.between(iv_low_min, iv_low_max, inclusive="both"), left)
+        score = score.mask(iv_values.gt(iv_low_max) & iv_values.le(iv_mid_max), mid_score)
+        score = score.mask(iv_values.gt(iv_mid_max) & iv_values.le(iv_high), right)
+        score = score.mask(iv_values > iv_high, high_pen)
+        score = score.mask(iv_values <= 0, 0.0)
+        return score
+
     scores = np.select(
         [
             iv_values <= 0,
@@ -479,7 +657,7 @@ def _score_iv_series(iv: pd.Series, *, cfg) -> pd.Series:
         ],
         default=0,
     )
-    return pd.Series(scores, index=iv.index, dtype="int64")
+    return pd.Series(scores, index=iv.index, dtype="float64")
 
 
 def _score_candidate_frame(
@@ -560,7 +738,7 @@ def _score_candidate_frame(
         + scored["_wall_distance_score"]
         + scored["_gamma_cluster_score"]
         + scored["_iv_score"]
-    ).astype("int64")
+    ).astype("float64")
     return scored
 
 
@@ -723,13 +901,13 @@ def rank_strike_candidates(
                 iv = estimated_iv
 
         score_breakdown = {
-            "moneyness_score": int(_row_get("_moneyness_score", 0)),
-            "directional_side_score": int(_row_get("_directional_side_score", 0)),
-            "premium_score": int(_row_get("_premium_score", 0)),
-            "liquidity_score": int(_row_get("_liquidity_score", 0)),
-            "wall_distance_score": int(_row_get("_wall_distance_score", 0)),
-            "gamma_cluster_score": int(_row_get("_gamma_cluster_score", 0)),
-            "iv_score": int(_row_get("_iv_score", 0)),
+            "moneyness_score": round(_safe_float(_row_get("_moneyness_score", 0.0), 0.0), 2),
+            "directional_side_score": round(_safe_float(_row_get("_directional_side_score", 0.0), 0.0), 2),
+            "premium_score": round(_safe_float(_row_get("_premium_score", 0.0), 0.0), 2),
+            "liquidity_score": round(_safe_float(_row_get("_liquidity_score", 0.0), 0.0), 2),
+            "wall_distance_score": round(_safe_float(_row_get("_wall_distance_score", 0.0), 0.0), 2),
+            "gamma_cluster_score": round(_safe_float(_row_get("_gamma_cluster_score", 0.0), 0.0), 2),
+            "iv_score": round(_safe_float(_row_get("_iv_score", 0.0), 0.0), 2),
         }
 
         hook_payload = {}
@@ -755,7 +933,7 @@ def rank_strike_candidates(
         if efficiency_score_adjustment:
             score_breakdown["option_efficiency_score_adjustment"] = efficiency_score_adjustment
 
-        total_score = int(_row_get("_base_score", 0)) + efficiency_score_adjustment
+        total_score = round(_safe_float(_row_get("_base_score", 0.0), 0.0) + efficiency_score_adjustment, 2)
         delta_raw = _safe_float(_row_get("DELTA"), None)
 
         # Fallback: compute delta from estimated IV when upstream enrichment missed

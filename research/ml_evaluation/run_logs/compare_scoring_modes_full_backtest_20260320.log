@@ -1,0 +1,142 @@
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-03-20 18:08:07,342 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 18:08:07,350 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → blended
+2026-03-20 18:08:07,996 - data.historical_chain_normalizer - INFO - Recovering 38968 NaT expiry dates from raw CSVs ...
+2026-03-20 18:08:13,793 - data.historical_chain_normalizer - INFO -   Recovered 38968/38968 NaT expiries (0 still missing)
+2026-03-20 18:08:13,844 - data.historical_chain_normalizer - INFO -   Filled 510158 underlying_price values from spot_daily
+2026-03-20 18:08:14,051 - data.historical_chain_normalizer - INFO - Loaded 514250 rows across 246 trading days
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator LabelEncoder from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator _BinMapper from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator HistGradientBoostingClassifier from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+2026-03-20 18:08:15,742 - research.ml_models.gbt_model - INFO - Loaded GBT ranking model: GBT_shallow_v1
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator StandardScaler from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator LogisticRegression from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator Pipeline from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+2026-03-20 18:08:15,805 - research.ml_models.logreg_model - INFO - Loaded LogReg calibration model: LogReg_ElasticNet_v1
+2026-03-20 18:10:44,966 - data.historical_chain_normalizer - INFO - Recovering 36914 NaT expiry dates from raw CSVs ...
+2026-03-20 18:10:50,289 - data.historical_chain_normalizer - INFO -   Recovered 36914/36914 NaT expiries (0 still missing)
+2026-03-20 18:10:50,326 - data.historical_chain_normalizer - INFO -   Filled 527414 underlying_price values from spot_daily
+2026-03-20 18:10:50,491 - data.historical_chain_normalizer - INFO - Loaded 527414 rows across 248 trading days
+2026-03-20 18:13:04,980 - data.historical_chain_normalizer - INFO - Recovering 51156 NaT expiry dates from raw CSVs ...
+2026-03-20 18:13:11,797 - data.historical_chain_normalizer - INFO -   Recovered 51156/51156 NaT expiries (0 still missing)
+2026-03-20 18:13:11,832 - data.historical_chain_normalizer - INFO -   Filled 564304 underlying_price values from spot_daily
+2026-03-20 18:13:11,995 - data.historical_chain_normalizer - INFO - Loaded 566450 rows across 246 trading days
+2026-03-20 18:15:27,380 - data.historical_chain_normalizer - INFO - Recovering 65482 NaT expiry dates from raw CSVs ...
+2026-03-20 18:15:36,028 - data.historical_chain_normalizer - INFO -   Recovered 65482/65482 NaT expiries (0 still missing)
+2026-03-20 18:15:36,076 - data.historical_chain_normalizer - INFO -   Filled 761488 underlying_price values from spot_daily
+2026-03-20 18:15:36,266 - data.historical_chain_normalizer - INFO - Loaded 770090 rows across 244 trading days
+2026-03-20 18:17:58,658 - data.historical_chain_normalizer - INFO - Recovering 61352 NaT expiry dates from raw CSVs ...
+2026-03-20 18:18:06,572 - data.historical_chain_normalizer - INFO -   Recovered 61352/61352 NaT expiries (0 still missing)
+2026-03-20 18:18:06,624 - data.historical_chain_normalizer - INFO -   Filled 731639 underlying_price values from spot_daily
+2026-03-20 18:18:06,847 - data.historical_chain_normalizer - INFO - Loaded 731639 rows across 250 trading days
+2026-03-20 18:20:32,198 - data.historical_chain_normalizer - INFO - Recovering 30118 NaT expiry dates from raw CSVs ...
+2026-03-20 18:20:36,873 - data.historical_chain_normalizer - INFO -   Recovered 30118/30118 NaT expiries (0 still missing)
+2026-03-20 18:20:36,908 - data.historical_chain_normalizer - INFO -   Filled 510565 underlying_price values from spot_daily
+2026-03-20 18:20:37,028 - data.historical_chain_normalizer - INFO - Loaded 510565 rows across 247 trading days
+2026-03-20 18:22:51,834 - data.historical_chain_normalizer - INFO - Recovering 32607 NaT expiry dates from raw CSVs ...
+2026-03-20 18:22:57,229 - data.historical_chain_normalizer - INFO -   Recovered 32607/32607 NaT expiries (0 still missing)
+2026-03-20 18:22:57,269 - data.historical_chain_normalizer - INFO -   Filled 562041 underlying_price values from spot_daily
+2026-03-20 18:22:57,438 - data.historical_chain_normalizer - INFO - Loaded 562041 rows across 248 trading days
+2026-03-20 18:25:18,773 - data.historical_chain_normalizer - INFO - Recovering 18485 NaT expiry dates from raw CSVs ...
+2026-03-20 18:25:22,247 - data.historical_chain_normalizer - INFO -   Recovered 18485/18485 NaT expiries (0 still missing)
+2026-03-20 18:25:22,275 - data.historical_chain_normalizer - INFO -   Filled 339069 underlying_price values from spot_daily
+2026-03-20 18:25:22,373 - data.historical_chain_normalizer - INFO - Loaded 339069 rows across 245 trading days
+2026-03-20 18:27:26,350 - data.historical_chain_normalizer - INFO - Recovering 21938 NaT expiry dates from raw CSVs ...
+2026-03-20 18:27:30,419 - data.historical_chain_normalizer - INFO -   Recovered 21938/21938 NaT expiries (0 still missing)
+2026-03-20 18:27:30,453 - data.historical_chain_normalizer - INFO -   Filled 190107 underlying_price values from spot_daily
+2026-03-20 18:27:30,574 - data.historical_chain_normalizer - INFO - Loaded 394150 rows across 246 trading days
+2026-03-20 18:30:10,113 - data.historical_chain_normalizer - INFO - Loaded 394283 rows across 248 trading days
+2026-03-20 18:32:21,956 - data.historical_chain_normalizer - INFO - Loaded 82209 rows across 50 trading days
+2026-03-20 18:32:47,106 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 18:32:48,373 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 18:32:48,373 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → pure_rule
+2026-03-20 19:09:00,081 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 19:09:02,761 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 19:09:02,761 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → pure_ml
+2026-03-20 19:36:22,043 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 19:36:23,846 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 19:36:23,846 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → research_dual_model
+2026-03-20 20:05:19,645 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 20:05:21,659 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 20:05:21,659 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → research_decision_policy
+2026-03-20 20:29:13,703 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 20:29:15,171 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 20:29:15,171 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → ev_sizing
+2026-03-20 20:29:15,592 - research.ml_evaluation.ev_and_regime_policy.conditional_return_tables - INFO - Built conditional return table: 41 cells, 16 backed-off, 25 smoothed
+2026-03-20 20:29:15,594 - engine.predictors.ev_sizing_predictor - INFO - EV sizing loaded: 41 CRT cells, bounds=(-65.84, 31.75)
+2026-03-20 20:54:56,021 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 20:54:58,362 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 20:54:58,363 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → research_rank_gate
+ breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+2026-03-20 19:07:54,032 - research.ml_models.gbt_model - INFO - Loaded GBT ranking model: GBT_shallow_v1
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator StandardScaler from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator LogisticRegression from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/.venv/lib/python3.9/site-packages/sklearn/base.py:380: InconsistentVersionWarning: Trying to unpickle estimator Pipeline from version 1.7.2 when using version 1.6.1. This might lead to breaking code or invalid results. Use at your own risk. For more info please refer to:
+https://scikit-learn.org/stable/model_persistence.html#security-maintainability-limitations
+  warnings.warn(
+2026-03-20 19:07:54,098 - research.ml_models.logreg_model - INFO - Loaded LogReg calibration model: LogReg_ElasticNet_v1
+2026-03-20 19:10:23,313 - data.historical_chain_normalizer - INFO - Recovering 36914 NaT expiry dates from raw CSVs ...
+2026-03-20 19:10:29,009 - data.historical_chain_normalizer - INFO -   Recovered 36914/36914 NaT expiries (0 still missing)
+2026-03-20 19:10:29,055 - data.historical_chain_normalizer - INFO -   Filled 527414 underlying_price values from spot_daily
+2026-03-20 19:10:29,232 - data.historical_chain_normalizer - INFO - Loaded 527414 rows across 248 trading days
+2026-03-20 19:13:00,397 - data.historical_chain_normalizer - INFO - Recovering 51156 NaT expiry dates from raw CSVs ...
+2026-03-20 19:13:08,163 - data.historical_chain_normalizer - INFO -   Recovered 51156/51156 NaT expiries (0 still missing)
+2026-03-20 19:13:08,219 - data.historical_chain_normalizer - INFO -   Filled 564304 underlying_price values from spot_daily
+2026-03-20 19:13:08,451 - data.historical_chain_normalizer - INFO - Loaded 566450 rows across 246 trading days
+2026-03-20 19:15:47,676 - data.historical_chain_normalizer - INFO - Recovering 65482 NaT expiry dates from raw CSVs ...
+2026-03-20 19:15:58,772 - data.historical_chain_normalizer - INFO -   Recovered 65482/65482 NaT expiries (0 still missing)
+2026-03-20 19:15:58,857 - data.historical_chain_normalizer - INFO -   Filled 761488 underlying_price values from spot_daily
+2026-03-20 19:15:59,154 - data.historical_chain_normalizer - INFO - Loaded 770090 rows across 244 trading days
+2026-03-20 19:18:48,682 - data.historical_chain_normalizer - INFO - Recovering 61352 NaT expiry dates from raw CSVs ...
+2026-03-20 19:18:58,569 - data.historical_chain_normalizer - INFO -   Recovered 61352/61352 NaT expiries (0 still missing)
+2026-03-20 19:18:58,621 - data.historical_chain_normalizer - INFO -   Filled 731639 underlying_price values from spot_daily
+2026-03-20 19:18:58,840 - data.historical_chain_normalizer - INFO - Loaded 731639 rows across 250 trading days
+2026-03-20 19:22:03,747 - data.historical_chain_normalizer - INFO - Recovering 30118 NaT expiry dates from raw CSVs ...
+2026-03-20 19:22:09,706 - data.historical_chain_normalizer - INFO -   Recovered 30118/30118 NaT expiries (0 still missing)
+2026-03-20 19:22:09,763 - data.historical_chain_normalizer - INFO -   Filled 510565 underlying_price values from spot_daily
+2026-03-20 19:22:09,972 - data.historical_chain_normalizer - INFO - Loaded 510565 rows across 247 trading days
+2026-03-20 19:25:01,919 - data.historical_chain_normalizer - INFO - Recovering 32607 NaT expiry dates from raw CSVs ...
+2026-03-20 19:25:08,770 - data.historical_chain_normalizer - INFO -   Recovered 32607/32607 NaT expiries (0 still missing)
+2026-03-20 19:25:08,838 - data.historical_chain_normalizer - INFO -   Filled 562041 underlying_price values from spot_daily
+2026-03-20 19:25:09,136 - data.historical_chain_normalizer - INFO - Loaded 562041 rows across 248 trading days
+2026-03-20 19:28:08,426 - data.historical_chain_normalizer - INFO - Recovering 18485 NaT expiry dates from raw CSVs ...
+2026-03-20 19:28:12,398 - data.historical_chain_normalizer - INFO -   Recovered 18485/18485 NaT expiries (0 still missing)
+2026-03-20 19:28:12,440 - data.historical_chain_normalizer - INFO -   Filled 339069 underlying_price values from spot_daily
+2026-03-20 19:28:12,550 - data.historical_chain_normalizer - INFO - Loaded 339069 rows across 245 trading days
+2026-03-20 19:30:26,290 - data.historical_chain_normalizer - INFO - Recovering 21938 NaT expiry dates from raw CSVs ...
+2026-03-20 19:30:30,477 - data.historical_chain_normalizer - INFO -   Recovered 21938/21938 NaT expiries (0 still missing)
+2026-03-20 19:30:30,510 - data.historical_chain_normalizer - INFO -   Filled 190107 underlying_price values from spot_daily
+2026-03-20 19:30:30,641 - data.historical_chain_normalizer - INFO - Loaded 394150 rows across 246 trading days
+2026-03-20 19:32:51,392 - data.historical_chain_normalizer - INFO - Loaded 394283 rows across 248 trading days
+2026-03-20 19:35:34,136 - data.historical_chain_normalizer - INFO - Loaded 82209 rows across 50 trading days
+2026-03-20 19:36:02,857 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 19:36:04,453 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 19:36:04,453 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → pure_rule
+2026-03-20 20:02:33,548 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 20:02:35,570 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 20:02:35,571 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → pure_ml
+2026-03-20 20:24:14,661 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 20:24:16,096 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 20:24:16,096 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → research_dual_model
+2026-03-20 20:49:18,768 - backtest.holistic_backtest_runner - INFO - Backtest predictor restored
+2026-03-20 20:49:21,072 - backtest.holistic_backtest_runner - INFO - Holistic backtest (signal-centric): NIFTY from 2016-01-01 to 2026-03-16 (2518 days, max 3 expiries/day)
+2026-03-20 20:49:21,072 - backtest.holistic_backtest_runner - INFO - Backtest predictor override → research_decision_policy

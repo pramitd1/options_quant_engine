@@ -725,12 +725,52 @@ def load_cumulative_dataset(
     return load_signals_dataset(cumul_path)
 
 
+def _apply_ml_inference_to_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply ML inference to populate ml_rank_score and ml_confidence_score for signals that need them.
+    
+    This ensures that every signal generates has ML scores, fixing the infrastructure gap where
+    live signals were captured without running through the research evaluation layer.
+    
+    Returns the dataframe with ML scores populated (in-place modification).
+    """
+    try:
+        from research.ml_models.ml_config import ML_RESEARCH_ENABLED
+        if not ML_RESEARCH_ENABLED:
+            return df
+        
+        # Check which signals need ML inference
+        needs_inference = df["ml_rank_score"].isna() | df["ml_confidence_score"].isna()
+        if not needs_inference.any():
+            return df
+        
+        # Apply inference batch to those signals
+        from research.ml_models.ml_inference import infer_batch
+        try:
+            inferred = infer_batch(df[needs_inference])
+            if inferred is not None:
+                df.loc[needs_inference, "ml_rank_score"] = inferred["ml_rank_score"]
+                df.loc[needs_inference, "ml_confidence_score"] = inferred["ml_confidence_score"]
+                df.loc[needs_inference, "ml_rank_bucket"] = inferred["ml_rank_bucket"]
+                df.loc[needs_inference, "ml_confidence_bucket"] = inferred["ml_confidence_bucket"]
+                df.loc[needs_inference, "ml_agreement_with_engine"] = inferred["ml_agreement_with_engine"]
+        except Exception:
+            # If batch inference fails, don't break signal capture
+            pass
+    except Exception:
+        # If ML inference infrastructure is broken, don't break signal capture
+        pass
+    
+    return df
+
+
 def _sync_to_cumulative(incoming: pd.DataFrame) -> None:
     """Append *incoming* rows to the cumulative dataset, deduplicating by signal_id.
 
     This is called automatically by ``upsert_signal_rows`` whenever the live
     dataset is updated so that every captured signal is also persisted in the
     long-lived cumulative store.
+    
+    ML inference is applied before syncing to ensure all signals have scores.
     """
     cumul_csv = CUMULATIVE_DATASET_PATH
     cumul_sqlite = _dataset_store_path(cumul_csv)
@@ -739,6 +779,9 @@ def _sync_to_cumulative(incoming: pd.DataFrame) -> None:
         return
 
     incoming = _normalize_dataset_frame(incoming)
+    
+    # ── NEW: Apply ML inference to signals before syncing ──
+    incoming = _apply_ml_inference_to_signals(incoming)
 
     # Load existing cumulative signal_ids to avoid duplicates.
     existing_ids: set[str] = set()

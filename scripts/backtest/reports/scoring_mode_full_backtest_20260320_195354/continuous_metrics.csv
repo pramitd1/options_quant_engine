@@ -1,0 +1,9 @@
+scoring_mode,method,status,total_signals,evaluated_days,elapsed_seconds,trade_signals,trade_rate,target_hit_rate,stop_loss_hit_rate,avg_trade_strength,avg_composite_score,avg_direction_score,avg_tradeability_score,correct_1d,correct_expiry,avg_mfe_bps,avg_mae_bps
+continuous,blended,SUCCESS,7554,2518,1121.0,4000,0.5295,0.4375,0.5162,81.023,57.9488,40.7729,50.5934,0.4912,0.4552,238.4118,-262.1815
+continuous,pure_rule,SUCCESS,7554,2518,1176.85,3905,0.5169,0.4366,0.5183,79.6077,57.8945,40.648,50.4403,0.4883,0.453,239.4761,-264.207
+continuous,pure_ml,SUCCESS,7554,2518,1181.38,3315,0.4388,0.4202,0.5297,80.5738,58.484,41.3297,50.5525,0.4852,0.4543,250.9279,-274.157
+continuous,research_dual_model,SUCCESS,7554,2518,1189.52,3015,0.3991,0.4229,0.5327,80.9489,59.0407,42.7439,50.9208,0.4875,0.4627,252.8613,-275.6028
+continuous,research_decision_policy,SUCCESS,7554,2518,1346.23,2510,0.3323,0.4327,0.5239,83.4538,60.5127,45.1222,52.4901,0.5022,0.4805,263.2631,-276.2219
+continuous,ev_sizing,SUCCESS,7554,2518,1542.7,3012,0.3987,0.4233,0.5322,80.9542,59.0435,42.7864,50.9134,0.4877,0.4625,252.8881,-275.6785
+continuous,research_rank_gate,SUCCESS,7554,2518,2404.6,2230,0.2952,0.4305,0.5336,85.0363,60.8606,45.4848,52.3705,0.4969,0.4794,268.302,-282.7472
+continuous,research_uncertainty_adjusted,SUCCESS,7554,2518,1875.55,2059,0.2726,0.4182,0.5483,85.594,59.6485,43.5596,51.1701,0.4832,0.4716,266.6141,-290.3321

@@ -63,6 +63,12 @@ def derive_global_risk_trade_modifiers(global_risk_state):
     effective_adjustment_score = base_adjustment_score + feature_adjustment_score
     overnight_hold_allowed = bool(global_risk_state.get("overnight_hold_allowed", True))
 
+    global_risk_state_label = str(global_risk_state.get("global_risk_state", "")).upper().strip()
+    force_no_trade = (
+        global_risk_state_label == "EVENT_LOCKDOWN"
+        or bool(global_risk_state.get("global_risk_veto", False))
+    )
+
     return {
         "base_adjustment_score": base_adjustment_score,
         "feature_adjustment_score": feature_adjustment_score,
@@ -76,7 +82,7 @@ def derive_global_risk_trade_modifiers(global_risk_state):
         "overnight_hold_reason": str(global_risk_state.get("overnight_hold_reason", "overnight_risk_contained")),
         "overnight_risk_penalty": int(_safe_float(global_risk_state.get("overnight_risk_penalty"), 0.0)),
         "overnight_trade_block": not overnight_hold_allowed,
-        "force_no_trade": str(global_risk_state.get("global_risk_state", "")).upper().strip() == "EVENT_LOCKDOWN",
+        "force_no_trade": force_no_trade,
     }
 
 

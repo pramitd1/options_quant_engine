@@ -75,7 +75,7 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
         reasons.append("stale_option_chain")
 
     provider_health = option_chain_validation.get("provider_health") or {}
-    provider_summary = provider_health.get("summary_status")
+    provider_summary = str(provider_health.get("summary_status") or "").upper().strip()
     if provider_summary == "WEAK":
         score -= cfg.provider_health_weak_penalty
         reasons.append("weak_provider_health")
@@ -585,6 +585,7 @@ def _compute_signal_state(
         squeeze_zone=market_state["dealer_liquidity_map"].get("gamma_squeeze_zone"),
         large_move_probability=probability_state["hybrid_move_probability"],
         ml_move_probability=probability_state["ml_move_probability"],
+        flip_distance_pct=probability_state["components"].get("gamma_flip_distance_pct"),
         proximity_buffer=get_microstructure_config(symbol).get("wall_proximity_points", 50.0),
     )
 

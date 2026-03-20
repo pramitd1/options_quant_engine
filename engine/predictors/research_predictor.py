@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from engine.predictors.inference_row import build_inference_row
 from engine.predictors.protocol import MovePredictor, PredictionResult
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class ResearchDualModelPredictor:
         try:
             from research.ml_models.ml_inference import infer_single
 
-            result = infer_single(model_features)
+            result = infer_single(build_inference_row(market_ctx, raw))
             if result is not None:
                 rank_score = result.ml_rank_score
                 confidence_score = result.ml_confidence_score

@@ -1,0 +1,47 @@
+
+================================================================================
+  BATCH DOCUMENTATION PDF REGENERATION
+================================================================================
+
+📁 research_notes:
+  ✅ decision_policy_robustness_report.md               →   12.4 KB
+  ✅ ml_inference_infrastructure_gap_fix.md             →   11.7 KB
+  ✅ options_quant_engine_thesis.md                     →   93.4 KB
+  ✅ quant_note_trade_signal_logic.md                   →   17.3 KB
+
+📁 parameter_tuning:
+  ✅ advanced_tuning_roadmap_memo.md                    →   22.8 KB
+  ✅ parameter_inventory_memo.md                        →   13.3 KB
+
+📁 audits:
+  ✅ CODEBASE_AUDIT_REPORT.md                           →   14.9 KB
+  ✅ COMPARATIVE_BACKTEST_DETAILED_REPORT.md            →   27.6 KB
+  ✅ MACRO_INTEGRATION_AUDIT.md                         →   18.4 KB
+  ✅ SIGNAL_ANALYSIS_BIAS_REPORT.md                     →   15.3 KB
+  ✅ SIGNAL_DATA_UPDATE_FLOW.md                         →   13.2 KB
+
+📁 system_docs:
+  ✅ ARCHITECTURE_FROM_CODE.md                          →   18.8 KB
+  ✅ CODE_DEPENDENCY_AUDIT.md                           →   17.9 KB
+  ✅ DEPENDENCY_DIAGRAMS.md                             →    8.4 KB
+  ✅ architecture_audit_report.md                       →   14.1 KB
+  ✅ developer_guide.md                                 →   10.1 KB
+  ✅ options_quant_engine_academic_paper.md             →   47.6 KB
+  ✅ options_quant_engine_function_appendix.md          →   66.1 KB
+  ✅ options_quant_engine_research_paper.md             →   89.8 KB
+  ✅ options_quant_engine_system_monograph.md           →  113.8 KB
+  ✅ pdf_generation_guide.md                            →    5.2 KB
+  ✅ troubleshooting_guide.md                           →    7.2 KB
+
+📁 daily_reports:
+  ✅ signal_research_report_20260316.md                 →   33.6 KB
+  ✅ signal_research_report_20260317.md                 →   33.4 KB
+  ✅ signal_research_report_20260318.md                 →   35.4 KB
+  ✅ signal_research_report_20260319.md                 →   34.1 KB
+  ✅ signal_research_report_20260320.md                 →   33.4 KB
+  ✅ signal_research_report_cumulative.md               →   33.8 KB
+
+================================================================================
+  COMPLETE: 28 success, 0 failed
+================================================================================
+

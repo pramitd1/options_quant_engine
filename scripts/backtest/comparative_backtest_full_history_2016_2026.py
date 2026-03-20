@@ -82,6 +82,8 @@ PREDICTION_METHODS = [
     "research_dual_model",
     "research_decision_policy",
     "ev_sizing",
+    "research_rank_gate",
+    "research_uncertainty_adjusted",
 ]
 
 # Method descriptions

@@ -17,9 +17,41 @@ Downstream Usage:
 from config.signal_policy import (
     get_consensus_score_config,
     get_large_move_scoring_policy_config,
+    get_trade_strength_continuous_policy_config,
     get_trade_runtime_thresholds,
     get_trade_strength_weights,
 )
+
+
+def _safe_float(value, default=None):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _clip(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def _normalize(value, lo, hi):
+    if value is None:
+        return 0.0
+    if hi <= lo:
+        return 0.0
+    return _clip((value - lo) / (hi - lo), 0.0, 1.0)
+
+
+def _distance_factor(spot, level, distance_cap):
+    spot_v = _safe_float(spot, None)
+    lvl_v = _safe_float(level, None)
+    cap_v = abs(_safe_float(distance_cap, 0.0) or 0.0)
+    if spot_v is None or lvl_v is None or cap_v <= 0.0:
+        return 0.0
+    dist = abs(spot_v - lvl_v)
+    if dist >= cap_v:
+        return 0.0
+    return 1.0 - (dist / cap_v)
 
 
 def _wall_proximity_score(spot, support_wall, resistance_wall, direction, proximity_buffer=None):
@@ -64,6 +96,33 @@ def _wall_proximity_score(spot, support_wall, resistance_wall, direction, proxim
             score += weights["wall_resistance_penalty"]
 
     return score
+
+
+def _wall_proximity_score_continuous(spot, support_wall, resistance_wall, direction, proximity_buffer=None):
+    """Distance-aware wall scoring that decays linearly with proximity."""
+    weights = get_trade_strength_weights()
+    cfg = get_trade_strength_continuous_policy_config()
+
+    if proximity_buffer is None:
+        rt = get_trade_runtime_thresholds()
+        proximity_buffer = abs(float(rt.get("wall_proximity_buffer", 50)))
+    else:
+        proximity_buffer = abs(float(proximity_buffer or 0))
+
+    cap = max(1.0, proximity_buffer * cfg.wall_distance_cap_multiplier)
+    score = 0.0
+
+    support_factor = _distance_factor(spot, support_wall, cap)
+    resistance_factor = _distance_factor(spot, resistance_wall, cap)
+
+    if direction == "CALL":
+        score += weights["wall_support_bonus"] * support_factor
+        score += weights["wall_resistance_penalty"] * resistance_factor
+    elif direction == "PUT":
+        score += weights["wall_support_bonus"] * resistance_factor
+        score += weights["wall_resistance_penalty"] * support_factor
+
+    return int(round(score))
 
 
 def _hedging_bias_score(hedging_bias, direction):
@@ -160,6 +219,35 @@ def _spot_vs_flip_score(spot_vs_flip, direction):
             return weights["spot_flip_primary"]
         if spot_vs_flip == "ABOVE_FLIP":
             return weights["spot_flip_secondary"]
+
+    return 0
+
+
+def _spot_vs_flip_score_continuous(spot_vs_flip, direction, flip_distance_pct=None):
+    """Continuous spot-vs-flip scoring based on directional side and distance."""
+    weights = get_trade_strength_weights()
+    cfg = get_trade_strength_continuous_policy_config()
+
+    primary = float(weights["spot_flip_primary"])
+    secondary = float(weights["spot_flip_secondary"])
+    conflict_floor = float(cfg.spot_flip_conflict_floor)
+
+    if spot_vs_flip == "AT_FLIP":
+        return int(round(0.5 * secondary))
+
+    d = _normalize(_safe_float(flip_distance_pct, 0.0), 0.0, cfg.flip_distance_cap_pct)
+
+    if direction == "CALL":
+        if spot_vs_flip == "ABOVE_FLIP":
+            return int(round(secondary + (primary - secondary) * d))
+        if spot_vs_flip == "BELOW_FLIP":
+            return int(round(secondary + (conflict_floor - secondary) * d))
+
+    if direction == "PUT":
+        if spot_vs_flip == "BELOW_FLIP":
+            return int(round(secondary + (primary - secondary) * d))
+        if spot_vs_flip == "ABOVE_FLIP":
+            return int(round(secondary + (conflict_floor - secondary) * d))
 
     return 0
 
@@ -294,6 +382,28 @@ def _liquidity_map_score(direction, spot, next_support, next_resistance, squeeze
     return score
 
 
+def _liquidity_map_score_continuous(direction, spot, next_support, next_resistance, squeeze_zone, proximity_buffer):
+    """Distance-aware liquidity path scoring with smooth decay."""
+    weights = get_trade_strength_weights()
+    cfg = get_trade_strength_continuous_policy_config()
+    cap = max(1.0, abs(_safe_float(proximity_buffer, 50.0) or 50.0) * cfg.liquidity_path_distance_cap_multiplier)
+
+    score = 0.0
+    if direction == "CALL":
+        if _safe_float(next_resistance, None) is not None and _safe_float(spot, 0.0) < _safe_float(next_resistance, 0.0):
+            score += weights["liquidity_map_path_bonus"] * _distance_factor(spot, next_resistance, cap)
+        if _safe_float(squeeze_zone, None) is not None and _safe_float(squeeze_zone, 0.0) >= _safe_float(spot, 0.0):
+            score += weights["liquidity_map_path_bonus"] * _distance_factor(spot, squeeze_zone, cap)
+
+    if direction == "PUT":
+        if _safe_float(next_support, None) is not None and _safe_float(spot, 0.0) > _safe_float(next_support, 0.0):
+            score += weights["liquidity_map_path_bonus"] * _distance_factor(spot, next_support, cap)
+        if _safe_float(squeeze_zone, None) is not None and _safe_float(squeeze_zone, 0.0) <= _safe_float(spot, 0.0):
+            score += weights["liquidity_map_path_bonus"] * _distance_factor(spot, squeeze_zone, cap)
+
+    return int(round(score))
+
+
 def _directional_consensus_score(direction, flow_signal_value, smart_money_signal_value, hedging_bias, spot_vs_flip):
     """
     Purpose:
@@ -419,6 +529,28 @@ def _large_move_score(large_move_probability, ml_move_probability):
     return min(total, cfg.total_score_cap)
 
 
+def _large_move_score_continuous(large_move_probability, ml_move_probability):
+    """Continuous probability scoring to replace coarse threshold buckets."""
+    cfg = get_trade_strength_continuous_policy_config()
+
+    hybrid_prob = _safe_float(large_move_probability, None)
+    ml_prob = _safe_float(ml_move_probability, None)
+
+    hybrid_norm = _normalize(hybrid_prob, cfg.hybrid_probability_floor, cfg.hybrid_probability_ceiling)
+    ml_norm = _normalize(ml_prob, cfg.ml_probability_floor, cfg.ml_probability_ceiling)
+
+    hybrid_score = cfg.hybrid_max_score * hybrid_norm
+    ml_score = cfg.ml_max_score * ml_norm
+
+    if (hybrid_prob is not None and hybrid_prob >= cfg.overlap_hybrid_threshold) and (
+        ml_prob is not None and ml_prob >= cfg.overlap_ml_threshold
+    ):
+        ml_score -= cfg.overlap_penalty
+
+    total = hybrid_score + max(0.0, ml_score)
+    return int(round(_clip(total, 0.0, float(cfg.probability_total_score_cap))))
+
+
 def compute_trade_strength(
     direction,
     flow_signal_value,
@@ -441,6 +573,8 @@ def compute_trade_strength(
     large_move_probability=None,
     ml_move_probability=None,
     proximity_buffer=50,
+    flip_distance_pct=None,
+    scoring_mode=None,
 ):
     """
     Purpose:
@@ -480,6 +614,7 @@ def compute_trade_strength(
     """
     weights = get_trade_strength_weights()
     breakdown = {
+        "trade_strength_scoring_mode": "discrete",
         "flow_signal_score": 0,
         "smart_money_flow_score": 0,
         "gamma_event_score": 0,
@@ -497,6 +632,16 @@ def compute_trade_strength(
         "directional_consensus_score": 0,
         "flip_zone_dampener_score": 0,
     }
+
+    if not scoring_mode:
+        rt = get_trade_runtime_thresholds()
+        scoring_mode = str(rt.get("trade_strength_scoring_mode", "discrete") or "discrete").strip().lower()
+    else:
+        scoring_mode = str(scoring_mode).strip().lower()
+
+    if scoring_mode not in {"discrete", "continuous"}:
+        scoring_mode = "discrete"
+    breakdown["trade_strength_scoring_mode"] = scoring_mode
 
     breakdown["flow_signal_score"] = _flow_score(flow_signal_value, direction)
     breakdown["smart_money_flow_score"] = _smart_money_score(
@@ -527,10 +672,17 @@ def compute_trade_strength(
     elif vacuum_state in ["NEAR_VACUUM", "VACUUM_WATCH"]:
         breakdown["liquidity_vacuum_score"] = weights["vacuum_watch_bonus"]
 
-    breakdown["spot_vs_flip_score"] = _spot_vs_flip_score(
-        spot_vs_flip,
-        direction
-    )
+    if scoring_mode == "continuous":
+        breakdown["spot_vs_flip_score"] = _spot_vs_flip_score_continuous(
+            spot_vs_flip,
+            direction,
+            flip_distance_pct=flip_distance_pct,
+        )
+    else:
+        breakdown["spot_vs_flip_score"] = _spot_vs_flip_score(
+            spot_vs_flip,
+            direction,
+        )
 
     breakdown["hedging_bias_score"] = _hedging_bias_score(
         hedging_bias,
@@ -544,26 +696,51 @@ def compute_trade_strength(
     elif intraday_gamma_state == "GAMMA_DECREASE":
         breakdown["intraday_gamma_shift_score"] = weights["intraday_gamma_decrease_bonus"]
 
-    breakdown["wall_proximity_score"] = _wall_proximity_score(
-        spot,
-        support_wall,
-        resistance_wall,
-        direction,
-        proximity_buffer=proximity_buffer,
-    )
+    if scoring_mode == "continuous":
+        breakdown["wall_proximity_score"] = _wall_proximity_score_continuous(
+            spot,
+            support_wall,
+            resistance_wall,
+            direction,
+            proximity_buffer=proximity_buffer,
+        )
+    else:
+        breakdown["wall_proximity_score"] = _wall_proximity_score(
+            spot,
+            support_wall,
+            resistance_wall,
+            direction,
+            proximity_buffer=proximity_buffer,
+        )
 
-    breakdown["liquidity_map_score"] = _liquidity_map_score(
-        direction,
-        spot,
-        next_support,
-        next_resistance,
-        squeeze_zone
-    )
+    if scoring_mode == "continuous":
+        breakdown["liquidity_map_score"] = _liquidity_map_score_continuous(
+            direction,
+            spot,
+            next_support,
+            next_resistance,
+            squeeze_zone,
+            proximity_buffer=proximity_buffer,
+        )
+    else:
+        breakdown["liquidity_map_score"] = _liquidity_map_score(
+            direction,
+            spot,
+            next_support,
+            next_resistance,
+            squeeze_zone,
+        )
 
-    breakdown["move_model_score"] = _large_move_score(
-        large_move_probability,
-        ml_move_probability
-    )
+    if scoring_mode == "continuous":
+        breakdown["move_model_score"] = _large_move_score_continuous(
+            large_move_probability,
+            ml_move_probability,
+        )
+    else:
+        breakdown["move_model_score"] = _large_move_score(
+            large_move_probability,
+            ml_move_probability,
+        )
     breakdown["directional_consensus_score"] = _directional_consensus_score(
         direction,
         flow_signal_value,
@@ -577,7 +754,7 @@ def compute_trade_strength(
         gamma_regime,
     )
 
-    total_score = sum(breakdown.values())
+    total_score = sum(v for v in breakdown.values() if isinstance(v, (int, float)))
     total_score = max(0, min(total_score, 100))
 
     breakdown["total_score"] = total_score

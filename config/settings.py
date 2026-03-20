@@ -168,7 +168,9 @@ VOL_EXPANSION_THRESHOLD = 1.3
 ACTIVE_MODEL = os.getenv("OQE_ACTIVE_MODEL", "").strip() or None
 
 # Prediction method — controls the pluggable predictor architecture.
-# Options: "blended" (default), "pure_ml", "pure_rule", "research_dual_model", "ev_sizing"
+# Options: "blended" (default), "pure_ml", "pure_rule", "research_dual_model",
+#          "research_decision_policy", "ev_sizing", "research_rank_gate",
+#          "research_uncertainty_adjusted"
 # Set via env OQE_PREDICTION_METHOD or override here.
 PREDICTION_METHOD = os.getenv("OQE_PREDICTION_METHOD", "blended").strip() or "blended"
 

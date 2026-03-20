@@ -1049,6 +1049,14 @@ class ICICIBreezeOptionChain:
                     "total_quantity_traded",
                     row.get("total_traded_volume", row.get("totalTradedVolume", 0))
                 )
+                bid_price = row.get(
+                    "best_bid_price",
+                    row.get("bid_price", row.get("bidPrice", row.get("bid", 0)))
+                )
+                ask_price = row.get(
+                    "best_ask_price",
+                    row.get("ask_price", row.get("askPrice", row.get("ask", 0)))
+                )
                 expiry_dt = row.get("expiry_date", row.get("expiryDate"))
                 spot_price = row.get("spot_price", row.get("underlying_value", row.get("spotPrice")))
 
@@ -1061,6 +1069,8 @@ class ICICIBreezeOptionChain:
                 chg_oi_val = self._safe_float(chg_oi, 0.0)
                 iv_val = self._safe_float(iv, 0.0)
                 volume_val = self._safe_float(volume, 0.0)
+                bid_price_val = self._safe_float(bid_price, 0.0)
+                ask_price_val = self._safe_float(ask_price, 0.0)
                 spot_val = self._safe_float(spot_price, None)
 
                 if iv_val <= 0:
@@ -1078,6 +1088,8 @@ class ICICIBreezeOptionChain:
                     "strikePrice": strike_val,
                     "OPTION_TYP": option_typ,
                     "lastPrice": ltp_val,
+                    "bidPrice": bid_price_val,
+                    "askPrice": ask_price_val,
                     "openInterest": oi_val,
                     "changeinOI": chg_oi_val,
                     "impliedVolatility": iv_val,
@@ -1087,6 +1099,8 @@ class ICICIBreezeOptionChain:
                     "OPEN_INT": oi_val,
                     "STRIKE_PR": strike_val,
                     "LAST_PRICE": ltp_val,
+                    "BID_PRICE": bid_price_val,
+                    "ASK_PRICE": ask_price_val,
                     "EXPIRY_DT": expiry_dt,
                 })
             except Exception as e:

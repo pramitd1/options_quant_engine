@@ -51,8 +51,8 @@ _TRADE_STRENGTH_LABELS = {
 def _signal_strength_component(trade: dict) -> float:
     """Derived from trade_strength and hybrid_move_probability."""
     raw_strength = _safe_float(trade.get("trade_strength"), 0)
-    # trade_strength is typically 0..~50+ integer; normalise to 0–100
-    strength_norm = _clip(raw_strength * 2.0, 0, 100)
+    # trade_strength is maintained on a 0-100 scale by the signal engine.
+    strength_norm = _clip(raw_strength, 0, 100)
 
     prob = _safe_float(trade.get("hybrid_move_probability"), 0)
     prob_norm = _clip(prob * 100.0, 0, 100)
@@ -133,7 +133,25 @@ def _data_integrity_component(trade: dict) -> float:
         dq_norm = _clip(_safe_float(trade.get("data_quality_score"), 50), 0, 100)
 
     ph = trade.get("provider_health")
-    if isinstance(ph, dict):
+    ocv = trade.get("option_chain_validation") if isinstance(trade.get("option_chain_validation"), dict) else {}
+
+    if isinstance(ph, dict) and isinstance(ocv, dict) and ocv:
+        eff_ratio = _clip(_safe_float(ocv.get("effective_priced_ratio"), _safe_float(ocv.get("priced_ratio"), 0.0)), 0.0, 1.0)
+        pair_ratio = _clip(_safe_float(ocv.get("paired_strike_ratio"), 0.0), 0.0, 1.0)
+        iv_ratio = _clip(_safe_float(ocv.get("iv_ratio"), 0.0), 0.0, 1.0)
+        dup_ratio = _clip(_safe_float(ocv.get("duplicate_ratio"), 0.0), 0.0, 1.0)
+
+        ph_score = _clip(
+            100.0 * (
+                0.45 * eff_ratio
+                + 0.25 * pair_ratio
+                + 0.20 * iv_ratio
+                + 0.10 * (1.0 - dup_ratio)
+            ),
+            0,
+            100,
+        )
+    elif isinstance(ph, dict):
         status = str(ph.get("summary_status") or "").upper().strip()
         ph_map = {
             "HEALTHY": 100,
@@ -176,6 +194,59 @@ def _classify(score: float) -> str:
     return "UNRELIABLE"
 
 
+def _as_upper(value) -> str:
+    return str(value or "").upper().strip()
+
+
+def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[str]]:
+    """Apply conservative caps when execution preconditions are not met."""
+    guard_caps = []
+
+    trade_status = _as_upper(trade.get("trade_status"))
+    data_quality = _as_upper(trade.get("data_quality_status"))
+    confirmation_status = _as_upper(trade.get("confirmation_status"))
+    direction = _as_upper(trade.get("direction"))
+    no_trade_reason_code = _as_upper(trade.get("no_trade_reason_code"))
+
+    provider_health_summary = _as_upper(trade.get("provider_health_summary"))
+    if not provider_health_summary and isinstance(trade.get("provider_health"), dict):
+        provider_health_summary = _as_upper(trade["provider_health"].get("summary_status"))
+
+    cap = 100.0
+
+    if trade_status in {"WATCHLIST", "NO_SIGNAL", "NO_TRADE", "DATA_INVALID", "BUDGET_FAIL"}:
+        cap = min(cap, 72.0)
+        guard_caps.append("status_watchlist_or_blocked")
+
+    if data_quality == "CAUTION":
+        cap = min(cap, 68.0)
+        guard_caps.append("data_quality_caution")
+    elif data_quality == "WEAK":
+        cap = min(cap, 45.0)
+        guard_caps.append("data_quality_weak")
+
+    if provider_health_summary in {"CAUTION", "DEGRADED"}:
+        cap = min(cap, 62.0)
+        guard_caps.append("provider_health_caution")
+    elif provider_health_summary in {"WEAK", "UNHEALTHY"}:
+        cap = min(cap, 42.0)
+        guard_caps.append("provider_health_weak")
+
+    if confirmation_status in {"CONFLICT", "NO_DIRECTION"}:
+        cap = min(cap, 52.0)
+        guard_caps.append("confirmation_conflict_or_no_direction")
+
+    if no_trade_reason_code and trade_status != "TRADE":
+        cap = min(cap, 60.0)
+        guard_caps.append("explicit_no_trade_reason")
+
+    if direction not in {"CALL", "PUT"} and trade_status != "TRADE":
+        cap = min(cap, 55.0)
+        guard_caps.append("direction_unresolved")
+
+    return (round(min(score, cap), 2), guard_caps)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -213,6 +284,7 @@ def compute_signal_confidence(trade: dict) -> dict:
             "market_stability_component": 0,
             "data_integrity_component": 0,
             "option_efficiency_component": 0,
+            "confidence_recalibration_guards": [],
         }
 
     components = {
@@ -231,9 +303,11 @@ def compute_signal_confidence(trade: dict) -> dict:
         + _WEIGHTS["option_efficiency"] * components["option_efficiency_component"]
     )
     score = round(_clip(raw, 0, 100), 2)
+    score, applied_guards = _apply_recalibration_guards(trade, score)
 
     return {
         "confidence_score": score,
         "confidence_level": _classify(score),
+        "confidence_recalibration_guards": applied_guards,
         **components,
     }

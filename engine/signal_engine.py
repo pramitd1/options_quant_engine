@@ -335,6 +335,9 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
     setup_upgrade_conditions = []
     reason_details = []
 
+    incoming_no_trade_reason_code = _as_upper(payload.get("no_trade_reason_code")) or None
+    incoming_no_trade_reason = str(payload.get("no_trade_reason") or "").strip() or None
+
     no_trade_reason_code = None
     no_trade_reason = None
     watchlist_flag = False
@@ -367,7 +370,11 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
             else:
                 no_trade_reason_code = "GLOBAL_RISK_BLOCK"
                 no_trade_reason = "Trade blocked by global risk overlay"
-            reason_details.extend(payload.get("global_risk_reasons") or [])
+            reason_details.extend(
+                payload.get("global_risk_state_reasons")
+                or payload.get("global_risk_reasons")
+                or []
+            )
         elif trade_status == "BUDGET_FAIL":
             decision_classification = "RISK_BLOCKED"
             setup_state = "RISK_BLOCKED"
@@ -427,15 +434,32 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
                 promotion_requirements.append(f"trade_strength >= {int(min_trade_strength)}")
         elif trade_status == "WATCHLIST":
             watchlist_flag = True
-            if data_quality_status in {"CAUTION", "WEAK"}:
+            provider_health_summary = _as_upper(payload.get("provider_health_summary"))
+            watchlist_message = str(payload.get("message") or "").strip()
+
+            if provider_health_summary in {"CAUTION", "WEAK"}:
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Provider health gates prevent trade execution"
+                blocked_by.append("provider_health")
+                no_trade_reason_code = f"PROVIDER_HEALTH_{provider_health_summary}_BLOCK"
+                no_trade_reason = watchlist_message or (
+                    f"Provider health {provider_health_summary} blocks trade execution"
+                )
+            elif data_quality_status in {"CAUTION", "WEAK"}:
                 decision_classification = "WATCHLIST_CONFIRMATION_PENDING"
                 setup_state = "CONFIRMATION_PENDING"
                 watchlist_reason = "Data quality and confirmation filters require more clarity"
+                blocked_by.append("data_quality")
+                no_trade_reason_code = "DATA_QUALITY_CAUTION"
+                no_trade_reason = watchlist_message or "Trade downgraded to watchlist due to cautionary data quality"
             elif global_risk_action in {"WATCHLIST", "REDUCE"}:
                 decision_classification = "BLOCKED_SETUP"
                 setup_state = "RISK_BLOCKED"
                 watchlist_reason = "Signal is structurally valid but downgraded by risk overlays"
                 blocked_by.append("risk_overlay")
+                no_trade_reason_code = "RISK_OVERLAY_DOWNGRADE"
+                no_trade_reason = watchlist_message or "Trade downgraded to watchlist due to active risk overlay"
             else:
                 decision_classification = "WATCHLIST_SETUP"
                 setup_state = "CONFIRMATION_PENDING"
@@ -448,6 +472,29 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
             if trade_strength < min_trade_strength:
                 missing_requirements.append("insufficient_trade_strength")
                 promotion_requirements.append(f"trade_strength >= {int(min_trade_strength)}")
+                if not no_trade_reason_code:
+                    no_trade_reason_code = "TRADE_STRENGTH_BELOW_THRESHOLD"
+                    no_trade_reason = (
+                        f"Setup is on watchlist: trade_strength {int(trade_strength)} "
+                        f"below threshold {int(min_trade_strength)}"
+                    )
+                else:
+                    reason_details.append(
+                        f"secondary_blocker: trade_strength {int(trade_strength)} below threshold {int(min_trade_strength)}"
+                    )
+                low_strength_watchlist = (
+                    "LOW STRENGTH" in watchlist_message.upper()
+                    or "insufficient_trade_strength" in (payload.get("global_risk_overlay_reasons") or [])
+                )
+                if low_strength_watchlist:
+                    decision_classification = "WATCHLIST_SETUP"
+                    setup_state = "CONFIRMATION_PENDING"
+                    watchlist_reason = (
+                        f"Trade strength {int(trade_strength)} is below execution threshold "
+                        f"{int(min_trade_strength)}"
+                    )
+                    blocked_by = [item for item in blocked_by if item != "risk_overlay"]
+                    blocked_by.append("trade_strength")
 
             if flow_signal == "NEUTRAL_FLOW":
                 missing_requirements.append("missing_flow_confirmation")
@@ -500,6 +547,12 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
     if not no_trade_reason_code and trade_status != "TRADE":
         no_trade_reason_code = "SIGNAL_SCORE_BELOW_THRESHOLD"
         no_trade_reason = "Setup has not met the minimum execution bar"
+
+    # Preserve upstream reason code/reason when they were already set by earlier layers.
+    if incoming_no_trade_reason_code:
+        no_trade_reason_code = incoming_no_trade_reason_code
+    if incoming_no_trade_reason:
+        no_trade_reason = incoming_no_trade_reason
 
     neutralization = _collect_neutralization_states(payload)
 
@@ -998,7 +1051,11 @@ def generate_trade(
         "macro_position_size_multiplier": macro_news_adjustments["macro_position_size_multiplier"],
         "macro_adjustment_reasons": macro_news_adjustments["macro_adjustment_reasons"],
         "global_risk_state": global_risk_state.get("global_risk_state") if isinstance(global_risk_state, dict) else "GLOBAL_NEUTRAL",
+        "global_risk_state_score": global_risk_state.get("global_risk_score") if isinstance(global_risk_state, dict) else 0,
+        "global_risk_overlay_score": None,
         "global_risk_score": global_risk_state.get("global_risk_score") if isinstance(global_risk_state, dict) else 0,
+        "global_risk_state_reasons": global_risk_state.get("global_risk_reasons") if isinstance(global_risk_state, dict) else [],
+        "global_risk_overlay_reasons": [],
         "overnight_gap_risk_score": global_risk_state.get("overnight_gap_risk_score") if isinstance(global_risk_state, dict) else 0,
         "volatility_expansion_risk_score": global_risk_state.get("volatility_expansion_risk_score") if isinstance(global_risk_state, dict) else 0,
         "overnight_hold_allowed": global_risk_trade_modifiers["overnight_hold_allowed"],
@@ -1083,7 +1140,11 @@ def generate_trade(
     base_payload.update(
         {
             "global_risk_state": global_risk["global_risk_state"],
+            "global_risk_state_score": global_risk_state.get("global_risk_score") if isinstance(global_risk_state, dict) else 0,
+            "global_risk_overlay_score": global_risk["global_risk_score"],
             "global_risk_score": global_risk["global_risk_score"],
+            "global_risk_state_reasons": global_risk_state.get("global_risk_reasons") if isinstance(global_risk_state, dict) else [],
+            "global_risk_overlay_reasons": global_risk["global_risk_reasons"],
             "overnight_gap_risk_score": global_risk["overnight_gap_risk_score"],
             "volatility_expansion_risk_score": global_risk["volatility_expansion_risk_score"],
             "overnight_hold_allowed": (
@@ -1159,6 +1220,8 @@ def generate_trade(
             "global_risk_level": global_risk["global_risk_level"],
             "global_risk_action": global_risk["global_risk_action"],
             "global_risk_size_cap": global_risk["global_risk_size_cap"],
+            "global_risk_state_reasons": global_risk_state.get("global_risk_reasons") if isinstance(global_risk_state, dict) else [],
+            "global_risk_overlay_reasons": global_risk["global_risk_reasons"],
             "global_risk_reasons": global_risk["global_risk_reasons"],
             "global_risk_features": global_risk["global_risk_features"],
             "global_risk_diagnostics": global_risk["global_risk_diagnostics"],
@@ -1226,6 +1289,13 @@ def generate_trade(
 
     if global_risk["risk_trade_status"] == "DATA_INVALID":
         return _finalize(base_payload, "DATA_INVALID", global_risk["risk_message"])
+
+    if global_risk["risk_trade_status"] == "GLOBAL_RISK_BLOCKED":
+        return _finalize(
+            base_payload,
+            "NO_TRADE",
+            global_risk["risk_message"] or "Trade blocked due to elevated global risk conditions",
+        )
 
     if global_risk_trade_modifiers["force_no_trade"] or global_risk["risk_trade_status"] == "EVENT_LOCKDOWN":
         return _finalize(base_payload, "NO_TRADE", global_risk["risk_message"] or "Trade blocked due to global event lockdown")

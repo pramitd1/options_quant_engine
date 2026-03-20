@@ -5,6 +5,7 @@ import unittest
 import pandas as pd
 
 from data.option_chain_validation import validate_option_chain
+from config.policy_resolver import temporary_parameter_pack
 
 
 class OptionChainValidationTests(unittest.TestCase):
@@ -75,6 +76,91 @@ class OptionChainValidationTests(unittest.TestCase):
         self.assertIn("low_paired_strike_ratio:0/20", validation["warnings"])
         self.assertIn("unknown_option_type_rows:1", validation["warnings"])
 
+    def test_bid_ask_columns_populate_quoted_ratio_and_effective_priced_ratio(self):
+        """Chain with full bid/ask coverage → pricing_basis=TRADE_OR_QUOTE,
+        quoted_ratio and effective_priced_ratio both equal 1.0."""
+        rows = []
+        for i, s in enumerate(range(22000, 22650, 50)):
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "CE",
+                "lastPrice": 100, "bidPrice": 99, "askPrice": 101,
+                "impliedVolatility": 18, "EXPIRY_DT": "2026-03-26",
+            })
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "PE",
+                "lastPrice": 110, "bidPrice": 109, "askPrice": 111,
+                "impliedVolatility": 19, "EXPIRY_DT": "2026-03-26",
+            })
+        df = pd.DataFrame(rows)
+
+        result = validate_option_chain(df)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["pricing_basis"], "TRADE_OR_QUOTE")
+        self.assertEqual(ph["quote_coverage_mode"], "TWO_SIDED")
+        self.assertIsNotNone(result["quoted_ratio"])
+        self.assertEqual(result["priced_ratio"], 1.0)
+        self.assertEqual(result["quoted_ratio"], 1.0)
+        self.assertEqual(result["effective_priced_ratio"], 1.0)
+        self.assertEqual(result["one_sided_quote_rows"], 0)
+        self.assertEqual(ph["quote_health"], "GOOD")
+        self.assertEqual(ph["pricing_health"], "GOOD")
+
+    def test_ltp_only_chain_has_trade_only_pricing_basis(self):
+        """Chain without bid/ask columns → pricing_basis=TRADE_ONLY,
+        quoted_ratio is None, effective_priced_ratio equals priced_ratio."""
+        rows = []
+        for s in range(22000, 22650, 50):
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "CE",
+                "lastPrice": 100, "impliedVolatility": 18, "EXPIRY_DT": "2026-03-26",
+            })
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "PE",
+                "lastPrice": 110, "impliedVolatility": 19, "EXPIRY_DT": "2026-03-26",
+            })
+        df = pd.DataFrame(rows)
+
+        result = validate_option_chain(df)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["pricing_basis"], "TRADE_ONLY")
+        self.assertIsNone(result["quoted_ratio"])
+        self.assertEqual(result["effective_priced_ratio"], result["priced_ratio"])
+        self.assertIsNone(ph["quote_health"])
+
+    def test_thin_row_escalates_to_caution_toggle(self):
+        """A chain in the THIN row band (60 ≤ rows < 120) with otherwise-GOOD
+        health stays GOOD by default; enabling the toggle escalates it to
+        CAUTION and sets row_health_escalation_applied=True."""
+        # 34 strikes × 2 = 68 rows: squarely THIN
+        rows = []
+        for s in range(22000, 22850, 25):
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "CE",
+                "lastPrice": 100, "impliedVolatility": 18, "EXPIRY_DT": "2026-03-26",
+            })
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "PE",
+                "lastPrice": 110, "impliedVolatility": 19, "EXPIRY_DT": "2026-03-26",
+            })
+        df = pd.DataFrame(rows)
+        self.assertGreaterEqual(len(df), 60)
+        self.assertLess(len(df), 120)
+
+        default_result = validate_option_chain(df)
+        self.assertEqual(default_result["provider_health"]["row_health"], "THIN")
+        self.assertEqual(default_result["provider_health"]["summary_status"], "GOOD")
+        self.assertFalse(default_result["provider_health"]["row_health_escalation_applied"])
+
+        with temporary_parameter_pack(
+            "thin_escalation_test",
+            overrides={"option_chain_validation.provider_health.thin_row_escalates_to_caution": 1},
+        ):
+            toggle_result = validate_option_chain(df)
+
+        self.assertEqual(toggle_result["provider_health"]["summary_status"], "CAUTION")
+        self.assertTrue(toggle_result["provider_health"]["row_health_escalation_applied"])
 
 if __name__ == "__main__":
     unittest.main()

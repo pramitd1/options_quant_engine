@@ -22,6 +22,8 @@ from engine.predictors.builtin_predictors import (
 )
 from engine.predictors.research_predictor import ResearchDualModelPredictor
 from engine.predictors.ev_sizing_predictor import EVSizingPredictor
+from engine.predictors.rank_gate_predictor import ResearchRankGatePredictor
+from engine.predictors.uncertainty_adjusted_predictor import ResearchUncertaintyAdjustedPredictor
 
 
 def test_registry_contains_all_methods():
@@ -30,7 +32,10 @@ def test_registry_contains_all_methods():
     assert "pure_ml" in registry
     assert "pure_rule" in registry
     assert "research_dual_model" in registry
+    assert "research_decision_policy" in registry
     assert "ev_sizing" in registry
+    assert "research_rank_gate" in registry
+    assert "research_uncertainty_adjusted" in registry
 
 
 def test_default_predictor_is_blended():
@@ -70,7 +75,15 @@ def test_prediction_result_is_frozen():
 
 
 def test_all_predictors_satisfy_protocol():
-    for cls in [DefaultBlendedPredictor, PureMLPredictor, PureRulePredictor, ResearchDualModelPredictor, EVSizingPredictor]:
+    for cls in [
+        DefaultBlendedPredictor,
+        PureMLPredictor,
+        PureRulePredictor,
+        ResearchDualModelPredictor,
+        EVSizingPredictor,
+        ResearchRankGatePredictor,
+        ResearchUncertaintyAdjustedPredictor,
+    ]:
         inst = cls()
         assert isinstance(inst, MovePredictor), f"{cls.__name__} fails MovePredictor protocol"
         assert isinstance(inst.name, str)

@@ -1,0 +1,18 @@
+==============================================================================
+PHASE 0 SHADOW VERDICT
+==============================================================================
+End date:         2026-03-20
+Window days:      2026-03-16, 2026-03-17, 2026-03-18, 2026-03-19, 2026-03-20
+Window rows:      355
+Verdict:          NO-GO
+-
+blended HR/ret:   0.55 / -4.59 bps
+rank_gate HR/ret: 0.69 / 8.59 bps
+Delta HR:         0.1399999999999999
+Delta return:     13.18 bps
+-
+Failed gates:
+  - no_sustained_latency_or_ingestion_regressions: Not observable from cumulative dataset; requires runtime telemetry/log hooks
+-
+JSON: /Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/research/ml_evaluation/predictor_comparison/phase0_shadow/phase0_shadow_verdict_2026-03-20.json
+MD:   /Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/research/ml_evaluation/predictor_comparison/phase0_shadow/phase0_shadow_verdict_2026-03-20.md

@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-03-20T19:53:54.664906",
+  "symbol": "NIFTY",
+  "start_date": "2016-01-01",
+  "end_date": "2026-03-16",
+  "predictor_methods": [
+    "blended",
+    "pure_rule",
+    "pure_ml",
+    "research_dual_model",
+    "research_decision_policy",
+    "ev_sizing",
+    "research_rank_gate",
+    "research_uncertainty_adjusted"
+  ],
+  "methods_with_changes": 8,
+  "artifacts": {
+    "discrete_csv": "/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/scripts/backtest/reports/scoring_mode_full_backtest_20260320_195354/discrete_metrics.csv",
+    "continuous_csv": "/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/scripts/backtest/reports/scoring_mode_full_backtest_20260320_195354/continuous_metrics.csv",
+    "delta_csv": "/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/scripts/backtest/reports/scoring_mode_full_backtest_20260320_195354/delta_continuous_minus_discrete.csv",
+    "report_md": "/Users/pramitdutta/Desktop/Trading Engines/options_quant_engine/scripts/backtest/reports/scoring_mode_full_backtest_20260320_195354/report.md"
+  }
+}
