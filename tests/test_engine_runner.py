@@ -64,8 +64,14 @@ def _spot_snapshot() -> dict:
 def test_run_engine_snapshot_replay_requires_snapshot_files(monkeypatch):
     monkeypatch.setattr(
         engine_runner,
-        "latest_replay_snapshot_paths",
-        lambda symbol, replay_dir: (None, None),
+        "resolve_replay_snapshot_paths",
+        lambda symbol, replay_dir, source_label: {
+            "spot_path": None,
+            "chain_path": None,
+            "selection_reason": "no_valid_chain_snapshot",
+            "source_label": source_label,
+            "skipped_chain_files": [],
+        },
     )
 
     result = engine_runner.run_engine_snapshot(
@@ -222,3 +228,53 @@ def test_run_engine_snapshot_closes_managed_router(monkeypatch):
 
     assert result["ok"] is True
     assert router.closed is True
+
+
+def test_run_engine_snapshot_replay_uses_source_aware_selection_and_emits_diagnostics(monkeypatch):
+    captured = {}
+
+    def _fake_resolve(symbol, *, replay_dir, source_label):
+        captured["symbol"] = symbol
+        captured["replay_dir"] = replay_dir
+        captured["source_label"] = source_label
+        return {
+            "spot_path": "spot.json",
+            "chain_path": "chain.csv",
+            "selection_reason": "latest_valid_for_source",
+            "source_label": source_label,
+            "skipped_chain_files": [{"path": "bad.csv", "reason": "empty_file"}],
+        }
+
+    monkeypatch.setattr(engine_runner, "resolve_replay_snapshot_paths", _fake_resolve)
+    monkeypatch.setattr(engine_runner, "load_spot_snapshot", lambda path: _spot_snapshot())
+    monkeypatch.setattr(engine_runner, "load_option_chain_snapshot", lambda path: _option_chain_frame())
+    monkeypatch.setattr(
+        engine_runner,
+        "run_preloaded_engine_snapshot",
+        lambda **kwargs: {
+            "ok": True,
+            "mode": kwargs["mode"],
+            "source": kwargs["source"],
+            "symbol": kwargs["symbol"],
+            "replay_paths": kwargs.get("replay_paths"),
+        },
+    )
+
+    result = engine_runner.run_engine_snapshot(
+        symbol="NIFTY",
+        mode="REPLAY",
+        source="ICICI",
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        replay_dir="debug_samples",
+        save_live_snapshots=False,
+    )
+
+    assert result["ok"] is True
+    assert captured["source_label"] == "ICICI"
+    assert result["replay_paths"]["spot"] == "spot.json"
+    assert result["replay_paths"]["chain"] == "chain.csv"
+    assert result["replay_selection"]["selection_reason"] == "latest_valid_for_source"
+    assert result["replay_selection"]["skipped_chain_files"][0]["reason"] == "empty_file"
