@@ -18,7 +18,12 @@ import pandas as pd
 
 def calculate_market_gamma(option_chain):
     """
-    Calculate strike-wise signed gamma exposure proxy.
+    Calculate strike-wise signed gamma-load proxy.
+
+    Assumption:
+        Use gamma * open_interest with directional sign, without multiplying by
+        strike. Multiplying by strike price can dominate cross-strike comparison
+        and distort zero-crossing detection used by gamma-flip logic.
     """
     if option_chain is None or len(option_chain) == 0:
         return pd.Series(dtype=float)
@@ -29,11 +34,10 @@ def calculate_market_gamma(option_chain):
 
     gamma = pd.to_numeric(df.get("GAMMA"), errors="coerce").fillna(0.0)
     oi = pd.to_numeric(df.get(oi_col), errors="coerce").fillna(0.0)
-    strikes = pd.to_numeric(df.get(strike_col), errors="coerce").fillna(0.0)
     option_type = df.get("OPTION_TYP", pd.Series(index=df.index, dtype=object)).astype(str).str.upper()
     signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
 
-    df["GAMMA_EXPOSURE"] = gamma * oi * strikes * signed
+    df["GAMMA_EXPOSURE"] = gamma * oi * signed
 
     return df.groupby(strike_col)["GAMMA_EXPOSURE"].sum()
 

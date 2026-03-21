@@ -18,6 +18,7 @@ magnitude, timing, and tradeability against what actually happened.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from datetime import date, timedelta
 from typing import Optional
@@ -48,6 +49,7 @@ from research.signal_evaluation.evaluator import (
     compute_signal_evaluation_scores,
     evaluate_signal_outcomes,
 )
+from utils.numerics import safe_float as _safe_float
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +61,61 @@ EOD_HORIZON_DAYS = (1, 2, 3, 5)
 # ---------------------------------------------------------------
 
 _spot_df_cache: pd.DataFrame | None = None
+
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF via erf (no external dependency)."""
+    return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+
+
+def _estimate_abs_option_delta(
+    *,
+    direction_mult: int,
+    entry_spot: float,
+    strike: float,
+    signal_date: date,
+    expiry_date: date | None,
+    atm_iv_scaled: float | None,
+) -> tuple[float, str]:
+    """Estimate absolute option delta for premium->spot conversion.
+
+    Preference order:
+      1) Black-Scholes style estimate using ATM IV and time-to-expiry.
+      2) Smooth moneyness fallback when inputs are incomplete.
+    """
+    # Fallback first so every path has a stable estimate.
+    moneyness = (entry_spot - strike) / entry_spot if entry_spot else 0.0
+    if direction_mult == 1:
+        fallback = 1.0 / (1.0 + math.exp(-8.0 * moneyness))
+    else:
+        fallback = 1.0 / (1.0 + math.exp(8.0 * moneyness))
+    fallback = float(np.clip(fallback, 0.10, 0.90))
+
+    if direction_mult == 0 or entry_spot <= 0 or strike <= 0 or expiry_date is None:
+        return fallback, "moneyness_fallback"
+
+    days_to_expiry = max((expiry_date - signal_date).days, 1)
+    t_years = max(days_to_expiry / 365.0, 1.0 / 365.0)
+    sigma = _safe_float(atm_iv_scaled, None)
+    if sigma is None:
+        sigma = 0.20
+    sigma = float(np.clip(sigma, 0.05, 2.50))
+
+    try:
+        vol_term = sigma * math.sqrt(t_years)
+        if vol_term <= 0:
+            return fallback, "moneyness_fallback"
+        d1 = (
+            math.log(entry_spot / strike)
+            + 0.5 * sigma * sigma * t_years
+        ) / vol_term
+        call_delta = _norm_cdf(d1)
+        put_delta = call_delta - 1.0
+        abs_delta = call_delta if direction_mult == 1 else abs(put_delta)
+        abs_delta = float(np.clip(abs_delta, 0.05, 0.95))
+        return abs_delta, "bs_atm_iv"
+    except Exception:
+        return fallback, "moneyness_fallback"
 
 
 def _load_spot_daily() -> pd.DataFrame:
@@ -229,8 +286,8 @@ def evaluate_eod_outcomes(
             updated["eod_mae_bps"] = round(mae_bps, 2)
 
     # 5. Target / stop-loss hit check (delta-adjusted)
-    # Target/SL are in option premium space; convert to spot moves using
-    # an estimated delta so we can check against daily spot high/low.
+    # Target/SL are in option premium space; convert to spot moves using an
+    # estimated absolute option delta so we can compare against spot high/low.
     target = updated.get("target")
     stop_loss = updated.get("stop_loss")
     if target and stop_loss and expiry_str:
@@ -244,18 +301,21 @@ def evaluate_eod_outcomes(
         ]
         entry_price = updated.get("entry_price", 0)
         if entry_price and not window.empty:
-            # Estimate delta from moneyness (sigmoid approximation)
             strike = updated.get("strike", entry_spot)
             try:
                 strike = float(strike)
             except (TypeError, ValueError):
                 strike = entry_spot
-            moneyness = (entry_spot - strike) / entry_spot if entry_spot else 0
-            if direction_mult == 1:  # CALL: ITM when spot > strike
-                est_delta = 1 / (1 + np.exp(-moneyness * 20))
-            else:  # PUT: ITM when spot < strike
-                est_delta = 1 / (1 + np.exp(moneyness * 20))
-            est_delta = float(np.clip(est_delta, 0.15, 0.85))
+            est_delta, est_delta_source = _estimate_abs_option_delta(
+                direction_mult=direction_mult,
+                entry_spot=float(entry_spot),
+                strike=float(strike),
+                signal_date=signal_date,
+                expiry_date=exp_d,
+                atm_iv_scaled=_safe_float(updated.get("atm_iv_scaled"), None),
+            )
+            updated["target_sl_delta_used"] = round(est_delta, 4)
+            updated["target_sl_delta_source"] = est_delta_source
 
             # Convert option premium targets to spot point moves
             target_premium_move = float(target) - entry_price
