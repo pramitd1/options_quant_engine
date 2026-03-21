@@ -23,6 +23,9 @@ def detect_gamma_walls(option_chain, top_n=3):
     These act as gamma walls (strong support/resistance).
     """
 
+    if option_chain is None or option_chain.empty:
+        return []
+
     oi_by_strike = option_chain.groupby(
         "STRIKE_PR"
     )["OPEN_INT"].sum()
@@ -39,6 +42,9 @@ def classify_walls(option_chain):
     Classify support and resistance walls.
     """
 
+    if option_chain is None or option_chain.empty:
+        return {}
+
     call_oi = option_chain[
         option_chain["OPTION_TYP"] == "CE"
     ].groupby("STRIKE_PR")["OPEN_INT"].sum()
@@ -46,6 +52,9 @@ def classify_walls(option_chain):
     put_oi = option_chain[
         option_chain["OPTION_TYP"] == "PE"
     ].groupby("STRIKE_PR")["OPEN_INT"].sum()
+
+    if call_oi.empty or put_oi.empty:
+        return {}
 
     resistance = call_oi.idxmax()
 

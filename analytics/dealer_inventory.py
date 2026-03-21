@@ -65,10 +65,12 @@ def dealer_inventory_metrics(option_chain: pd.DataFrame):
     total_abs_change = abs(call_oi_change) + abs(put_oi_change)
 
     if total_abs_change > 0:
-        # More put OI build than call OI build is treated as a stronger downside
-        # inventory skew; more call OI build is treated as a stronger upside skew.
+        # More put OI build than call OI build indicates downside/bearish dealer
+        # positioning: dealers sold more puts and are short gamma on the put side.
+        # More call OI build means more calls sold, i.e., long gamma/neutral regime.
+        # Keep this consistent with OPEN_INTEREST basis: call_oi > put_oi => Long Gamma.
         net_oi_change_bias = put_oi_change - call_oi_change
-        position = "Long Gamma" if net_oi_change_bias >= 0 else "Short Gamma"
+        position = "Short Gamma" if net_oi_change_bias >= 0 else "Long Gamma"
         basis = "OI_CHANGE"
     else:
         net_oi_change_bias = put_oi - call_oi

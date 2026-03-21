@@ -614,7 +614,7 @@ def compute_trade_strength(
     """
     weights = get_trade_strength_weights()
     breakdown = {
-        "trade_strength_scoring_mode": "discrete",
+        "trade_strength_scoring_mode": "continuous",
         "flow_signal_score": 0,
         "smart_money_flow_score": 0,
         "gamma_event_score": 0,
