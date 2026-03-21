@@ -46,6 +46,7 @@ from app.state import (
     seed_control_state,
 )
 from app.styles import OQE_GLOBAL_CSS
+from data.replay_loader import list_replay_chain_snapshots
 from research.signal_evaluation import (
     SIGNAL_DATASET_PATH,
     build_research_report,
@@ -463,7 +464,7 @@ def _render_explainability_scorecard(trade: dict):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _list_replay_files(replay_dir: str, symbol: str, kind: str):
+def _list_replay_files(replay_dir: str, symbol: str, kind: str, source_label: str | None = None):
     """
     Purpose:
         List replay files available to the current workflow.
@@ -484,15 +485,20 @@ def _list_replay_files(replay_dir: str, symbol: str, kind: str):
     """
     replay_path = Path(replay_dir)
     if not replay_path.exists():
-        return []
+        return [], []
 
     symbol = (symbol or "").strip().upper()
     if kind == "spot":
         pattern = f"{symbol}_spot_snapshot_*.json"
+        return sorted(str(path) for path in replay_path.glob(pattern)), []
     else:
-        pattern = f"{symbol}_*_option_chain_snapshot_*"
+        return list_replay_chain_snapshots(
+            symbol,
+            replay_dir=replay_dir,
+            source_label=source_label,
+        )
 
-    return sorted(str(path) for path in replay_path.glob(pattern))
+    return [], []
 
 
 def _list_replay_directories() -> list[str]:
@@ -1296,6 +1302,39 @@ def _render_run_paths(result: dict):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _render_replay_selection_banner(result: dict):
+    """Render transparent replay-file selection diagnostics in replay mode."""
+    if (result.get("mode") or "").upper() != "REPLAY":
+        return
+
+    selection = result.get("replay_selection") or {}
+    if not isinstance(selection, dict) or not selection:
+        return
+
+    reason = selection.get("selection_reason") or "unknown"
+    source = selection.get("source_label") or result.get("source") or "-"
+    replay_paths = result.get("replay_paths") or {}
+    spot = selection.get("spot_path") or replay_paths.get("spot")
+    chain = selection.get("chain_path") or replay_paths.get("chain")
+    skipped = selection.get("skipped_chain_files") or []
+
+    reason_map = {
+        "manual_selection": "Manual replay files selected in sidebar.",
+        "latest_valid_for_source": "Auto-selected latest valid chain snapshot for the selected source.",
+        "latest_valid_any_source": "Auto-selected latest valid chain snapshot across all sources.",
+        "no_valid_chain_snapshot": "No valid chain snapshot found after skipping empty/invalid files.",
+        "replay_dir_missing": "Replay directory not found.",
+    }
+    message = reason_map.get(reason, f"Replay selection reason: {reason}")
+
+    st.info(
+        f"Replay Selection: {message} | Source={source} | Spot={_display_path(spot)} | Chain={_display_path(chain)}"
+    )
+    if skipped:
+        with st.expander(f"Skipped invalid chain files ({len(skipped)})", expanded=False):
+            _render_dataframe(pd.DataFrame(skipped))
+
+
 def _render_replay_tools(result: dict):
     """
     Purpose:
@@ -1678,8 +1717,13 @@ def main():
             replay_dir = "debug_samples"
         if mode == "REPLAY":
             st.markdown("**Replay Snapshots**")
-            spot_files = _list_replay_files(replay_dir, symbol, "spot")
-            chain_files = _list_replay_files(replay_dir, symbol, "chain")
+            spot_files, _ = _list_replay_files(replay_dir, symbol, "spot")
+            chain_files, skipped_chain_files = _list_replay_files(
+                replay_dir,
+                symbol,
+                "chain",
+                source_label=source,
+            )
             default_chain = _select_default_option(chain_files)
             default_spot = _nearest_spot_for_chain(default_chain, spot_files) if default_chain else _select_default_option(spot_files)
             spot_options = [""] + spot_files
@@ -1704,6 +1748,8 @@ def main():
             with st.expander("Replay Snapshot Inventory", expanded=False):
                 st.write(f"Spot snapshots found: {len(spot_files)}")
                 st.write(f"Option-chain snapshots found: {len(chain_files)}")
+                if skipped_chain_files:
+                    st.warning(f"Skipped {len(skipped_chain_files)} invalid/empty chain snapshot file(s).")
                 if replay_spot:
                     st.caption(f"Selected spot: {replay_spot}")
                 if replay_chain:
@@ -1761,6 +1807,7 @@ def main():
 
     _render_runbar(result)
     _render_run_paths(result)
+    _render_replay_selection_banner(result)
 
     snapshot_tab, research_tab, replay_tools_tab, macro_lab_tab = st.tabs(
         ["Current Snapshot", "Signal Research", "Replay Tools", "Macro / News Lab"]

@@ -17,9 +17,11 @@ Downstream Usage:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 from data.spot_downloader import validate_spot_snapshot
 
@@ -72,7 +74,10 @@ def load_option_chain_snapshot(path: str) -> pd.DataFrame:
     suffix = snapshot_path.suffix.lower()
 
     if suffix == ".csv":
-        return pd.read_csv(snapshot_path)
+        try:
+            return pd.read_csv(snapshot_path)
+        except EmptyDataError as exc:
+            raise ValueError(f"Replay option-chain snapshot is empty or malformed: {snapshot_path}") from exc
 
     if suffix == ".json":
         with open(snapshot_path, "r", encoding="utf-8") as handle:
@@ -139,14 +144,119 @@ def latest_replay_snapshot_paths(symbol: str, replay_dir: str = "debug_samples")
     Notes:
         The helper keeps the surrounding module readable without changing runtime behavior.
     """
+    selection = resolve_replay_snapshot_paths(symbol, replay_dir=replay_dir)
+    return selection["spot_path"], selection["chain_path"]
+
+
+def _extract_chain_timestamp(path: Path) -> pd.Timestamp | None:
+    """Parse timestamp token from option-chain snapshot filename."""
+    match = re.search(r"_option_chain_snapshot_(.+)\.csv$", path.name)
+    if not match:
+        return None
+    token = match.group(1)
+    # Filenames store timestamp separators as hyphens, e.g.
+    # 2026-03-20T12-10-00+05-30 -> 2026-03-20T12:10:00+05:30
+    token = re.sub(r"T(\d{2})-(\d{2})-(\d{2})", r"T\1:\2:\3", token)
+    token = re.sub(r"\+(\d{2})-(\d{2})$", r"+\1:\2", token)
+    parsed = pd.to_datetime(token, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed
+
+
+def list_replay_chain_snapshots(
+    symbol: str,
+    *,
+    replay_dir: str = "debug_samples",
+    source_label: str | None = None,
+) -> tuple[list[str], list[dict]]:
+    """
+    Return valid replay chain snapshot paths and skipped-file diagnostics.
+
+    Invalid files (empty, malformed, or with unparsable timestamp token) are
+    skipped so callers can safely offer only loadable snapshot choices.
+    """
     directory = Path(replay_dir)
     if not directory.exists():
-        return None, None
+        return [], []
 
-    symbol = str(symbol or "").upper().strip()
-    spot_candidates = sorted(directory.glob(f"{symbol}_spot_snapshot_*.json"))
-    chain_candidates = sorted(directory.glob(f"{symbol}_*_option_chain_snapshot_*.csv"))
+    symbol_token = str(symbol or "").upper().strip()
+    source_token = str(source_label or "").upper().strip()
+    pattern = (
+        f"{symbol_token}_{source_token}_option_chain_snapshot_*.csv"
+        if source_token
+        else f"{symbol_token}_*_option_chain_snapshot_*.csv"
+    )
 
+    candidates = sorted(directory.glob(pattern))
+    valid: list[tuple[pd.Timestamp, Path]] = []
+    skipped: list[dict] = []
+
+    for path in candidates:
+        timestamp = _extract_chain_timestamp(path)
+        if timestamp is None:
+            skipped.append({"path": str(path), "reason": "bad_timestamp_token"})
+            continue
+
+        if path.stat().st_size <= 1:
+            skipped.append({"path": str(path), "reason": "empty_file"})
+            continue
+
+        try:
+            probe = pd.read_csv(path, nrows=1)
+            if len(probe.columns) == 0:
+                skipped.append({"path": str(path), "reason": "no_columns"})
+                continue
+        except EmptyDataError:
+            skipped.append({"path": str(path), "reason": "empty_file"})
+            continue
+        except Exception as exc:
+            skipped.append({"path": str(path), "reason": f"unreadable:{type(exc).__name__}"})
+            continue
+
+        valid.append((timestamp, path))
+
+    valid.sort(key=lambda item: item[0])
+    return [str(path) for _, path in valid], skipped
+
+
+def resolve_replay_snapshot_paths(
+    symbol: str,
+    *,
+    replay_dir: str = "debug_samples",
+    source_label: str | None = None,
+) -> dict:
+    """Resolve replay spot/chain paths with source-aware, valid-file selection."""
+    directory = Path(replay_dir)
+    if not directory.exists():
+        return {
+            "spot_path": None,
+            "chain_path": None,
+            "selection_reason": "replay_dir_missing",
+            "source_label": str(source_label or "").upper().strip() or None,
+            "skipped_chain_files": [],
+        }
+
+    symbol_token = str(symbol or "").upper().strip()
+    spot_candidates = sorted(directory.glob(f"{symbol_token}_spot_snapshot_*.json"))
     spot_path = str(spot_candidates[-1]) if spot_candidates else None
-    chain_path = str(chain_candidates[-1]) if chain_candidates else None
-    return spot_path, chain_path
+
+    chain_paths, skipped_chain_files = list_replay_chain_snapshots(
+        symbol,
+        replay_dir=replay_dir,
+        source_label=source_label,
+    )
+    chain_path = chain_paths[-1] if chain_paths else None
+
+    if chain_path:
+        reason = "latest_valid_for_source" if source_label else "latest_valid_any_source"
+    else:
+        reason = "no_valid_chain_snapshot"
+
+    return {
+        "spot_path": spot_path,
+        "chain_path": chain_path,
+        "selection_reason": reason,
+        "source_label": str(source_label or "").upper().strip() or None,
+        "skipped_chain_files": skipped_chain_files,
+    }

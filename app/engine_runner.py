@@ -34,9 +34,9 @@ from data.spot_downloader import get_spot_snapshot, save_spot_snapshot, validate
 from data.spot_history import append_spot_observation
 from data.data_source_router import DataSourceRouter
 from data.replay_loader import (
-    latest_replay_snapshot_paths,
     load_option_chain_snapshot,
     load_spot_snapshot,
+    resolve_replay_snapshot_paths,
     save_option_chain_snapshot,
 )
 from data.global_market_snapshot import build_global_market_snapshot
@@ -482,7 +482,7 @@ def _load_market_inputs(
     replay_chain: Optional[str],
     replay_dir: str,
     data_router: Optional[DataSourceRouter],
-) -> tuple[dict, pd.DataFrame, dict | None, Optional[DataSourceRouter]]:
+) -> tuple[dict, pd.DataFrame, dict | None, Optional[DataSourceRouter], dict | None]:
     """
     Purpose:
         Process load market inputs for downstream use.
@@ -507,15 +507,26 @@ def _load_market_inputs(
         The helper keeps the surrounding module readable without changing runtime behavior.
     """
     managed_data_router = None
+    replay_selection = None
 
     if replay_mode:
         if not replay_spot or not replay_chain:
-            discovered_spot, discovered_chain = latest_replay_snapshot_paths(
+            replay_selection = resolve_replay_snapshot_paths(
                 symbol,
                 replay_dir=replay_dir,
+                source_label=source,
             )
-            replay_spot = replay_spot or discovered_spot
-            replay_chain = replay_chain or discovered_chain
+            replay_spot = replay_spot or replay_selection.get("spot_path")
+            replay_chain = replay_chain or replay_selection.get("chain_path")
+
+        if replay_selection is None:
+            replay_selection = {
+                "spot_path": replay_spot,
+                "chain_path": replay_chain,
+                "selection_reason": "manual_selection",
+                "source_label": source,
+                "skipped_chain_files": [],
+            }
 
         if not replay_spot or not replay_chain:
             raise ValueError("Replay mode requires both a spot snapshot and an option-chain snapshot.")
@@ -526,7 +537,7 @@ def _load_market_inputs(
             "spot": replay_spot,
             "chain": replay_chain,
         }
-        return spot_snapshot, option_chain, replay_paths, managed_data_router
+        return spot_snapshot, option_chain, replay_paths, managed_data_router, replay_selection
 
     _set_runtime_credentials(source, provider_credentials)
     if data_router is None:
@@ -534,7 +545,7 @@ def _load_market_inputs(
         managed_data_router = data_router
     spot_snapshot = get_spot_snapshot(symbol)
     option_chain = data_router.get_option_chain(symbol)
-    return spot_snapshot, option_chain, None, managed_data_router
+    return spot_snapshot, option_chain, None, managed_data_router, None
 
 
 def _persist_snapshot_artifacts(
@@ -1296,7 +1307,7 @@ def run_engine_snapshot(
     _ensure_cumulative_sync()
 
     try:
-        spot_snapshot, option_chain, replay_paths, managed_data_router = _load_market_inputs(
+        spot_snapshot, option_chain, replay_paths, managed_data_router, replay_selection = _load_market_inputs(
             replay_mode=replay_mode,
             symbol=symbol,
             source=source,
@@ -1364,6 +1375,9 @@ def run_engine_snapshot(
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
         )
+
+        if replay_selection and isinstance(result, dict):
+            result["replay_selection"] = replay_selection
 
         if expiry_candidates and isinstance(result, dict):
             trade = result.get("trade")
