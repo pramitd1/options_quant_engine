@@ -728,8 +728,14 @@ def _build_result_payload(
     """
     execution_trade, trade_audit = split_trade_payload(trade)
     headline_state_payload = _jsonable_headline_state(headline_state)
+    
+    # Guard: mark ok=False only if data quality is explicitly weak
+    final_data_quality = (trade or {}).get("data_quality_status", None) if trade else None
+    # Default to ok=True for backward compat; only fail if explicitly weak
+    ok_status = final_data_quality not in ["WEAK", "CAUTION"]
+    
     return {
-        "ok": True,
+        "ok": ok_status,
         "mode": mode,
         "source": source,
         "symbol": symbol,
@@ -1408,6 +1414,35 @@ def run_engine_snapshot(
             replay_dir=replay_dir,
             data_router=data_router,
         )
+
+        # Guard: validate provider data before downstream processing
+        if spot_snapshot is None or not isinstance(spot_snapshot, dict):
+            logging.getLogger(__name__).error(f"Spot snapshot unavailable/invalid for {symbol}")
+            if managed_data_router is not None:
+                managed_data_router.close()
+            return {
+                "ok": False,
+                "reason": "DATA_UNAVAILABLE_SPOT",
+                "trade": None,
+                "data_quality_status": "WEAK",
+                "mode": mode,
+                "source": source,
+                "symbol": symbol,
+            }
+
+        if option_chain is None or (isinstance(option_chain, pd.DataFrame) and option_chain.empty):
+            logging.getLogger(__name__).error(f"Option chain empty/invalid for {symbol}")
+            if managed_data_router is not None:
+                managed_data_router.close()
+            return {
+                "ok": False,
+                "reason": "DATA_UNAVAILABLE_OPTION_CHAIN",
+                "trade": None,
+                "data_quality_status": "WEAK",
+                "mode": mode,
+                "source": source,
+                "symbol": symbol,
+            }
 
         saved_paths = _persist_snapshot_artifacts(
             save_live_snapshots=save_live_snapshots,

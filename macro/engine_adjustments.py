@@ -63,6 +63,10 @@ def compute_macro_news_adjustments(*, direction, macro_news_state=None):
             "event_lockdown_flag": event_lockdown_flag,
             "macro_adjustment_score": 0,
             "macro_confirmation_adjustment": 0,
+            "size_adjustment": 1.0,
+            "data_quality_status": "unavailable",  # NEW: indicate fallback
+            "fallback": True,  # NEW: explicit flag
+            "_note": "Returning neutral adjustments because macro news state unavailable",
             "macro_position_size_multiplier": 1.0,
             "macro_adjustment_reasons": reasons,
         }

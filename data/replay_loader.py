@@ -89,6 +89,61 @@ def load_option_chain_snapshot(path: str) -> pd.DataFrame:
     raise ValueError(f"Unsupported replay option-chain file type: {snapshot_path.suffix}")
 
 
+def validate_snapshot_consistency(
+    spot_snapshot: dict | None,
+    option_chain: pd.DataFrame | None,
+) -> dict:
+    """
+    Validate that spot and option-chain timestamps are reasonably aligned.
+    
+    Returns a dict with:
+        is_consistent: bool
+        warnings: list[str]
+    """
+    warnings = []
+    
+    if spot_snapshot is None or option_chain is None:
+        return {"is_consistent": True, "warnings": []}
+    
+    spot_ts = spot_snapshot.get("timestamp")
+    spot_dt = None
+    if spot_ts is None:
+        # Missing timestamp is OK - no data to conflict
+        pass
+    else:
+        try:
+            spot_dt = pd.to_datetime(spot_ts) if isinstance(spot_ts, str) else spot_ts
+        except Exception:
+            warnings.append("spot_snapshot_timestamp_unparseable")
+            spot_dt = None
+    
+    # Check option chain for any timestamp column
+    chain_ts_candidates = [
+        option_chain.get("EXPIRY_DT"),
+        option_chain.get("expiry_dt"),
+        option_chain.get("TIMESTAMP"),
+        option_chain.get("timestamp"),
+    ]
+    chain_ts = next((ts for ts in chain_ts_candidates if ts is not None and not ts.empty), None)
+    
+    if chain_ts is not None and spot_dt is not None:
+        try:
+            if isinstance(chain_ts, pd.Series):
+                first_chain_dt = pd.to_datetime(chain_ts.iloc[0])
+            else:
+                first_chain_dt = pd.to_datetime(chain_ts)
+            
+            # Timestamps should be within 30 seconds (allow slight clock skew)
+            delta = abs((spot_dt - first_chain_dt).total_seconds())
+            if delta > 30:
+                warnings.append(f"spot_chain_timestamp_mismatch_delta_sec_{delta}")
+        except Exception:
+            pass
+    
+    is_consistent = len(warnings) == 0
+    return {"is_consistent": is_consistent, "warnings": warnings}
+
+
 def save_option_chain_snapshot(
     option_chain: pd.DataFrame,
     *,

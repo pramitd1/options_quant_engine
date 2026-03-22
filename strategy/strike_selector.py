@@ -84,6 +84,12 @@ def _apply_strike_window(rows, spot, window_steps):
     if rows is None or rows.empty:
         return rows
 
+    # Guard: validate spot is numeric and positive
+    spot_validated = _safe_float(spot, None)
+    if spot_validated is None or spot_validated <= 0:
+        # Cannot filter by spot proximity without valid spot
+        return rows
+    
     if window_steps is None or window_steps <= 0:
         return rows
 
@@ -91,8 +97,8 @@ def _apply_strike_window(rows, spot, window_steps):
     if strike_step in (None, 0):
         return rows
 
-    lower_bound = float(spot) - (window_steps * strike_step)
-    upper_bound = float(spot) + (window_steps * strike_step)
+    lower_bound = float(spot_validated) - (window_steps * strike_step)
+    upper_bound = float(spot_validated) + (window_steps * strike_step)
 
     filtered = rows[
         (rows["strikePrice"].astype(float) >= lower_bound) &
@@ -167,7 +173,13 @@ def _score_moneyness_series(strikes: pd.Series, *, spot, cfg) -> pd.Series:
     Notes:
         Factor outputs are kept separate so the final strike ranking can be audited in research and shadow-mode diagnostics.
     """
-    distance_pct = (strikes.astype(float) - float(spot)).abs() / max(float(spot), 1e-6) * 100.0
+    # Guard: validate spot is numeric and positive
+    spot_safe = _safe_float(spot, None)
+    if spot_safe is None or spot_safe <= 0:
+        # Cannot compute moneyness distance without valid spot
+        return pd.Series(0.5, index=strikes.index)
+    
+    distance_pct = (strikes.astype(float) - float(spot_safe)).abs() / max(float(spot_safe), 1e-6) * 100.0
 
     if _continuous_mode(cfg):
         atm = float(cfg["atm_distance_pct"])

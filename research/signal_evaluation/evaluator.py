@@ -482,8 +482,18 @@ def _window_stats(path: pd.DataFrame, entry_ts: pd.Timestamp, end_ts: pd.Timesta
     if window.empty:
         return None
 
-    signed_moves_bps = ((window["spot"].astype(float) - entry_spot) / max(entry_spot, 1e-9)) * 10000.0 * direction_mult
-    raw_moves_bps = ((window["spot"].astype(float) - entry_spot) / max(entry_spot, 1e-9)) * 10000.0
+    # Guard: validate entry_spot is numeric and positive
+    entry_spot = _safe_float(entry_spot, None)
+    if entry_spot is None or entry_spot <= 0:
+        # Cannot compute window stats without valid entry spot
+        return None
+    
+    if direction_mult == 0:
+        # No direction; cannot compute signed returns
+        return None
+
+    signed_moves_bps = ((window["spot"].astype(float) - entry_spot) / entry_spot) * 10000.0 * direction_mult
+    raw_moves_bps = ((window["spot"].astype(float) - entry_spot) / entry_spot) * 10000.0
 
     return {
         "mfe_bps": round(float(signed_moves_bps.max()), 2),

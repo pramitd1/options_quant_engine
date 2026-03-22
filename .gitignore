@@ -15,6 +15,7 @@ debug_samples/
 
 # Documents — only root README.md is tracked
 documentation/
+documentation/**
 *.md
 !README.md
 !**/README.md

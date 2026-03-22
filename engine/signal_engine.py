@@ -280,19 +280,26 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
 
     activation_score = 0
     acfg = get_activation_score_policy_config()
-    if _is_directional_flow(flow_signal):
-        activation_score += acfg.flow_bonus
-    if _is_directional_flow(smart_money_flow):
-        activation_score += acfg.smart_money_bonus
-    if _is_convexity_active(directional_convexity_state):
-        activation_score += acfg.convexity_bonus
-    if _is_dealer_structure_active(dealer_flow_state):
-        activation_score += acfg.dealer_structure_bonus
-    if trade_strength >= max(12, int(min_trade_strength * acfg.trade_strength_min_ratio)):
-        activation_score += acfg.trade_strength_bonus
-    if hybrid_move_probability >= acfg.move_probability_floor:
-        activation_score += acfg.move_probability_bonus
-    activation_score = int(_clip(activation_score, 0, acfg.activation_cap))
+    
+    # Guard: config may be None if resolution fails; use fallback
+    if acfg is None:
+        import logging
+        logging.getLogger(__name__).error("Activation score policy config unavailable; using fallback")
+        activation_score = 0
+    else:
+        if _is_directional_flow(flow_signal):
+            activation_score += acfg.flow_bonus
+        if _is_directional_flow(smart_money_flow):
+            activation_score += acfg.smart_money_bonus
+        if _is_convexity_active(directional_convexity_state):
+            activation_score += acfg.convexity_bonus
+        if _is_dealer_structure_active(dealer_flow_state):
+            activation_score += acfg.dealer_structure_bonus
+        if trade_strength >= max(12, int(min_trade_strength * acfg.trade_strength_min_ratio)):
+            activation_score += acfg.trade_strength_bonus
+        if hybrid_move_probability >= acfg.move_probability_floor:
+            activation_score += acfg.move_probability_bonus
+        activation_score = int(_clip(activation_score, 0, acfg.activation_cap))
 
     confirmation_score = 0
     if confirmation_status in {"STRONG_CONFIRMATION", "CONFIRMED"}:
@@ -421,6 +428,9 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
             if confirmation_status in {"NO_DIRECTION", "CONFLICT"}:
                 missing_requirements.append("confirmation_filter_not_met")
                 missing_confirmations.append("confirmation")
+            elif confirmation_status in {"CONFIRMED", "STRONG_CONFIRMATION"}:
+                missing_requirements.append("direction_confirmation_conflict")
+                reason_details.append("secondary_blocker: confirmation reports directionality while engine direction is unresolved")
 
             if flow_signal == "NEUTRAL_FLOW" and smart_money_flow == "NEUTRAL_FLOW":
                 missing_requirements.append("missing_flow_confirmation")
@@ -435,16 +445,30 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
         elif trade_status == "WATCHLIST":
             watchlist_flag = True
             provider_health_summary = _as_upper(payload.get("provider_health_summary"))
+            global_risk_overlay_reasons = {
+                _as_upper(reason)
+                for reason in (payload.get("global_risk_overlay_reasons") or [])
+                if reason is not None
+            }
+            provider_health_blocked = (
+                provider_health_summary in {"CAUTION", "WEAK"}
+                or bool(incoming_no_trade_reason_code and incoming_no_trade_reason_code.startswith("PROVIDER_HEALTH_"))
+                or "PROVIDER_HEALTH_CAUTION" in global_risk_overlay_reasons
+                or "PROVIDER_HEALTH_WEAK" in global_risk_overlay_reasons
+            )
             watchlist_message = str(payload.get("message") or "").strip()
 
-            if provider_health_summary in {"CAUTION", "WEAK"}:
+            if provider_health_blocked:
+                provider_blocker = provider_health_summary
+                if provider_blocker not in {"CAUTION", "WEAK"}:
+                    provider_blocker = "CAUTION" if "PROVIDER_HEALTH_CAUTION" in global_risk_overlay_reasons else "WEAK"
                 decision_classification = "BLOCKED_SETUP"
                 setup_state = "RISK_BLOCKED"
                 watchlist_reason = "Provider health gates prevent trade execution"
                 blocked_by.append("provider_health")
-                no_trade_reason_code = f"PROVIDER_HEALTH_{provider_health_summary}_BLOCK"
+                no_trade_reason_code = f"PROVIDER_HEALTH_{provider_blocker}_BLOCK"
                 no_trade_reason = watchlist_message or (
-                    f"Provider health {provider_health_summary} blocks trade execution"
+                    f"Provider health {provider_blocker} blocks trade execution"
                 )
             elif data_quality_status in {"CAUTION", "WEAK"}:
                 decision_classification = "WATCHLIST_CONFIRMATION_PENDING"
@@ -483,8 +507,11 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
                         f"secondary_blocker: trade_strength {int(trade_strength)} below threshold {int(min_trade_strength)}"
                     )
                 low_strength_watchlist = (
-                    "LOW STRENGTH" in watchlist_message.upper()
-                    or "insufficient_trade_strength" in (payload.get("global_risk_overlay_reasons") or [])
+                    no_trade_reason_code in {None, "TRADE_STRENGTH_BELOW_THRESHOLD"}
+                    and (
+                        "LOW STRENGTH" in watchlist_message.upper()
+                        or "INSUFFICIENT_TRADE_STRENGTH" in global_risk_overlay_reasons
+                    )
                 )
                 if low_strength_watchlist:
                     decision_classification = "WATCHLIST_SETUP"

@@ -116,6 +116,7 @@ To keep the repository maintainable and reproducible, use these artifact path co
 - Backtest logs and comparison outputs: store under `research/runtime_validation/backtest_runs/`.
 - Signal-evaluation reports and generated tables: store under `research/signal_evaluation/reports/`.
 - One-off analysis outputs from ad-hoc scripts: store under `research/` with a date-stamped subfolder.
+- Audit reports, deployment reviews, and ad-hoc documentation snapshots: store under `documentation/` (local archive; intentionally excluded from git).
 - Avoid writing generated artifacts to repository root.
 
 Commit hygiene:

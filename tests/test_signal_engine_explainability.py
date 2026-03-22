@@ -107,6 +107,30 @@ def test_directionless_low_activation_setup_is_classified_as_inactive():
     assert explainability["explainability_confidence"] in {"LOW", "MEDIUM", "HIGH"}
 
 
+def test_direction_none_with_confirmed_status_is_marked_as_contradiction():
+    payload = {
+        "direction": None,
+        "flow_signal": "BULLISH_FLOW",
+        "smart_money_flow": "BULLISH_FLOW",
+        "confirmation_status": "CONFIRMED",
+        "signal_quality": "MEDIUM",
+        "directional_convexity_state": "NO_CONVEXITY_EDGE",
+        "dealer_flow_state": "UPSIDE_HEDGING_ACCELERATION",
+        "trade_strength": 38,
+        "spot": 23120,
+        "hybrid_move_probability": 0.57,
+    }
+
+    explainability = _build_decision_explainability(
+        payload,
+        trade_status="NO_SIGNAL",
+        min_trade_strength=45,
+    )
+
+    assert "direction_confirmation_conflict" in explainability["missing_signal_requirements"]
+    assert any("direction is unresolved" in detail for detail in explainability["no_trade_reason_details"])
+
+
 def test_watchlist_provider_health_classification_does_not_depend_on_message_text():
     payload = {
         "direction": "PUT",
@@ -151,6 +175,55 @@ def test_watchlist_keeps_primary_reason_and_tracks_low_strength_as_secondary_det
     assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
     details = explainability["no_trade_reason_details"]
     assert any("secondary_blocker" in detail for detail in details)
+
+
+def test_watchlist_uses_structured_provider_health_reason_code_when_summary_is_missing():
+    payload = {
+        "direction": "PUT",
+        "signal_quality": "MEDIUM",
+        "trade_strength": 72,
+        "confirmation_status": "CONFIRMED",
+        "provider_health_summary": None,
+        "data_quality_status": "GOOD",
+        "no_trade_reason_code": "PROVIDER_HEALTH_WEAK_BLOCK",
+        "message": "Routed to watchlist",
+        "spot": 23100,
+    }
+
+    explainability = _build_decision_explainability(
+        payload,
+        trade_status="WATCHLIST",
+        min_trade_strength=60,
+    )
+
+    assert explainability["decision_classification"] == "BLOCKED_SETUP"
+    assert explainability["setup_state"] == "RISK_BLOCKED"
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
+    assert "provider_health" in explainability["blocked_by"]
+
+
+def test_watchlist_low_strength_message_does_not_override_provider_health_block():
+    payload = {
+        "direction": "PUT",
+        "signal_quality": "MEDIUM",
+        "trade_strength": 48,
+        "confirmation_status": "CONFIRMED",
+        "provider_health_summary": "WEAK",
+        "data_quality_status": "GOOD",
+        "message": "LOW STRENGTH watchlist route",
+        "spot": 23100,
+    }
+
+    explainability = _build_decision_explainability(
+        payload,
+        trade_status="WATCHLIST",
+        min_trade_strength=60,
+    )
+
+    assert explainability["decision_classification"] == "BLOCKED_SETUP"
+    assert explainability["setup_state"] == "RISK_BLOCKED"
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
+    assert "provider_health" in explainability["blocked_by"]
 
 
 def test_preserves_preexisting_no_trade_reason_code_and_reason_from_payload():

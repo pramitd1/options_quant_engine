@@ -131,7 +131,13 @@ def compute_confirmation_filters(
     range_pct = _safe_float(intraday_range_pct, None)
     move_prob = _safe_float(hybrid_move_probability, None)
     micro_cfg = get_microstructure_config(symbol)
+    if micro_cfg is None or not isinstance(micro_cfg, dict):
+        micro_cfg = {}
+    
     cfg = get_confirmation_filter_config()
+    if cfg is None or not isinstance(cfg, dict):
+        cfg = {}
+    
     continuous_mode = _continuous_mode(cfg)
     cont_open = continuous_mode and _as_bool(cfg.get("continuous_open_alignment", 1), default=True)
     cont_prev_close = continuous_mode and _as_bool(cfg.get("continuous_prev_close_alignment", 1), default=True)

@@ -215,6 +215,12 @@ def compute_premium_efficiency(
     days_to_expiry: float | None,
     expected_move: float | None = None,
 ) -> pd.Series:
+    # Guard: validate spot is numeric and positive
+    spot = safe_float(spot, None)
+    if spot is None or spot <= 0:
+        # Cannot compute premium efficiency without valid spot
+        return pd.Series(0.5, index=rows.index)
+    
     if expected_move is None:
         iv = safe_float(atm_iv, 0.15)
         if iv > 1.5:

@@ -213,8 +213,12 @@ class DefaultSignalCaptureSink:
                 )
                 result_payload["signal_capture_status"] = "CAPTURED"
             except Exception as exc:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"CRITICAL: Signal capture failed - research data loss: {exc}")
                 result_payload["signal_capture_status"] = f"FAILED:{type(exc).__name__}"
                 result_payload["signal_capture_error"] = str(exc)
+                result_payload["signal_capture_failed"] = True  # NEW: explicit flag
         elif capture_signal_evaluation and trade:
             result_payload["signal_capture_status"] = f"SKIPPED_POLICY:{signal_capture_policy}"
 
@@ -315,49 +319,73 @@ class DefaultShadowEvaluationSink:
         if not shadow_pack_name:
             return
 
-        shadow_eval = evaluate_snapshot_for_pack(
-            parameter_pack_name=shadow_pack_name,
-            symbol=symbol,
-            spot=spot,
-            option_chain=option_chain,
-            previous_chain=previous_chain,
-            day_high=day_high,
-            day_low=day_low,
-            day_open=day_open,
-            prev_close=prev_close,
-            lookback_avg_range_pct=lookback_avg_range_pct,
-            spot_validation=spot_validation,
-            option_chain_validation=option_chain_validation,
-            apply_budget_constraint=apply_budget_constraint,
-            requested_lots=requested_lots,
-            lot_size=lot_size,
-            max_capital=max_capital,
-            macro_event_state=macro_event_state,
-            headline_state=headline_state,
-            global_market_snapshot=global_market_snapshot,
-            holding_profile=holding_profile,
-            spot_timestamp=spot_timestamp,
-            backtest_mode=backtest_mode,
-            target_profit_percent=target_profit_percent,
-            stop_loss_percent=stop_loss_percent,
-        )
-        shadow_payload = {
-            "symbol": symbol,
-            "mode": mode,
-            "source": source,
-            "spot_summary": result_payload["spot_summary"],
-            "trade": shadow_eval["trade"],
-            "execution_trade": (shadow_eval["trade"] or {}).get("execution_trade") if shadow_eval["trade"] else None,
-            "trade_audit": (shadow_eval["trade"] or {}).get("trade_audit") if shadow_eval["trade"] else None,
-            "macro_news_state": shadow_eval["macro_news_state"],
-            "global_risk_state": shadow_eval["global_risk_state"],
-        }
-        shadow_comparison = compare_shadow_trade_outputs(
-            result_payload,
-            shadow_payload,
-            baseline_pack_name=baseline_pack_name,
-            shadow_pack_name=shadow_eval["parameter_pack_name"],
-        )
+        result_payload["shadow_mode_active"] = True
+        result_payload["shadow_pack_name"] = shadow_pack_name
+        result_payload["shadow_evaluation"] = None
+        result_payload["shadow_comparison"] = None
+        result_payload["shadow_log_status"] = "SKIPPED"
+
+        try:
+            shadow_eval = evaluate_snapshot_for_pack(
+                parameter_pack_name=shadow_pack_name,
+                symbol=symbol,
+                spot=spot,
+                option_chain=option_chain,
+                previous_chain=previous_chain,
+                day_high=day_high,
+                day_low=day_low,
+                day_open=day_open,
+                prev_close=prev_close,
+                lookback_avg_range_pct=lookback_avg_range_pct,
+                spot_validation=spot_validation,
+                option_chain_validation=option_chain_validation,
+                apply_budget_constraint=apply_budget_constraint,
+                requested_lots=requested_lots,
+                lot_size=lot_size,
+                max_capital=max_capital,
+                macro_event_state=macro_event_state,
+                headline_state=headline_state,
+                global_market_snapshot=global_market_snapshot,
+                holding_profile=holding_profile,
+                spot_timestamp=spot_timestamp,
+                backtest_mode=backtest_mode,
+                target_profit_percent=target_profit_percent,
+                stop_loss_percent=stop_loss_percent,
+            )
+        except Exception as exc:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Shadow evaluation failed for pack '{shadow_pack_name}': {exc}")
+            result_payload["shadow_evaluation_failed"] = True
+            result_payload["shadow_evaluation_error"] = str(exc)
+            return
+
+        try:
+            shadow_payload = {
+                "symbol": symbol,
+                "mode": mode,
+                "source": source,
+                "spot_summary": result_payload["spot_summary"],
+                "trade": shadow_eval["trade"],
+                "execution_trade": (shadow_eval["trade"] or {}).get("execution_trade") if shadow_eval["trade"] else None,
+                "trade_audit": (shadow_eval["trade"] or {}).get("trade_audit") if shadow_eval["trade"] else None,
+                "macro_news_state": shadow_eval["macro_news_state"],
+                "global_risk_state": shadow_eval["global_risk_state"],
+            }
+            shadow_comparison = compare_shadow_trade_outputs(
+                result_payload,
+                shadow_payload,
+                baseline_pack_name=baseline_pack_name,
+                shadow_pack_name=shadow_eval["parameter_pack_name"],
+            )
+        except Exception as exc:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Shadow comparison failed for pack '{shadow_pack_name}': {exc}")
+            result_payload["shadow_comparison_failed"] = True
+            result_payload["shadow_comparison_error"] = str(exc)
+            return
+
         result_payload["shadow_mode_active"] = True
         result_payload["shadow_pack_name"] = shadow_eval["parameter_pack_name"]
         result_payload["shadow_evaluation"] = shadow_payload

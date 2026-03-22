@@ -99,12 +99,18 @@ def _load_pack_overrides(name: str) -> tuple[str, dict[str, Any]]:
 
     try:
         return pack_name, dict(resolve_parameter_pack(pack_name).overrides)
-    except Exception:
+    except Exception as exc:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to load parameter pack '{pack_name}': {exc}")
+        if pack_name != DEFAULT_PARAMETER_PACK:
+            logger.warning(f"Falling back to default pack '{DEFAULT_PARAMETER_PACK}'")
         if pack_name == DEFAULT_PARAMETER_PACK:
             return DEFAULT_PARAMETER_PACK, {}
         try:
             return DEFAULT_PARAMETER_PACK, dict(resolve_parameter_pack(DEFAULT_PARAMETER_PACK).overrides)
-        except Exception:
+        except Exception as exc2:
+            logger.critical(f"Even default pack failed to load: {exc2}")
             return DEFAULT_PARAMETER_PACK, {}
 
 

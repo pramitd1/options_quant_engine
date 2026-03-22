@@ -75,6 +75,8 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
         reasons.append("stale_option_chain")
 
     provider_health = option_chain_validation.get("provider_health") or {}
+    if not isinstance(provider_health, dict):
+        provider_health = {}
     provider_summary = str(provider_health.get("summary_status") or "").upper().strip()
     if provider_summary == "WEAK":
         score -= cfg.provider_health_weak_penalty
