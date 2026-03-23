@@ -403,3 +403,77 @@ def resolve_dataclass_config(prefix: str, config_obj: Any):
     result = type(config_obj)(**payload)
     _config_cache[cache_key] = result
     return result
+
+
+# ---------------------------------------------------------------------------
+# Regime-conditional parameter auto-switching
+# ---------------------------------------------------------------------------
+
+
+def suggest_regime_pack(
+    gamma_regime: str | None,
+    vol_regime: str | None,
+) -> str | None:
+    """Suggest the parameter pack best suited to the current live regime.
+
+    Reads ``config/regime_auto_pack_map.json``.  Returns ``None`` when
+    auto-switching is disabled, the map is missing, or no entry matches the
+    supplied regimes.  The caller decides whether to apply the suggestion via
+    ``set_active_parameter_pack``.
+
+    Parameters
+    ----------
+    gamma_regime:
+        Gamma regime label, e.g. ``"NEGATIVE_GAMMA"`` or ``"POSITIVE_GAMMA"``.
+    vol_regime:
+        Volatility regime label, e.g. ``"HIGH_VOL"`` or ``"NORMAL_VOL"``.
+
+    Returns
+    -------
+    str | None: Suggested pack name, or ``None`` when no switch is needed.
+    """
+    import json as _json
+    import logging as _logging
+    from pathlib import Path as _Path
+
+    log = _logging.getLogger(__name__)
+    map_path = _Path(__file__).resolve().parent / "regime_auto_pack_map.json"
+
+    if not map_path.exists():
+        return None
+
+    try:
+        config = _json.loads(map_path.read_text())
+    except Exception as exc:
+        log.warning("regime_auto_pack: failed to load map — %s", exc)
+        return None
+
+    if not config.get("enabled", False):
+        return None
+
+    fallback = config.get("fallback_pack", DEFAULT_PARAMETER_PACK)
+    gr = str(gamma_regime or "").upper().strip()
+    vr = str(vol_regime or "").upper().strip()
+
+    best_pack: str | None = None
+    best_specificity = -1
+
+    for entry in config.get("map", []):
+        eg = str(entry.get("gamma_regime", "*")).upper().strip()
+        ev = str(entry.get("vol_regime", "*")).upper().strip()
+        pack = str(entry.get("pack", fallback))
+
+        gamma_match = eg == "*" or eg == gr
+        vol_match = ev == "*" or ev == vr
+
+        if not (gamma_match and vol_match):
+            continue
+
+        # More specific entries (fewer wildcards) win.
+        specificity = (0 if eg == "*" else 1) + (0 if ev == "*" else 1)
+        if specificity > best_specificity:
+            best_specificity = specificity
+            best_pack = pack
+
+    return best_pack
+

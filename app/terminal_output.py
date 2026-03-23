@@ -19,8 +19,10 @@ Downstream Usage:
 from __future__ import annotations
 
 import math
+import re
 from datetime import date
 
+from analytics.greeks_engine import compute_option_greeks, _parse_expiry_years
 from analytics.signal_confidence import compute_signal_confidence
 from engine.runtime_metadata import TRADER_VIEW_KEYS
 
@@ -214,6 +216,267 @@ def _print_section(title, fields):
         print(f"{key:26}: {_fmt(value)}")
 
 
+def _first_present(mapping, keys, default=None):
+    """Return the first present/non-null key from *mapping* among *keys*."""
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+def _resolve_regime_extras(trade):
+    """Resolve optional regime-level extras from heterogeneous payload keys."""
+    rr_value = _first_present(trade, ("rr_value", "risk_reversal", "risk_reversal_value"))
+    rr_momentum = _first_present(trade, ("rr_momentum", "risk_reversal_momentum"))
+    oi_velocity_score = _first_present(trade, ("oi_velocity_score", "velocity_score"))
+    oi_velocity_regime = _first_present(trade, ("oi_velocity_regime", "velocity_regime"))
+    return {
+        "risk_reversal": rr_value,
+        "rr_momentum": rr_momentum,
+        "oi_velocity_score": oi_velocity_score,
+        "oi_velocity_regime": oi_velocity_regime,
+    }
+
+
+def _get_regime_impact_note(trade):
+    """Generate human-readable explanation of regime constraints on trade strength."""
+    if not isinstance(trade, dict):
+        return None
+
+    spot_vs_flip = str(trade.get("spot_vs_flip") or "").upper()
+    gamma_regime = str(trade.get("gamma_regime") or "").upper()
+    vol_regime = str(trade.get("vol_surface_regime") or "").upper()
+
+    notes = []
+
+    # At-flip impact
+    if spot_vs_flip == "AT_FLIP":
+        gamma_impact = "uncertain" if gamma_regime == "NEGATIVE_GAMMA" else "mean-reversion support"
+        notes.append(f"At-flip: dealer gamma {gamma_impact}; microstructure noise")
+    elif spot_vs_flip == "BELOW_FLIP" and gamma_regime == "NEGATIVE_GAMMA":
+        notes.append("Below-flip with negative gamma: pinning risk increases")
+
+    # Volume regime impact
+    if vol_regime == "HIGH_VOL" and spot_vs_flip == "AT_FLIP":
+        notes.append("High vol + at-flip: edge uncertain; short holding time recommended")
+
+    return " | ".join(notes) if notes else None
+
+
+def _format_proximity(level, spot):
+    """Format a market level with distance and direction to spot."""
+    if level is None or spot is None:
+        return str(level) if level else "-"
+    try:
+        level_f = float(level)
+        spot_f = float(spot)
+        distance_pts = level_f - spot_f
+        distance_pct = (distance_pts / spot_f * 100.0) if spot_f != 0 else 0
+        
+        direction = "📍" if abs(distance_pts) < 1 else ("⬇️" if distance_pts < 0 else "⬆️")
+        return f"{level_f:.0f} {direction} {distance_pts:+.1f}pts / {distance_pct:+.2f}%"
+    except (TypeError, ValueError):
+        return str(level)
+
+
+def _format_spread(spread_pct):
+    """Format bid-ask spread, handling NaN gracefully."""
+    if spread_pct is None or (isinstance(spread_pct, float) and spread_pct != spread_pct):  # NaN check
+        return "N/A (no live quotes; using mid)"
+    try:
+        spread_f = float(spread_pct)
+        return f"{spread_f:.2f}%"
+    except (TypeError, ValueError):
+        return str(spread_pct)
+
+
+def _get_flow_signal_icon(flow_signal):
+    """Map flow signal labels to compact visual markers."""
+    signal = str(flow_signal or "").upper()
+    if not signal:
+        return ""
+    if "SMART_BUY" in signal:
+        return "💰"
+    if "SMART_SELL" in signal:
+        return "💸"
+    if "BULLISH" in signal or signal.endswith("_BUY"):
+        return "🟢"
+    if "BEARISH" in signal or signal.endswith("_SELL"):
+        return "🔴"
+    if "NEUTRAL" in signal:
+        return "⚪"
+    if "MIXED" in signal or "CHOP" in signal:
+        return "🟡"
+    return ""
+
+
+def _annotate_trigger_with_distance(trigger, spot):
+    """Append spot-relative distance to trigger text when it contains a price level."""
+    if not trigger or spot in (None, ""):
+        return trigger
+    trigger_text = str(trigger)
+    if "pts" in trigger_text or "%" in trigger_text:
+        return trigger_text
+    try:
+        spot_f = float(spot)
+    except (TypeError, ValueError):
+        return trigger_text
+    if spot_f == 0:
+        return trigger_text
+
+    match = re.search(r"(?<![A-Za-z])(\d+(?:\.\d+)?)", trigger_text)
+    if not match:
+        return trigger_text
+
+    try:
+        level_f = float(match.group(1))
+    except (TypeError, ValueError):
+        return trigger_text
+
+    distance_pts = level_f - spot_f
+    distance_pct = distance_pts / spot_f * 100.0
+    return f"{trigger_text} [{distance_pts:+.1f}pts / {distance_pct:+.2f}%]"
+
+
+def _split_potential_triggers(triggers):
+    """Group potential triggers into state blockers and price-based triggers."""
+    state_blockers = []
+    price_triggers = []
+
+    for trigger in triggers or []:
+        text = str(trigger or "").strip()
+        if not text:
+            continue
+
+        normalized = text.lower()
+        has_price_context = any([
+            "support" in normalized,
+            "resistance" in normalized,
+            "break below" in normalized,
+            "break above" in normalized,
+            "move below" in normalized,
+            "move above" in normalized,
+            "hold above" in normalized,
+            "hold below" in normalized,
+            bool(re.search(r"\[[^\]]*(pts|%)", text)),
+        ])
+
+        if has_price_context:
+            price_triggers.append(text)
+        else:
+            state_blockers.append(text)
+
+    return state_blockers, price_triggers
+
+
+def _infer_expected_direction(trade):
+    """Infer an expected directional bias from available trade metadata."""
+    if not isinstance(trade, dict):
+        return None
+
+    direction = str(trade.get("direction") or "").upper().strip()
+    if "CALL" in direction or direction == "CALL":
+        return "UP"
+    if "PUT" in direction or direction == "PUT":
+        return "DOWN"
+
+    flow_signal = str(trade.get("final_flow_signal") or "").upper().strip()
+    if any(token in flow_signal for token in ("BULLISH", "BUY")):
+        return "UP"
+    if any(token in flow_signal for token in ("BEARISH", "SELL")):
+        return "DOWN"
+
+    dealer_bias = str(trade.get("dealer_hedging_bias") or "").upper().strip()
+    if "UPSIDE" in dealer_bias:
+        return "UP"
+    if "DOWNSIDE" in dealer_bias:
+        return "DOWN"
+
+    return None
+
+
+def _rewrite_gamma_flip_trigger(trigger, trade):
+    """Render gamma-flip triggers with directional wording when context is available."""
+    text = str(trigger or "").strip()
+    if not text or "gamma flip" not in text.lower() or not isinstance(trade, dict):
+        return text
+
+    if "hold above gamma flip" in text.lower() or "reject below gamma flip" in text.lower() or "break back below gamma flip" in text.lower():
+        return text
+
+    spot = trade.get("spot")
+    gamma_flip = trade.get("gamma_flip")
+    try:
+        spot_f = float(spot)
+        gamma_flip_f = float(gamma_flip)
+    except (TypeError, ValueError):
+        return text
+
+    expected_direction = _infer_expected_direction(trade)
+    flip_str = f"{gamma_flip_f:.2f}"
+
+    if expected_direction == "UP":
+        if spot_f >= gamma_flip_f:
+            return f"hold above gamma flip {flip_str} with confirmation"
+        return f"reject below gamma flip {flip_str} and reclaim above with confirmation"
+
+    if expected_direction == "DOWN" and spot_f >= gamma_flip_f:
+        return f"break back below gamma flip {flip_str} with confirmation"
+
+    return text
+
+
+def _format_trigger_for_display(trigger, trade):
+    """Apply trigger wording cleanup and distance annotations for compact output."""
+    rewritten = _rewrite_gamma_flip_trigger(trigger, trade)
+    spot = trade.get("spot") if isinstance(trade, dict) else None
+    return _annotate_trigger_with_distance(rewritten, spot)
+
+
+def _describe_effective_strength_gate(trade):
+    """Build a human-readable threshold summary including confidence adjustment."""
+    if not isinstance(trade, dict):
+        return None
+
+    effective = trade.get("min_trade_strength_threshold")
+    if effective in (None, "", "N/A"):
+        return None
+    try:
+        effective = int(float(effective))
+    except (TypeError, ValueError):
+        return None
+
+    from config.signal_policy import get_trade_runtime_thresholds
+    thresholds = get_trade_runtime_thresholds()
+    relief = int(float(thresholds.get("high_confidence_strength_relief", 5)))
+    surcharge = int(float(thresholds.get("low_confidence_strength_surcharge", 8)))
+
+    dq = str(trade.get("data_quality_status") or "").upper()
+    conf = str(trade.get("confirmation_status") or trade.get("confirmation") or "").upper()
+    high_conf = dq == "GOOD" and conf in {"STRONG_CONFIRMATION", "CONFIRMED"}
+    low_conf = dq == "WEAK" or conf in {"CONFLICT", "NO_DIRECTION"}
+
+    confidence_note = "none"
+    base_est = effective
+    if high_conf:
+        base_est = effective + relief
+        confidence_note = f"confidence_relief(-{relief})"
+    elif low_conf:
+        base_est = max(0, effective - surcharge)
+        confidence_note = f"confidence_surcharge(+{surcharge})"
+
+    regime_adj = trade.get("regime_threshold_adjustments")
+    if isinstance(regime_adj, list) and regime_adj:
+        regime_note = "+".join(str(x) for x in regime_adj)
+    else:
+        regime_note = "none"
+
+    return f"{effective} (base~{base_est}; conf:{confidence_note}; regime:{regime_note})"
+
+
 def _print_validation(title, validation):
     """Print a validation block with preferred key ordering."""
     print(f"\n{title}")
@@ -328,12 +591,14 @@ _RANKED_CORE_COLS = [
     ("volume", "volume", ">10"),
     ("open_interest", "oi", ">10"),
     ("payoff_efficiency_score", "eff_scr", ">7"),
-    ("score", "score", ">6"),
+    ("score", "rank_pts", ">8"),
 ]
 
 _RANKED_EXTENDED_COLS = [
     ("distance_from_spot_pts", "dist_pts", ">9"),
     ("distance_from_spot_pct", "dist_%", ">7"),
+    ("ba_spread_pct", "sprd_%", ">7"),
+    ("ba_spread_score", "sprd_sc", ">7"),
     ("premium_efficiency_score", "prem_eff", ">8"),
     ("strike_efficiency_score", "strk_eff", ">8"),
     ("enhanced_strike_score", "enh_scr", ">7"),
@@ -433,6 +698,32 @@ def _render_strike_efficiency(trade, ranked):
     print(f"{'premium_paid':26}: {premium}")
     print(f"{'efficiency_ratio':26}: {eff_ratio}")
 
+    # Break-even daily spot move (pts/day to neutralise theta)
+    try:
+        _spot = float(trade.get("spot") or 0)
+        _tte = _parse_expiry_years(trade.get("selected_expiry"))
+        if _tte is None:
+            _dte = float(trade.get("days_to_expiry") or 1)
+            _tte = max(_dte, 0.5) / 365.0
+        _otype = "CE" if str(best.get("option_type", "")).upper() in ("CE", "CALL") else "PE"
+        _iv_be = best.get("iv")
+        _strike_be = best.get("strike")
+        if _iv_be and float(_iv_be) > 0 and _strike_be and _spot > 0:
+            _greeks_be = compute_option_greeks(
+                spot=_spot,
+                strike=float(_strike_be),
+                time_to_expiry_years=_tte,
+                volatility_pct=float(_iv_be),
+                option_type=_otype,
+            )
+            _theta_be = _greeks_be.get("THETA") if _greeks_be else None
+            _delta_abs_be = abs(float(delta_val)) if delta_val is not None else None
+            if _theta_be and _delta_abs_be and _delta_abs_be > 1e-4:
+                _be_pts = abs(float(_theta_be)) / _delta_abs_be
+                print(f"{'break_even_pts/day':26}: {round(_be_pts, 2)}")
+    except Exception:
+        pass
+
     # Sub-component breakdown (compact)
     components = []
     for key, label in [
@@ -459,6 +750,7 @@ def _render_dealer_gamma_levels(trade):
     clusters = trade.get("gamma_clusters") or []
     support = trade.get("support_wall")
     resistance = trade.get("resistance_wall")
+    spot = trade.get("spot")
     dlm = trade.get("dealer_liquidity_map") or {}
 
     # Fall back to dealer_liquidity_map walls if trade-level walls are absent
@@ -475,7 +767,8 @@ def _render_dealer_gamma_levels(trade):
     print("---------------------------")
 
     if gamma_flip is not None:
-        print(f"{'gamma_flip':26}: {gamma_flip}")
+        flip_display = _format_proximity(gamma_flip, spot) if spot else str(gamma_flip)
+        print(f"{'gamma_flip':26}: {flip_display}")
 
     # Top 3 gamma magnet levels
     magnets = []
@@ -488,14 +781,17 @@ def _render_dealer_gamma_levels(trade):
     if magnets:
         print(f"\n  Magnets")
         for m in magnets:
-            print(f"    {m}")
+            m_display = _format_proximity(m, spot) if spot else str(m)
+            print(f"    {m_display}")
 
     if support is not None or resistance is not None:
         print(f"\n  Liquidity Walls")
         if resistance is not None:
-            print(f"    {resistance}  Resistance")
+            r_display = _format_proximity(resistance, spot) if spot else str(resistance)
+            print(f"    {r_display}  Resistance")
         if support is not None:
-            print(f"    {support}  Support")
+            s_display = _format_proximity(support, spot) if spot else str(support)
+            print(f"    {s_display}  Support")
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +858,7 @@ _CONFIDENCE_ICONS = {
 
 
 def _render_provider_health_compact_detail(trade):
-    """Print compact provider-health diagnostics when summary is CAUTION."""
+    """Print compact provider-health diagnostics for degraded provider health."""
     if not isinstance(trade, dict):
         return
 
@@ -571,7 +867,7 @@ def _render_provider_health_compact_detail(trade):
         return
 
     summary = str(provider_health.get("summary_status") or "").upper().strip()
-    if summary != "CAUTION":
+    if summary not in {"CAUTION", "WEAK"}:
         return
 
     ocv = trade.get("option_chain_validation") if isinstance(trade.get("option_chain_validation"), dict) else {}
@@ -610,6 +906,27 @@ def _render_provider_health_compact_detail(trade):
             f"trade={trade_price_health or '-'}, "
             f"quote={quote_health if quote_health is not None else 'N/A'}"
         )
+    core_market = provider_health.get("core_marketability_health")
+    core_pairing = provider_health.get("core_pairing_health")
+    core_iv = provider_health.get("core_iv_health")
+    core_quote_integrity = provider_health.get("core_quote_integrity_health")
+    if any(v is not None for v in (core_market, core_pairing, core_iv, core_quote_integrity)):
+        print(
+            "    core      : "
+            f"marketability={core_market or '-'}, "
+            f"pairing={core_pairing or '-'}, "
+            f"iv={core_iv or '-'}, "
+            f"quote_integrity={core_quote_integrity or 'N/A'}"
+        )
+    block_status = provider_health.get("trade_blocking_status")
+    if block_status:
+        print(f"    block st  : {block_status}")
+    block_reasons = provider_health.get("trade_blocking_reasons")
+    if isinstance(block_reasons, list) and block_reasons:
+        print(f"    block why : {', '.join(str(r) for r in block_reasons)}")
+    non_critical_weak = provider_health.get("non_critical_weak_components")
+    if isinstance(non_critical_weak, list) and non_critical_weak:
+        print(f"    advisory  : weak non-critical -> {', '.join(str(r) for r in non_critical_weak)}")
     if pricing_basis:
         print(f"    basis     : {pricing_basis}")
     if quote_coverage_mode:
@@ -670,7 +987,6 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         4. TRADING SUGGESTION
         5. RANKED STRIKES
         6. RISK SUMMARY
-        7. OVERNIGHT HOLD
     """
     display = execution_trade or trade
     trade_status = str((trade or {}).get("trade_status") or "").upper()
@@ -695,12 +1011,28 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 
     # ── 2. REGIME SUMMARY ────────────────────────────────────────────────
     if trade:
+        regime_extras = _resolve_regime_extras(trade)
+
+        # Add visual icons to gamma and flow regimes
+        gamma_regime = trade.get("gamma_regime")
+        gamma_icon = "🟢" if gamma_regime == "POSITIVE_GAMMA" else ("🔴" if gamma_regime == "NEGATIVE_GAMMA" else "")
+
+        flow_signal = trade.get("final_flow_signal")
+        flow_icon = _get_flow_signal_icon(flow_signal)
+
+        vol_regime = trade.get("vol_surface_regime")
+        vol_icon = "📈" if vol_regime == "HIGH_VOL" else ("📉" if vol_regime == "LOW_VOL" else "")
+
         _print_section("REGIME SUMMARY", {
-            "gamma_regime": trade.get("gamma_regime"),
+            "gamma_regime": f"{gamma_icon} {gamma_regime}".strip(),
             "spot_vs_flip": trade.get("spot_vs_flip"),
-            "flow_signal": trade.get("final_flow_signal"),
-            "vol_regime": trade.get("vol_surface_regime"),
+            "flow_signal": f"{flow_icon} {flow_signal}".strip(),
+            "vol_regime": f"{vol_icon} {vol_regime}".strip(),
             "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
+            "risk_reversal": regime_extras.get("risk_reversal"),
+            "rr_momentum": regime_extras.get("rr_momentum"),
+            "oi_velocity_score": regime_extras.get("oi_velocity_score"),
+            "oi_velocity_regime": regime_extras.get("oi_velocity_regime"),
             "macro_regime": trade.get("macro_regime"),
             "global_risk": global_risk_state.get("global_risk_state"),
         })
@@ -711,16 +1043,25 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         conf_icon = _CONFIDENCE_ICONS.get(confidence["confidence_level"], "")
         prob = trade.get("hybrid_move_probability")
         prob_str = f"{prob:.0%}" if isinstance(prob, (int, float)) else "-"
-
-        _print_section("TRADE DECISION", {
-            "decision": trade.get("decision_classification"),
+        
+        decision_classification = trade.get("decision_classification")
+        decision_dict = {
+            "decision": decision_classification,
             "trade_strength": display.get("trade_strength") if display else None,
             "signal_quality": display.get("signal_quality") if display else None,
             "confirmation": trade.get("confirmation_status"),
             "move_probability": prob_str,
             "confidence": f"{conf_icon} {confidence['confidence_score']} ({confidence['confidence_level']})",
             "data_quality": trade.get("data_quality_status"),
-        })
+        }
+        
+        _print_section("TRADE DECISION", decision_dict)
+        
+        # For blocked trades, add regime constraint explanation
+        if "BLOCKED" in str(decision_classification):
+            regime_note = _get_regime_impact_note(trade)
+            if regime_note:
+                print(f"  ⚠️  {regime_note}")
     else:
         print("\n  ▸ NO TRADE SIGNAL")
 
@@ -801,6 +1142,9 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                 _gap_str += " (direction pending)"
             print(f"    current  : {_cur_strength}")
             print(f"    required : {_min_strength}{_gap_str}")
+            _gate_desc = _describe_effective_strength_gate(trade)
+            if _gate_desc:
+                print(f"    effective: {_gate_desc}")
             print(f"    progress : [{_bar}] {_cur_strength}/{_min_strength}")
 
         # ── Best strike candidate ────────────────────────────────────────
@@ -824,9 +1168,40 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                     print(f"    delta    : {round(float(_b_delta), 4)}")
                 if _b_iv is not None:
                     print(f"    iv       : {round(float(_b_iv), 2)}")
+                _b_spread = _best.get("ba_spread_pct")
+                _b_spread_sc = _best.get("ba_spread_score")
+                if _b_spread is not None:
+                    spread_display = _format_spread(_b_spread)
+                    print(f"    sprd_%   : {spread_display}")
+                if _b_spread_sc is not None:
+                    print(f"    sprd_sc  : {round(float(_b_spread_sc), 2)}")
+                # Break-even daily spot move = |theta| / |delta|
+                try:
+                    _spot_for_be = float(trade.get("spot") or 0)
+                    _dte = float(trade.get("days_to_expiry") or 1)
+                    _tte = _parse_expiry_years(trade.get("selected_expiry"))
+                    if _tte is None:
+                        _tte = max(_dte, 0.5) / 365.0
+                    _otype = "CE" if str(_b_type).upper() in ("CE", "CALL") else "PE"
+                    if _b_iv and float(_b_iv) > 0 and _b_strike and _spot_for_be > 0:
+                        _greeks = compute_option_greeks(
+                            spot=_spot_for_be,
+                            strike=float(_b_strike),
+                            time_to_expiry_years=_tte,
+                            volatility_pct=float(_b_iv),
+                            option_type=_otype,
+                        )
+                        _theta = _greeks.get("THETA") if _greeks else None
+                        _delta_abs = abs(float(_b_delta)) if _b_delta else None
+                        if _theta and _delta_abs and _delta_abs > 1e-4:
+                            _be = abs(float(_theta)) / _delta_abs
+                            print(f"    be_pts/d : {round(_be, 2)}  (min daily move to cover theta)")
+                except Exception:
+                    pass
 
         # ── Potential trigger conditions ─────────────────────────────────
         triggers = []
+        spot = trade.get("spot")
         if trade:
             _confirmation = str(
                 trade.get("confirmation_status")
@@ -835,27 +1210,40 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             ).upper()
             _direction_pending = _confirmation == "NO_DIRECTION" or not trade.get("direction")
             if _direction_pending:
-                triggers.append("Direction confirmation pending")
+                triggers.append(_format_trigger_for_display("Direction confirmation pending", trade))
 
             ntr = trade.get("no_trade_reason")
             if ntr:
-                triggers.append(ntr)
+                triggers.append(_format_trigger_for_display(ntr, trade))
             for cond in (trade.get("setup_upgrade_conditions") or []):
-                triggers.append(cond)
+                triggers.append(_format_trigger_for_display(cond, trade))
             lt = trade.get("likely_next_trigger")
             if lt:
-                triggers.append(lt)
+                triggers.append(_format_trigger_for_display(lt, trade))
             triggers = _dedupe_potential_triggers(triggers)
         if triggers:
+            state_blockers, price_triggers = _split_potential_triggers(triggers)
             print(f"\n  Potential triggers:")
-            for t in triggers:
-                print(f"    • {t}")
+            if state_blockers:
+                print("    State blockers:")
+                for blocker in state_blockers:
+                    print(f"      • {blocker}")
+            if price_triggers:
+                print("    Price triggers:")
+                for price_trigger in price_triggers:
+                    print(f"      • {price_trigger}")
 
-        _reason_code = trade.get("no_trade_reason_code") if trade else None
-        if _reason_code:
-            print(f"\n  [debug] no_trade_reason_code = {_reason_code}")
-
-        _render_provider_health_compact_detail(trade)
+        _status = str((trade or {}).get("trade_status") or "").upper()
+        _show_provider_detail = _status in {
+            "WATCHLIST",
+            "NO_TRADE",
+            "BLOCKED_SETUP",
+            "DATA_INVALID",
+            "GLOBAL_RISK_BLOCKED",
+            "EVENT_LOCKDOWN",
+        }
+        if _show_provider_detail:
+            _render_provider_health_compact_detail(trade)
 
     # ── 5. RANKED STRIKES ────────────────────────────────────────────────
     ranked = trade.get("ranked_strike_candidates") if trade else None
@@ -896,10 +1284,6 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
     if no_trade:
         risk_fields["no_trade_reason"] = no_trade
     _print_section("RISK SUMMARY", risk_fields)
-
-    # ── 7. OVERNIGHT HOLD ────────────────────────────────────────────────
-    _render_overnight_assessment(trade, verbose=False)
-
 
 # ---------------------------------------------------------------------------
 # STANDARD mode — compact + scoring/confirmation diagnostics
@@ -947,6 +1331,13 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
 
+    if trade:
+        _print_section("RUNTIME CONTEXT", {
+            "parameter_pack_name": trade.get("parameter_pack_name"),
+            "auto_pack_suggested": trade.get("auto_pack_suggested"),
+            "effective_strength_gate": _describe_effective_strength_gate(trade),
+        })
+
     if not trade:
         print("\n  ▸ NO TRADE SIGNAL")
         _print_section("ENGINE STATUS", {"message": "No trade payload returned"})
@@ -983,6 +1374,13 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "premium_efficiency_score": trade.get("premium_efficiency_score"),
         "strike_efficiency_score": trade.get("strike_efficiency_score"),
         "capital_required": trade.get("capital_required"),
+        "parameter_pack_name": trade.get("parameter_pack_name"),
+        "effective_strength_gate": _describe_effective_strength_gate(trade),
+        "slippage_bps": trade.get("slippage_bps"),
+        "risk_reversal": _first_present(trade, ("rr_value", "risk_reversal", "risk_reversal_value")),
+        "rr_momentum": _first_present(trade, ("rr_momentum", "risk_reversal_momentum")),
+        "oi_velocity_score": _first_present(trade, ("oi_velocity_score", "velocity_score")),
+        "oi_velocity_regime": _first_present(trade, ("oi_velocity_regime", "velocity_regime")),
     })
 
     # Explainability
@@ -1133,6 +1531,16 @@ _DIAGNOSTIC_KEYS = [
     "directional_resolution_needed",
     "explainability",
     "scoring_breakdown",
+    "parameter_pack_name",
+    "min_trade_strength_threshold",
+    "regime_threshold_adjustments",
+    "rr_value",
+    "rr_momentum",
+    "risk_reversal",
+    "oi_velocity_score",
+    "oi_velocity_regime",
+    "velocity_score",
+    "slippage_bps",
 ]
 
 
@@ -1229,6 +1637,13 @@ def _render_full_signal_summary(trade):
         "data_quality_score": trade.get("data_quality_score"),
         "data_quality_status": trade.get("data_quality_status"),
         "message": trade.get("message"),
+        "parameter_pack_name": trade.get("parameter_pack_name"),
+        "effective_strength_gate": _describe_effective_strength_gate(trade),
+        "slippage_bps": trade.get("slippage_bps"),
+        "risk_reversal": _first_present(trade, ("rr_value", "risk_reversal", "risk_reversal_value")),
+        "rr_momentum": _first_present(trade, ("rr_momentum", "risk_reversal_momentum")),
+        "oi_velocity_score": _first_present(trade, ("oi_velocity_score", "velocity_score")),
+        "oi_velocity_regime": _first_present(trade, ("oi_velocity_regime", "velocity_regime")),
     }
     _print_section("QUANT TRADE SIGNAL", compact)
 

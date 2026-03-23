@@ -316,5 +316,7 @@ def empty_confirmation_state():
             "move_probability_confirmation_score": 0,
             "flip_alignment_score": 0,
             "flip_zone_gamma_score": 0,
+            "direction_change_penalty": 0,
+            "direction_change_decay_penalty": 0,
         },
     }

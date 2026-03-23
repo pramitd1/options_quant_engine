@@ -56,6 +56,53 @@ log = logging.getLogger(__name__)
 # EOD horizon day offsets used for outcome evaluation
 EOD_HORIZON_DAYS = (1, 2, 3, 5)
 
+# Default half-spread assumption when no bid/ask data are available.
+# 0.5% of premium on each side (entry: pay ask; exit: receive bid).
+_DEFAULT_SLIPPAGE_HALF_BPS = 50  # 50 bps = 0.50 %
+
+def _apply_slippage_fill(sig_row: dict, *, slippage_half_bps: int = _DEFAULT_SLIPPAGE_HALF_BPS) -> dict:
+    """Adjust entry_price upward by the bid-ask half-spread assumption.
+
+    For a long option position (all backtested trades here), the realistic fill
+    is the ask price.  When ask is absent we approximate ask as
+    ``lastPrice * (1 + half_bps/10000)``.
+
+    Side effects on sig_row (all added keys are prefixed ``slippage_``):
+        slippage_entry_price   – adjusted entry premium
+        slippage_bps           – bps applied on entry
+        slippage_target        – adjusted target (scaled with entry)
+        slippage_stop_loss     – adjusted stop loss (scaled with entry)
+    """
+    ltp = _safe_float(sig_row.get("entry_price"), 0.0)
+    if ltp <= 0:
+        return sig_row
+
+    # If the provider delivered ask price, prefer it; otherwise synthesise.
+    ask_price = _safe_float(sig_row.get("ask_price"), None)
+    if ask_price and ask_price > ltp:
+        fill_price = ask_price
+        actual_half_bps = round((ask_price / ltp - 1.0) * 10_000, 1)
+    else:
+        half_fraction = slippage_half_bps / 10_000.0
+        fill_price = round(ltp * (1.0 + half_fraction), 2)
+        actual_half_bps = slippage_half_bps
+
+    slip_ratio = fill_price / ltp  # > 1.0 for a long entry
+    target = _safe_float(sig_row.get("target"), None)
+    stop_loss = _safe_float(sig_row.get("stop_loss"), None)
+
+    updated = sig_row.copy()
+    updated["slippage_entry_price"] = fill_price
+    updated["slippage_bps"] = actual_half_bps
+    # Scale target / SL to preserve the same reward-to-risk ratio.
+    if target:
+        updated["slippage_target"] = round(target * slip_ratio, 2)
+    if stop_loss:
+        updated["slippage_stop_loss"] = round(stop_loss * slip_ratio, 2)
+
+    return updated
+
+
 # ---------------------------------------------------------------
 # Spot-path builder (daily resolution from historical data)
 # ---------------------------------------------------------------
@@ -537,6 +584,10 @@ def run_holistic_backtest(
                     )
                 except (ValueError, KeyError):
                     continue
+
+                # Apply slippage-aware fill prices so realized P&L
+                # reflects bid-ask spread costs on entry.
+                sig_row = _apply_slippage_fill(sig_row)
 
                 # 5. Evaluate against realized path
                 if evaluate_outcomes:

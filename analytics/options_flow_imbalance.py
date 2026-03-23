@@ -49,15 +49,18 @@ def calculate_flow_imbalance(option_chain, spot=None):
     calls = df[df["OPTION_TYP"] == "CE"].copy()
     puts = df[df["OPTION_TYP"] == "PE"].copy()
 
-    call_notional = (
-        pd.to_numeric(calls.get("totalTradedVolume"), errors="coerce").fillna(0.0) *
-        pd.to_numeric(calls.get("lastPrice"), errors="coerce").fillna(0.0)
-    ).sum()
+    def _delta_adjusted_notional(side_df) -> float:
+        """Volume * price * |delta| (fallback to notional when DELTA absent)."""
+        vol = pd.to_numeric(side_df.get("totalTradedVolume"), errors="coerce").fillna(0.0)
+        price = pd.to_numeric(side_df.get("lastPrice"), errors="coerce").fillna(0.0)
+        notional = vol * price
+        if "DELTA" in side_df.columns:
+            delta_abs = pd.to_numeric(side_df["DELTA"], errors="coerce").abs().fillna(0.5)
+            return float((notional * delta_abs).sum())
+        return float(notional.sum())
 
-    put_notional = (
-        pd.to_numeric(puts.get("totalTradedVolume"), errors="coerce").fillna(0.0) *
-        pd.to_numeric(puts.get("lastPrice"), errors="coerce").fillna(0.0)
-    ).sum()
+    call_notional = _delta_adjusted_notional(calls)
+    put_notional = _delta_adjusted_notional(puts)
 
     if call_notional <= 0 and put_notional <= 0:
         return cfg.neutral_default_imbalance

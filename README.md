@@ -136,7 +136,7 @@ The engine now has five important overlay packages plus a dedicated research-gov
 - `risk/option_efficiency_*`: expected move and option-buying efficiency overlay
 - `tuning/`: parameter registry, named packs, experiment runner, advanced search, automated campaigns, promotion, and reporting
   plus walk-forward and regime-aware validation
-- `strategy/`: strike selection, confirmation scoring, enhanced strike scoring with market-microstructure factors, exit model, budget optimization, and trade strength evaluation
+- `strategy/`: strike selection, confirmation scoring, direction reversal control, enhanced strike scoring with market-microstructure factors, exit model, budget optimization, and trade strength evaluation
 - `utils/`: centralized numeric helpers (`clip`, `safe_float`, `safe_div`, `to_python_number`), math functions (`norm_pdf`, `norm_cdf`), and timestamp utilities (`coerce_timestamp`)
 
 These layers are intentionally modifiers and filters. They do not replace the core directional engine.
@@ -242,6 +242,157 @@ python scripts/backtest/compare_scoring_modes_full_backtest.py
 
 Runs all 8 predictor methods under both `discrete` and `continuous` trade-strength scoring (16 backtest stages total) and writes CSV/JSON/Markdown artifacts to `scripts/backtest/reports/`. Use this to measure per-method accuracy, trade volume, and composite score deltas between scoring modes before changing production defaults.
 
+## Pluggable Predictor Architecture
+
+The engine now supports multiple prediction methods for move direction and magnitude. Switch between methods without code changes using configuration.
+
+### Available Prediction Methods
+
+| Method | Type | AUC (test) | Best For |
+|--------|------|-----------|----------|
+| `blended` (default) | Hybrid | N/A | Production: balances interpretability with performance |
+| `pure_ml` | ML only | 0.65 | Research: isolate ML contribution |
+| `pure_rule` | Rule only | N/A | Research: validate heuristic baselines |
+| `research_dual_model` | Ensemble | 0.6525 (GBT) | Research: two-model ensemble with calibration |
+| `research_decision_policy` | Policy overlay | 0.74 (hit rate) | Research: dual-model with policy filtering |
+| `ev_sizing` | EV-based | — | Research: size by expected value |
+
+### Switching Methods
+
+Set environment variable or config:
+
+```bash
+export OQE_PREDICTION_METHOD=pure_ml
+python main.py
+```
+
+Or in backtests:
+
+```bash
+python scripts/run_multiyear_backtest.py --prediction-method research_dual_model
+```
+
+For more details, see [Developer Guide: Pluggable Predictor Architecture](documentation/system_docs/developer_guide.md#pluggable-predictor-architecture).
+
+## ML Model Registry and Selection
+
+All trained ML models are version-controlled in the registry under `models_store/registry/`.
+
+### Available Models
+
+Trained on 60-minute directional accuracy (`correct_60m_all` target, 2,701 samples):
+
+| Model | AUC | ECE | Criteria | Notes |
+|-------|-----|-----|----------|-------|
+| `GBT_shallow_v1` | **0.6525** | 0.1235 | 3/4 | Highest AUC; requires calibration |
+| `GBT_shallow_platt_v1` | 0.6637 | 0.1094 | 3/4 | GBT + Platt calibration |
+| `LogReg_ElasticNet_v1` ★ | 0.6295 | **0.0818** | **4/4 ALL** | Best calibration; passes all criteria |
+| `LogReg_L2_v1` | 0.6248 | 0.1729 | 3/4 | L2 regularization baseline |
+| `RF_shallow_v1` | 0.6232 | 0.1029 | 3/4 | Random forest baseline |
+
+**Criteria**: AUC ≥ 0.60, Ranking stability, Generalization, Calibration (ECE ≤ 0.10).
+
+### Switching Active Model
+
+```bash
+export OQE_ACTIVE_MODEL=GBT_shallow_v1
+python main.py
+```
+
+Or in configuration (`config/settings.py`):
+
+```python
+ACTIVE_MODEL = "LogReg_ElasticNet_v1"  # Best calibration
+```
+
+Without `ACTIVE_MODEL` set, the system falls back to legacy `move_predictor_v2.joblib`. To build or update the registry:
+
+```bash
+python scripts/build_model_registry.py
+```
+
+For details, see [Developer Guide: Model Registry](documentation/system_docs/developer_guide.md#model-registry-and-switching).
+
+## Decision Policy Layer
+
+Signals can be evaluated under configurable decision policies for filtering or downsizing.
+
+### Available Policies
+
+- **agreement_only**: Require multi-source directional agreement
+- **rank_filter**: Block bottom K% by confidence  
+- **dual_threshold**: Dual-model predictions with policy thresholds
+- **sizing_simulation**: Conditional size adjustments
+
+### Policy Performance (7,404 signals)
+
+| Method | Signals | Hit Rate 60m | Avg Return 60m | vs Baseline |
+|--------|---------|--------------|-----------------|------------|
+| Baseline (all) | 100% | 50.35% | -2.60 bps | — |
+| Research Dual-Model | 54.6% | 67.48% | +10.92 bps | +17.13pp |
+| **Dual Threshold Policy** | **48.6%** | **74.12%** | **+18.98 bps** | **+23.77pp** |
+| Rank Filter 30% | 70.0% | 70.97% | +19.34 bps | +20.62pp |
+
+Test under any policy with:
+
+```bash
+python scripts/run_multiyear_backtest.py --prediction-method research_decision_policy
+```
+
+See [Developer Guide: Decision Policy Layer](documentation/system_docs/developer_guide.md#decision-policy-layer) for implementation details.
+
+## Performance Profile
+
+Recent optimizations achieve **31-45x speedup** over baseline engine (warm runs):
+
+| Component | Baseline | Optimized | Improvement |
+|-----------|----------|-----------|-------------|
+| Full engine | 1,250-1,810ms | **~40ms** | **31-45x** |
+| Total analytics | ~46ms | **25ms** | 1.8x |
+| Greeks enrichment | 21.8ms | **1.9ms** | 11.5x |
+| Engine overhead | 900-1,400ms | **14.7ms** | 61-95x |
+
+### Key Optimization Insights
+
+1. **Config resolution cache** (~70% speedup): Eliminates repeated dataclass instantiation per signal
+2. **TTE parse cache** (11.5x): Pre-caches time-to-expiry calculations per unique expiry
+3. **yfinance TTL cache** (~350ms/tick): 5-minute cache for market snapshots
+4. **Redundant call removal**: Eliminated duplicate `attach_trade_views` and `split_trade_payload` iterations
+
+For profiling details, see [Developer Guide: Performance Caching Systems](documentation/system_docs/developer_guide.md#performance-caching-systems).
+
+## Parameter Tuning and Governance
+
+The tuning pipeline supports grid search, walk-forward validation, and regime-aware testing.
+
+### Quick Parameter Search
+
+```bash
+python tuning/search.py --param signal_policy.trade_strength_floor --min 50 --max 80 --step 5
+```
+
+### Recent Findings (March 2026)
+
+Optimal thresholds on 7,404-signal backtest dataset:
+
+| Parameter | Optimal Value | Holdout HR | Signal Count |
+|-----------|---------------|-----------|--------------|
+| `trade_strength_floor` | 60 | 100% | 25 |
+| `composite_score_floor` | 75 | — | —  |
+| `tradeability_floor` | 65 | — | — |
+| `move_probability_floor` | 0.60 | — | — |
+| `option_efficiency_floor` | 40 | — | — |
+| `global_risk_cap` | 70 | — | — |
+
+Tighter thresholds improve hit rate from 62.4% → 100% (on holdout set) but reduce signal volume from 93 → 25.
+
+### Known Tuning Issues
+
+- **Registry range bug**: `evaluation_thresholds.selection.move_probability_floor` has range [0, 100] but actual values are 0-1 (unit mismatch). Use `allow_live_unsafe=True` for parameter searches on `evaluation_thresholds` group.
+- **Score-computation groups** (`trade_strength`, `confirmation_filter`, `large_move_probability`) don't affect pre-computed backtest datasets — must re-run signal generation to tune these.
+
+For full governance workflow details, see [Developer Guide](documentation/system_docs/developer_guide.md#tuning-workflow) or [Parameter Governance](documentation/system_docs/developer_guide.md#tuning-workflow).
+
 ## Architecture
 
 ### Core Live Flow
@@ -300,6 +451,109 @@ This awareness is applied in two places:
 The net effect: the engine continues to produce signals when the market moves through the flip zone, but the trade suggestions reflect the structural uncertainty. A typical AT_FLIP + neutral/negative gamma signal degrades from TRADE to WATCHLIST territory, which is the correct behavior — observe but don't act until the market resolves directionally.
 
 All flip-zone weights are tunable via `TRADE_STRENGTH_WEIGHTS` and `CONFIRMATION_FILTER_CONFIG` in `config/signal_policy.py` and are automatically registered in the parameter tuning registry.
+
+### Direction Confirmation Stickiness & Reversal Control
+
+#### Problem
+Historical analysis revealed that confirmation status exhibits high persistence across direction reversals: when the engine reverses its directional bias (CALL → PUT or vice versa), the new direction frequently inherits a STRONG_CONFIRMATION or CONFIRMED status even at the reversal snapshot itself. This "stickiness" creates false confidence in direction changes and can lead to whipsaws.
+
+#### Solution: Three-Tier Reversal Control
+
+The engine now provides three complementary mechanisms to manage reversal stickiness, all tunable via `CONFIRMATION_FILTER_CONFIG` in `config/signal_policy.py`:
+
+**1. Reversal Veto (recommended, default: 1 step)**
+
+The most effective mechanism. Forces newly-reversed directions to MIXED status for a configurable grace period (0−6 steps):
+
+- `reversal_veto_steps = 0`: No veto (baseline reversal stickiness = 100%)
+- `reversal_veto_steps = 1`: **RECOMMENDED** ⟹ reversal snapshots demoted to MIXED, flip_persist_ratio = 0%
+- `reversal_veto_steps = 2+`: Extended grace period (unnecessary at veto_steps=1)
+
+**Sweep Results** (from live NIFTY dataset): a 1-step veto eliminates 100% of reversal stickiness (flip_persist_ratio: 1.0 → 0.0) while maintaining overall self-transition rate at 0.63.
+
+**Usage in Live/Replay:**
+```python
+# In app/engine_runner.py, pass reversal_age to generate_trade():
+signal = generate_trade(
+    ...,
+    previous_direction=prior_direction,
+    reversal_age=snapshot_age_since_last_flip,
+)
+```
+
+**2. Direction-Change Penalty (bounded: 0−6 points)**
+
+Applies a one-time deduction to confirmation score only at the reversal snapshot (reversal_age=0):
+- `direction_change_penalty = 0.0`: No penalty
+- `direction_change_penalty = 1.0−6.0`: Scales confirmation score downward by fixed amount
+
+Note: Single-penalty alone is insufficient to break stickiness on this dataset (reversal scores: 8.27−13.54). Useful for fine-tuning in combination with veto.
+
+**3. Post-Reversal Decay Model (advanced)**
+
+Extends the penalty across N snapshots post-reversal with geometric decay:
+- `direction_change_decay_steps`: window length (0−20)
+- `direction_change_decay_factor`: decay multiplier per step (0.0−1.0, default 0.5)
+
+Effective penalty at step k: `base_penalty × (decay_factor ^ k)`
+
+Example: penalty=4.0, factor=0.5, steps=3
+- Step 0 (reversal): -4.0
+- Step 1: -2.0
+- Step 2: -1.0
+
+**Sweep Analysis**: Decay model alone is mathematically insufficient to demote observed reversal scores (would require penalty ≈ 8−12). Primary value is educational — demonstrates why threshold adjustment or veto is necessary.
+
+#### Configuration & Tuning
+
+Within `config/signal_policy.py` → `CONFIRMATION_FILTER_CONFIG`:
+```python
+"reversal_veto_steps": 1,                               # NEW (recommended: 1)
+"direction_change_penalty": 0.0,                         # NEW
+"direction_change_decay_steps": 0,                        # NEW
+"direction_change_decay_factor": 0.5,                     # NEW
+```
+
+All are automatically exposed in the tuning registry under `confirmation_filter.core.*` and can be searched/swept:
+```bash
+python tuning/search.py --param confirmation_filter.core.reversal_veto_steps \
+  --min 0 --max 6 --step 1 --objective flip_persist_ratio
+```
+
+#### Analysis & Artifacts
+
+Comprehensive sweep analysis available:
+- `research/reviews/direction_confirmation_stickiness_2026-03-23/reversal_veto_sweep.csv` — full 1D veto sweep
+- `research/reviews/direction_confirmation_stickiness_2026-03-23/direction_change_decay_sweep.csv` — 2D decay model sweep
+- `research/reviews/direction_confirmation_stickiness_2026-03-23/direction_confirmation_stickiness_memo.md` — detailed findings
+
+Run fresh analysis:
+```bash
+python scripts/analyze_direction_confirmation_stickiness.py
+```
+
+This generates CSV artifacts plus detailed markdown memo covering:
+- Baseline confirmation stickiness metrics
+- Reversal persistence analysis
+- Sweep results for all three mechanisms
+- Margin analysis explaining why single-penalty fails
+
+#### Implementation Notes
+
+- `reversal_age` is threaded through: `generate_trade()` → `_compute_signal_state()` → `compute_confirmation_filters()`
+- Default value is `None` everywhere (backward compatible, no behavioral change unless explicitly tuned)
+- Veto is applied after all other confirmation factors (open, close, flow, hedge, gamma, etc.) are scored
+- Veto forces `status = "MIXED"` if the computed rank would be STRONG/CONFIRMED within the grace window
+- All three mechanisms coexist and are independent (can mix/match for research)
+
+#### Test Coverage
+
+All three mechanisms are unit-tested:
+```bash
+python -m pytest tests/test_confirmation_filters.py::test_reversal_veto_forces_mixed_on_reversal_snapshot -v
+python -m pytest tests/test_confirmation_filters.py::test_direction_change_penalty_reduces_confirmation_score_on_reversal -v
+python -m pytest tests/test_confirmation_filters.py::test_post_reversal_decay_applies_at_step_1 -v
+```
 
 ### Research Flow
 

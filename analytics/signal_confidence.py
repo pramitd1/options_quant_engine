@@ -95,6 +95,10 @@ def _market_stability_component(trade: dict) -> float:
 
     risk_state = str(trade.get("global_risk_state") or "").upper().strip()
     risk_map = {
+        "RISK_ON": 90,
+        "GLOBAL_NEUTRAL": 70,
+        "RISK_OFF": 25,
+        "EVENT_LOCKDOWN": 10,
         "LOW_RISK": 95,
         "MODERATE_RISK": 70,
         "ELEVATED_RISK": 40,

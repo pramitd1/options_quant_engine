@@ -38,6 +38,8 @@ from config.settings import (
 )
 
 from app.engine_runner import run_engine_snapshot
+from config.policy_resolver import suggest_regime_pack, set_active_parameter_pack
+from notifications.telegram_alert import maybe_alert as _telegram_maybe_alert
 from app.terminal_output import render_snapshot
 from data.data_source_router import DataSourceRouter
 from data.replay_loader import save_option_chain_snapshot
@@ -889,6 +891,7 @@ def main():
     saved_one_spot_snapshot = False
     saved_one_option_chain_snapshot = False
     replay_paths_printed = False
+    _prev_trade_status: str | None = None
 
     try:
         while True:
@@ -1002,6 +1005,20 @@ def main():
             )
 
             previous_chain = option_chain_frame.copy()
+
+            # Telegram push alert on meaningful state transitions.
+            if trade_for_display and isinstance(trade_for_display, dict):
+                _telegram_maybe_alert(trade_for_display, prev_status=_prev_trade_status)
+                _prev_trade_status = str(trade_for_display.get("trade_status") or "")
+
+            # Regime-conditional auto-switching: suggest a new parameter pack
+            # based on the gamma + vol regime resolved in this snapshot.
+            if trade_for_display and isinstance(trade_for_display, dict):
+                _gamma_r = trade_for_display.get("gamma_regime")
+                _vol_r = trade_for_display.get("vol_surface_regime")
+                _suggested_pack = suggest_regime_pack(_gamma_r, _vol_r)
+                if _suggested_pack:
+                    set_active_parameter_pack(_suggested_pack)
 
             if args.replay:
                 break

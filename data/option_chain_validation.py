@@ -173,7 +173,7 @@ def _as_bool(value, default=False):
     return default
 
 
-def validate_option_chain(option_chain):
+def validate_option_chain(option_chain, spot=None):
     """
     Purpose:
         Process validate option chain for downstream use.
@@ -349,6 +349,13 @@ def validate_option_chain(option_chain):
     if has_quote_columns:
         quote_health = "GOOD" if quoted_ratio >= 0.55 else "CAUTION" if quoted_ratio >= 0.35 else "WEAK"
 
+    def _health_from_ratio(value, good_floor, caution_floor):
+        if value >= good_floor:
+            return "GOOD"
+        if value >= caution_floor:
+            return "CAUTION"
+        return "WEAK"
+
     provider_health = {
         "source": source,
         "row_health": "GOOD" if row_count >= 120 else "THIN" if row_count >= 60 else "WEAK",
@@ -359,16 +366,162 @@ def validate_option_chain(option_chain):
         "trade_price_health": trade_price_health,
         "quote_health": quote_health,
         "pricing_basis": "TRADE_OR_QUOTE" if has_quote_columns else "TRADE_ONLY",
-        "quote_coverage_mode": "TWO_SIDED" if has_two_sided_quote_columns else "ONE_SIDED",
+        "quote_coverage_mode": (
+            "TWO_SIDED"
+            if has_two_sided_quote_columns and bid_present_rows > 0 and ask_present_rows > 0
+            else "STRUCT_ONLY"
+            if has_two_sided_quote_columns
+            else "ONE_SIDED"
+        ),
         "pairing_health": "GOOD" if paired_strike_ratio >= 0.75 else "CAUTION" if paired_strike_ratio >= 0.5 else "WEAK",
         "iv_health": "GOOD" if iv_ratio >= 0.4 else "CAUTION" if iv_ratio >= 0.15 else "WEAK",
         "duplicate_health": "GOOD" if duplicate_ratio == 0 else "CAUTION" if duplicate_ratio <= 0.05 else "WEAK",
         "summary_status": "GOOD",
         "row_health_escalation_applied": False,
     }
-    if "WEAK" in provider_health.values():
+
+    # Core marketability checks approximate execution-critical quality by focusing
+    # on strikes nearest to spot (or strike median when spot is unavailable).
+    core_valid = strike_series.notna() & option_type_series.isin(["CE", "PE"])
+    if core_valid.any():
+        if spot is None:
+            try:
+                spot = float(strike_series.dropna().median())
+            except Exception:
+                spot = None
+
+        if spot is None:
+            core_distance = (strike_series - float(strike_series.dropna().median())).abs()
+        else:
+            core_distance = (strike_series - float(spot)).abs()
+
+        core_window_points = float(
+            get_parameter_value(
+                "option_chain_validation.provider_health.core_window_points",
+                400.0,
+            )
+        )
+        core_min_rows = int(
+            float(
+                get_parameter_value(
+                    "option_chain_validation.provider_health.core_min_rows",
+                    40.0,
+                )
+            )
+        )
+
+        core_mask = core_valid & core_distance.le(core_window_points)
+        if int(core_mask.sum()) < max(core_min_rows, 10):
+            nearest_rank = core_distance.where(core_valid).rank(method="first", ascending=True)
+            core_mask = core_valid & nearest_rank.le(max(core_min_rows, 10))
+    else:
+        core_mask = pd.Series(False, index=option_chain.index)
+
+    core_rows = int(core_mask.sum())
+    core_priced_rows = int((last_price_series.gt(0) & core_mask).sum()) if core_rows > 0 else 0
+    core_quoted_rows = int((quoted_mask & core_mask).sum()) if (core_rows > 0 and has_quote_columns) else 0
+    core_effective_priced_rows = max(core_priced_rows, core_quoted_rows)
+    core_effective_priced_ratio = round(core_effective_priced_rows / max(core_rows, 1), 4) if core_rows > 0 else 0.0
+    core_iv_rows = int((iv_series.gt(0) & core_mask).sum()) if core_rows > 0 else 0
+    core_iv_ratio = round(core_iv_rows / max(core_rows, 1), 4) if core_rows > 0 else 0.0
+
+    core_paired_ratio = 0.0
+    core_one_sided_ratio = 0.0
+    if core_rows > 0:
+        core_strike_df = pd.DataFrame(
+            {
+                "strike": strike_series.where(core_mask),
+                "option_type": option_type_series.where(core_mask),
+            }
+        ).dropna(subset=["strike"])
+        if not core_strike_df.empty:
+            core_strike_count = int(core_strike_df["strike"].nunique())
+            core_type_counts = core_strike_df.groupby("strike")["option_type"].nunique()
+            core_paired_count = int(core_type_counts.ge(2).sum())
+            core_paired_ratio = round(core_paired_count / max(core_strike_count, 1), 4)
+
+        if has_two_sided_quote_columns:
+            core_one_sided = int(((bid_present_mask ^ ask_present_mask) & core_mask).sum())
+            core_one_sided_ratio = round(core_one_sided / max(core_rows, 1), 4)
+
+    core_marketability_health = _health_from_ratio(core_effective_priced_ratio, 0.65, 0.45)
+    core_pairing_health = _health_from_ratio(core_paired_ratio, 0.85, 0.65)
+    core_iv_health = _health_from_ratio(core_iv_ratio, 0.50, 0.25)
+    if has_two_sided_quote_columns:
+        core_quote_integrity_health = (
+            "GOOD"
+            if core_one_sided_ratio <= 0.20
+            else "CAUTION"
+            if core_one_sided_ratio <= 0.45
+            else "WEAK"
+        )
+    else:
+        core_quote_integrity_health = "N/A"
+
+    provider_health.update(
+        {
+            "core_rows": core_rows,
+            "core_effective_priced_ratio": core_effective_priced_ratio,
+            "core_paired_ratio": core_paired_ratio,
+            "core_iv_ratio": core_iv_ratio,
+            "core_one_sided_quote_ratio": core_one_sided_ratio if has_two_sided_quote_columns else None,
+            "core_marketability_health": core_marketability_health,
+            "core_pairing_health": core_pairing_health,
+            "core_iv_health": core_iv_health,
+            "core_quote_integrity_health": core_quote_integrity_health,
+        }
+    )
+
+    critical_failures = []
+    if core_marketability_health == "WEAK":
+        critical_failures.append("core_marketability_weak")
+    if core_pairing_health == "WEAK":
+        critical_failures.append("core_pairing_weak")
+    if core_iv_health == "WEAK":
+        critical_failures.append("core_iv_weak")
+    quote_integrity_standalone_block = _as_bool(
+        get_parameter_value(
+            "option_chain_validation.provider_health.core_quote_integrity_standalone_block",
+            False,
+        ),
+        default=False,
+    )
+    if has_two_sided_quote_columns and core_quote_integrity_health == "WEAK":
+        # One-sided quote books in fast markets can coexist with actionable trade prints.
+        # Treat quote-integrity weakness as blocking only when marketability is already weak,
+        # unless strict standalone blocking is explicitly enabled.
+        if quote_integrity_standalone_block or core_marketability_health == "WEAK":
+            critical_failures.append("core_quote_integrity_weak")
+
+    provider_health["trade_blocking_status"] = "BLOCK" if critical_failures else "PASS"
+    provider_health["trade_blocking_reasons"] = critical_failures
+
+    # Summary status should be driven by core execution-critical checks.
+    # Non-critical subchecks (e.g. trade-only/quote-only weakness in tail strikes)
+    # are still emitted for diagnostics but do not force a WEAK summary.
+    _summary_core_keys = [
+        "row_health",
+        "pricing_health",
+        "pairing_health",
+        "iv_health",
+        "duplicate_health",
+        "core_marketability_health",
+        "core_pairing_health",
+        "core_iv_health",
+    ]
+    if has_two_sided_quote_columns:
+        _summary_core_keys.append("core_quote_integrity_health")
+    _summary_core_values = [provider_health.get(k) for k in _summary_core_keys]
+
+    _non_critical_weak_keys = []
+    for _k in ("trade_price_health", "quote_health"):
+        if provider_health.get(_k) == "WEAK":
+            _non_critical_weak_keys.append(_k)
+    provider_health["non_critical_weak_components"] = _non_critical_weak_keys
+
+    if "WEAK" in _summary_core_values:
         provider_health["summary_status"] = "WEAK"
-    elif "CAUTION" in provider_health.values():
+    elif "CAUTION" in _summary_core_values:
         provider_health["summary_status"] = "CAUTION"
 
     # Optional strictness toggle for thin chains: when enabled, a THIN row

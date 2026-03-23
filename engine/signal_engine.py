@@ -56,6 +56,7 @@ from risk.option_efficiency_layer import score_option_efficiency_candidate
 from strategy.budget_optimizer import optimize_lots
 from strategy.exit_model import calculate_exit, compute_exit_timing
 from strategy.strike_selector import select_best_strike
+from engine.decision_journal import append_decision as _journal_append_decision
 
 
 def _as_upper(value):
@@ -280,6 +281,22 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
 
     activation_score = 0
     acfg = get_activation_score_policy_config()
+    fallback_acfg = {
+        "confirmation_score_strong": 90,
+        "confirmation_score_mixed": 55,
+        "confirmation_score_conflict": 25,
+        "confirmation_score_no_direction": 10,
+        "data_ready_strong": 90,
+        "data_ready_good": 75,
+        "data_ready_caution": 50,
+        "data_ready_weak": 30,
+        "maturity_weight_trade_strength": 0.50,
+        "maturity_weight_confirmation": 0.30,
+        "maturity_weight_data_ready": 0.20,
+        "high_confidence_data_ready_floor": 75,
+        "high_confidence_confirmation_floor": 70,
+        "medium_confidence_data_ready_floor": 55,
+    }
     
     # Guard: config may be None if resolution fails; use fallback
     if acfg is None:
@@ -303,36 +320,36 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
 
     confirmation_score = 0
     if confirmation_status in {"STRONG_CONFIRMATION", "CONFIRMED"}:
-        confirmation_score = acfg.confirmation_score_strong
+        confirmation_score = acfg.confirmation_score_strong if acfg is not None else fallback_acfg["confirmation_score_strong"]
     elif confirmation_status == "MIXED":
-        confirmation_score = acfg.confirmation_score_mixed
+        confirmation_score = acfg.confirmation_score_mixed if acfg is not None else fallback_acfg["confirmation_score_mixed"]
     elif confirmation_status == "CONFLICT":
-        confirmation_score = acfg.confirmation_score_conflict
+        confirmation_score = acfg.confirmation_score_conflict if acfg is not None else fallback_acfg["confirmation_score_conflict"]
     elif confirmation_status == "NO_DIRECTION":
-        confirmation_score = acfg.confirmation_score_no_direction
+        confirmation_score = acfg.confirmation_score_no_direction if acfg is not None else fallback_acfg["confirmation_score_no_direction"]
 
-    data_ready_score = acfg.data_ready_strong
+    data_ready_score = acfg.data_ready_strong if acfg is not None else fallback_acfg["data_ready_strong"]
     if data_quality_status == "GOOD":
-        data_ready_score = acfg.data_ready_good
+        data_ready_score = acfg.data_ready_good if acfg is not None else fallback_acfg["data_ready_good"]
     elif data_quality_status == "CAUTION":
-        data_ready_score = acfg.data_ready_caution
+        data_ready_score = acfg.data_ready_caution if acfg is not None else fallback_acfg["data_ready_caution"]
     elif data_quality_status == "WEAK":
-        data_ready_score = acfg.data_ready_weak
+        data_ready_score = acfg.data_ready_weak if acfg is not None else fallback_acfg["data_ready_weak"]
 
     maturity_score = int(
         _clip(
-            (acfg.maturity_weight_trade_strength * trade_strength)
-            + (acfg.maturity_weight_confirmation * confirmation_score)
-            + (acfg.maturity_weight_data_ready * data_ready_score),
+            ((acfg.maturity_weight_trade_strength if acfg is not None else fallback_acfg["maturity_weight_trade_strength"]) * trade_strength)
+            + ((acfg.maturity_weight_confirmation if acfg is not None else fallback_acfg["maturity_weight_confirmation"]) * confirmation_score)
+            + ((acfg.maturity_weight_data_ready if acfg is not None else fallback_acfg["maturity_weight_data_ready"]) * data_ready_score),
             0,
             100,
         )
     )
 
     explainability_confidence = "LOW"
-    if data_ready_score >= acfg.high_confidence_data_ready_floor and confirmation_score >= acfg.high_confidence_confirmation_floor:
+    if data_ready_score >= (acfg.high_confidence_data_ready_floor if acfg is not None else fallback_acfg["high_confidence_data_ready_floor"]) and confirmation_score >= (acfg.high_confidence_confirmation_floor if acfg is not None else fallback_acfg["high_confidence_confirmation_floor"]):
         explainability_confidence = "HIGH"
-    elif data_ready_score >= acfg.medium_confidence_data_ready_floor:
+    elif data_ready_score >= (acfg.medium_confidence_data_ready_floor if acfg is not None else fallback_acfg["medium_confidence_data_ready_floor"]):
         explainability_confidence = "MEDIUM"
 
     missing_requirements = []
@@ -445,13 +462,16 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
         elif trade_status == "WATCHLIST":
             watchlist_flag = True
             provider_health_summary = _as_upper(payload.get("provider_health_summary"))
+            provider_health_payload = payload.get("provider_health") if isinstance(payload.get("provider_health"), dict) else {}
+            provider_health_blocking_status = _as_upper(provider_health_payload.get("trade_blocking_status"))
             global_risk_overlay_reasons = {
                 _as_upper(reason)
                 for reason in (payload.get("global_risk_overlay_reasons") or [])
                 if reason is not None
             }
             provider_health_blocked = (
-                provider_health_summary in {"CAUTION", "WEAK"}
+                provider_health_blocking_status == "BLOCK"
+                or (not provider_health_blocking_status and provider_health_summary in {"CAUTION", "WEAK"})
                 or bool(incoming_no_trade_reason_code and incoming_no_trade_reason_code.startswith("PROVIDER_HEALTH_"))
                 or "PROVIDER_HEALTH_CAUTION" in global_risk_overlay_reasons
                 or "PROVIDER_HEALTH_WEAK" in global_risk_overlay_reasons
@@ -655,6 +675,8 @@ def generate_trade(
     spot,
     option_chain,
     previous_chain=None,
+    previous_direction=None,
+    reversal_age=None,
     day_high=None,
     day_low=None,
     day_open=None,
@@ -795,6 +817,8 @@ def generate_trade(
     signal_state = _compute_signal_state(
         spot=spot,
         symbol=symbol,
+        previous_direction=previous_direction,
+        reversal_age=reversal_age,
         day_open=day_open,
         prev_close=prev_close,
         intraday_range_pct=intraday_range_pct,
@@ -954,6 +978,26 @@ def generate_trade(
     )
     min_trade_strength = regime_thresholds["effective_min_trade_strength"]
     min_composite_score = regime_thresholds["effective_min_composite_score"]
+
+    # Confidence-weighted gate: relax or tighten min_trade_strength based on
+    # data quality and confirmation alignment, absent of full Platt scaling.
+    if not backtest_mode:
+        _dq_status = _as_upper(data_quality.get("status", ""))
+        _conf_status = _as_upper(confirmation.get("status", ""))
+        _high_confidence = (
+            _dq_status == "GOOD"
+            and _conf_status in {"STRONG_CONFIRMATION", "CONFIRMED"}
+        )
+        _low_confidence = (
+            _dq_status == "WEAK"
+            or _conf_status in {"CONFLICT", "NO_DIRECTION"}
+        )
+        _relief = int(_safe_float(runtime_thresholds.get("high_confidence_strength_relief"), 5.0))
+        _surcharge = int(_safe_float(runtime_thresholds.get("low_confidence_strength_surcharge"), 8.0))
+        if _high_confidence:
+            min_trade_strength = int(_clip(min_trade_strength - _relief, 40, 100))
+        elif _low_confidence:
+            min_trade_strength = int(_clip(min_trade_strength + _surcharge, 0, 100))
 
     provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
     provider_health = provider_health if isinstance(provider_health, dict) else {}
@@ -1313,6 +1357,10 @@ def generate_trade(
         payload["signal_confidence_score"] = confidence["confidence_score"]
         payload["signal_confidence_level"] = confidence["confidence_level"]
 
+        # Immutable audit log — best-effort, never raises.
+        if not backtest_mode:
+            _journal_append_decision(payload, parameter_pack_name=None)
+
         return attach_trade_views(payload)
 
     if global_risk["risk_trade_status"] == "DATA_INVALID":
@@ -1640,8 +1688,19 @@ def generate_trade(
             f"Runtime composite score {runtime_composite_score} below threshold {min_composite_score}",
         )
 
+    provider_health_blocking_status = _as_upper(provider_health.get("trade_blocking_status"))
+    provider_health_blocking_reasons = provider_health.get("trade_blocking_reasons") if isinstance(provider_health.get("trade_blocking_reasons"), list) else []
+
+    if provider_health_blocking_status == "BLOCK":
+        reason_suffix = f" ({', '.join(str(r) for r in provider_health_blocking_reasons)})" if provider_health_blocking_reasons else ""
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            f"Provider health BLOCK routes TRADE to WATCHLIST{reason_suffix}",
+        )
+
     caution_blocks_trade = bool(int(_safe_float(runtime_thresholds.get("provider_health_caution_blocks_trade"), 1.0)))
-    if caution_blocks_trade and provider_health_summary in {"CAUTION", "WEAK"}:
+    if caution_blocks_trade and not provider_health_blocking_status and provider_health_summary in {"CAUTION", "WEAK"}:
         return _finalize(
             base_payload,
             "WATCHLIST",

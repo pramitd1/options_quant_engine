@@ -42,6 +42,8 @@ research/parameter_tuning/*.jsonl
 research/parameter_tuning/candidate_packs/
 research/parameter_tuning/reports/
 research/reports/
+research/reviews/
+research/analytics/
 research/runtime_validation/
 research/signal_evaluation/reports/
 research/signal_evaluation/checkpoints/

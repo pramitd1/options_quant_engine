@@ -93,6 +93,12 @@ TRADE_RUNTIME_THRESHOLDS = {
     "regime_composite_add_toxic": 6,
     "gamma_vol_normalization_scale": 100,
     "trade_strength_scoring_mode": "continuous",
+    # Confidence-weighted threshold adjustment.
+    # When data quality is GOOD and confirmation is STRONG, the engine
+    # can require a slightly lower trade strength (relief).  Conversely,
+    # a WEAK/CONFLICTED environment demands a higher bar (surcharge).
+    "high_confidence_strength_relief": 5,
+    "low_confidence_strength_surcharge": 8,
 }
 
 CONFIRMATION_FILTER_CONFIG = {
@@ -101,6 +107,23 @@ CONFIRMATION_FILTER_CONFIG = {
     "continuous_prev_close_alignment": 1,
     "continuous_range_expansion": 1,
     "continuous_move_probability": 1,
+    # Direction reversal control — manages confirmation status stickiness across direction changes.
+    # See documentation/REVERSAL_STICKINESS_CONTROL.md for comprehensive guide.
+    #
+    # Three mechanisms (all tunable, independent):
+    # 1. revers_veto_steps (RECOMMENDED): forces MIXED status for N snapshots after reversal
+    # 2. direction_change_penalty: fixed score deduction on reversal snapshot (0-6 points)
+    # 3. post-reversal decay: extend penalty across N steps with geometric decay
+    #
+    # Sweep findings (live NIFTY data, 13 reversals):
+    #   reversal_veto_steps=0: flip_persist_ratio=1.0  (baseline problem)
+    #   reversal_veto_steps=1: flip_persist_ratio=0.0  (optimum: 100% stickiness eliminated)
+    #   reversal_veto_steps=2+: flip_persist_ratio=0.0 (no additional benefit)
+    #
+    "direction_change_penalty": 0.0,  # Bounded to [0.0, 6.0]
+    "direction_change_decay_steps": 0,  # Post-reversal decay window (0 disables)
+    "direction_change_decay_factor": 0.5,  # Decay multiplier per step (0.0-1.0)
+    "reversal_veto_steps": 1,  # RECOMMENDED: 1-step grace period on reversals (0 disables)
     "strong_confirmation_threshold": 6,
     "confirmed_threshold": 2,
     "mixed_threshold": -3,

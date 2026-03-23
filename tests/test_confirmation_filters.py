@@ -74,3 +74,133 @@ def test_confirmation_status_label_consistent_with_score_in_continuous_mode():
     assert result["status"] in valid_statuses, f"Unexpected status: {result['status']}"
     # A strongly confirmed setup should not return CONFLICT
     assert result["status"] != "CONFLICT", "Strongly aligned PUT setup should not be CONFLICT"
+
+
+def test_direction_change_penalty_reduces_confirmation_score_on_reversal():
+    with temporary_parameter_pack(
+        "no_reversal_penalty",
+        overrides={"confirmation_filter.core.direction_change_penalty": 0.0},
+    ):
+        baseline = compute_confirmation_filters(**_BEARISH_KWARGS, previous_direction="CALL")
+
+    with temporary_parameter_pack(
+        "with_reversal_penalty",
+        overrides={"confirmation_filter.core.direction_change_penalty": 4.0},
+    ):
+        penalized = compute_confirmation_filters(**_BEARISH_KWARGS, previous_direction="CALL")
+
+    assert penalized["score_adjustment"] == baseline["score_adjustment"] - 4.0
+    assert penalized["breakdown"]["direction_change_penalty"] == -4.0
+    assert "direction_change_penalty_applied" in penalized["reasons"]
+
+
+def test_direction_change_penalty_is_clamped_to_bounded_range():
+    with temporary_parameter_pack(
+        "clamped_reversal_penalty",
+        overrides={"confirmation_filter.core.direction_change_penalty": 99.0},
+    ):
+        penalized = compute_confirmation_filters(**_BEARISH_KWARGS, previous_direction="CALL")
+
+    assert penalized["breakdown"]["direction_change_penalty"] == -6.0
+
+
+def test_post_reversal_decay_applies_at_step_1():
+    """After a direction flip (reversal_age=1), a decayed penalty reduces the score."""
+    with temporary_parameter_pack(
+        "no_decay",
+        overrides={
+            "confirmation_filter.core.direction_change_penalty": 4.0,
+            "confirmation_filter.core.direction_change_decay_steps": 0,
+        },
+    ):
+        no_decay = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=1)
+
+    with temporary_parameter_pack(
+        "with_decay",
+        overrides={
+            "confirmation_filter.core.direction_change_penalty": 4.0,
+            "confirmation_filter.core.direction_change_decay_steps": 3,
+            "confirmation_filter.core.direction_change_decay_factor": 0.5,
+        },
+    ):
+        decayed = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=1)
+
+    # decay at step-1 = 4.0 * 0.5^1 = 2.0
+    assert decayed["breakdown"]["direction_change_decay_penalty"] == -2.0
+    assert decayed["score_adjustment"] == no_decay["score_adjustment"] - 2.0
+    assert "direction_change_decay_applied" in decayed["reasons"]
+
+
+def test_post_reversal_decay_stops_after_decay_steps():
+    """Decay penalty is not applied when reversal_age exceeds direction_change_decay_steps."""
+    with temporary_parameter_pack(
+        "beyond_window",
+        overrides={
+            "confirmation_filter.core.direction_change_penalty": 4.0,
+            "confirmation_filter.core.direction_change_decay_steps": 2,
+            "confirmation_filter.core.direction_change_decay_factor": 0.5,
+        },
+    ):
+        beyond = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=3)
+
+    assert beyond["breakdown"]["direction_change_decay_penalty"] == 0.0
+    assert "direction_change_decay_applied" not in beyond["reasons"]
+
+
+def test_decay_factor_clamped_between_0_and_1():
+    """direction_change_decay_factor outside [0,1] is silently clamped."""
+    with temporary_parameter_pack(
+        "decay_clamp",
+        overrides={
+            "confirmation_filter.core.direction_change_penalty": 4.0,
+            "confirmation_filter.core.direction_change_decay_steps": 2,
+            "confirmation_filter.core.direction_change_decay_factor": 5.0,  # should clamp to 1.0
+        },
+    ):
+        result = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=1)
+
+    # decay_factor clamped to 1.0 → effective penalty = 4.0 * 1.0^1 = 4.0
+    assert result["breakdown"]["direction_change_decay_penalty"] == -4.0
+
+
+def test_reversal_veto_forces_mixed_on_reversal_snapshot():
+    """When reversal_veto_steps > 0 and reversal_age=0 (the flip), status is forced to MIXED."""
+    with temporary_parameter_pack(
+        "with_veto",
+        overrides={"confirmation_filter.core.reversal_veto_steps": 2},
+    ):
+        result = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=0)
+
+    # Even though the baseline is STRONG_CONFIRMATION, the veto forces MIXED
+    assert result["status"] == "MIXED"
+    assert "reversal_grace_period_active" in result["reasons"]
+
+
+def test_reversal_veto_forces_mixed_during_grace_period():
+    """Veto applies to post-reversal snapshots within the grace window."""
+    with temporary_parameter_pack(
+        "with_veto",
+        overrides={"confirmation_filter.core.reversal_veto_steps": 3},
+    ):
+        at_step_1 = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=1)
+        at_step_2 = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=2)
+        at_step_3 = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=3)
+
+    assert at_step_1["status"] == "MIXED"
+    assert at_step_2["status"] == "MIXED"
+    assert at_step_3["status"] != "MIXED"  # beyond grace window
+    assert "reversal_grace_period_active" in at_step_1["reasons"]
+    assert "reversal_grace_period_active" in at_step_2["reasons"]
+
+
+def test_reversal_veto_inactive_when_disabled():
+    """With reversal_veto_steps=0, no veto is applied."""
+    with temporary_parameter_pack(
+        "veto_disabled",
+        overrides={"confirmation_filter.core.reversal_veto_steps": 0},
+    ):
+        result = compute_confirmation_filters(**_BEARISH_KWARGS, reversal_age=0)
+
+    # Should not be forced to MIXED
+    assert result["status"] != "MIXED"
+    assert "reversal_grace_period_active" not in result["reasons"]

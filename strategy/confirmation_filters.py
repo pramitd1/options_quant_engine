@@ -47,6 +47,36 @@ def _linear_interp(value, lo, hi, out_lo, out_hi):
     return float(out_lo) + (float(out_hi) - float(out_lo)) * t
 
 
+def _bounded_direction_change_penalty(cfg):
+    penalty = _safe_float(cfg.get("direction_change_penalty"), 0.0)
+    if penalty is None:
+        return 0.0
+    return max(0.0, min(6.0, float(penalty)))
+
+
+def _bounded_decay_factor(cfg):
+    factor = _safe_float(cfg.get("direction_change_decay_factor"), 0.5)
+    if factor is None:
+        return 0.5
+    return max(0.0, min(1.0, float(factor)))
+
+
+def _bounded_decay_steps(cfg):
+    try:
+        steps = int(float(cfg.get("direction_change_decay_steps") or 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(20, steps))
+
+
+def _bounded_reversal_veto_steps(cfg):
+    try:
+        steps = int(float(cfg.get("reversal_veto_steps") or 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(20, steps))
+
+
 def _signed_alignment_score(signed_edge, support_score, conflict_score, scale):
     """Map signed directional edge into a smooth support/conflict score."""
     if signed_edge is None:
@@ -89,6 +119,8 @@ def compute_confirmation_filters(
     direction,
     spot,
     symbol=None,
+    previous_direction=None,
+    reversal_age=None,
     day_open=None,
     prev_close=None,
     intraday_range_pct=None,
@@ -120,6 +152,8 @@ def compute_confirmation_filters(
         "move_probability_confirmation_score": 0.0,
         "flip_alignment_score": 0.0,
         "flip_zone_gamma_score": 0.0,
+        "direction_change_penalty": 0.0,
+        "direction_change_decay_penalty": 0.0,
     }
 
     reasons = []
@@ -397,6 +431,45 @@ def compute_confirmation_filters(
 
     total = sum(breakdown.values())
 
+    previous_direction_clean = str(previous_direction or "").strip().upper()
+    reversal_detected = (
+        previous_direction_clean in {"CALL", "PUT"}
+        and direction in {"CALL", "PUT"}
+        and previous_direction_clean != direction
+    )
+
+    # Step-0: immediate reversal penalty (existing behaviour, unchanged)
+    if reversal_detected:
+        direction_change_penalty = _bounded_direction_change_penalty(cfg)
+        if direction_change_penalty > 0:
+            breakdown["direction_change_penalty"] = -direction_change_penalty
+            total -= direction_change_penalty
+            reasons.append("direction_change_penalty_applied")
+
+    # Steps 1..N: post-reversal decay — apply only when the caller supplies
+    # reversal_age (an integer counting how many snapshots ago the flip
+    # happened).  reversal_age=0 is the flip snapshot itself; the decay
+    # window starts at reversal_age=1.
+    decay_steps = _bounded_decay_steps(cfg)
+    if (
+        not reversal_detected
+        and reversal_age is not None
+        and decay_steps > 0
+    ):
+        try:
+            age = int(reversal_age)
+        except (TypeError, ValueError):
+            age = None
+        if age is not None and 1 <= age <= decay_steps:
+            base_penalty = _bounded_direction_change_penalty(cfg)
+            if base_penalty > 0:
+                decay_factor = _bounded_decay_factor(cfg)
+                effective = base_penalty * (decay_factor ** age)
+                if effective > 0.0:
+                    breakdown["direction_change_decay_penalty"] = -round(effective, 4)
+                    total -= effective
+                    reasons.append("direction_change_decay_applied")
+
     # Veto logic: only for strong directional conflict clusters.
     hard_conflicts = 0
     if breakdown["open_alignment_score"] < 0:
@@ -411,6 +484,26 @@ def compute_confirmation_filters(
     ):
         veto = True
         reasons.append("confirmation_veto_due_to_multi_factor_conflict")
+
+    # Reversal grace period veto: force MIXED status for N snapshots
+    # starting from the reversal itself (reversal_age=0).
+    veto_steps = _bounded_reversal_veto_steps(cfg)
+    if veto_steps > 0 and reversal_age is not None:
+        try:
+            age = int(reversal_age)
+        except (TypeError, ValueError):
+            age = None
+        if age is not None and 0 <= age < veto_steps:
+            computed_status = _sign_label(total, cfg)
+            if computed_status in {"STRONG_CONFIRMATION", "CONFIRMED"}:
+                reasons.append("reversal_grace_period_active")
+                return {
+                    "score_adjustment": round(float(total), 2),
+                    "status": "MIXED",
+                    "veto": veto,
+                    "reasons": reasons,
+                    "breakdown": breakdown,
+                }
 
     return {
         "score_adjustment": round(float(total), 2),

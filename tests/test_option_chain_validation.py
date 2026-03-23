@@ -162,5 +162,150 @@ class OptionChainValidationTests(unittest.TestCase):
         self.assertEqual(toggle_result["provider_health"]["summary_status"], "CAUTION")
         self.assertTrue(toggle_result["provider_health"]["row_health_escalation_applied"])
 
+    def test_non_critical_trade_price_weakness_does_not_force_summary_weak(self):
+        """When quote coverage is strong but trade prints are sparse, summary should
+        stay core-driven and avoid WEAK solely from trade_price_health."""
+        rows = []
+        for s in range(22000, 25000, 25):
+            rows.append({
+                "strikePrice": s,
+                "OPTION_TYP": "CE",
+                "lastPrice": 0,
+                "bidPrice": 99,
+                "askPrice": 101,
+                "impliedVolatility": 18,
+                "EXPIRY_DT": "2026-03-26",
+            })
+            rows.append({
+                "strikePrice": s,
+                "OPTION_TYP": "PE",
+                "lastPrice": 0,
+                "bidPrice": 109,
+                "askPrice": 111,
+                "impliedVolatility": 19,
+                "EXPIRY_DT": "2026-03-26",
+            })
+        df = pd.DataFrame(rows)
+
+        result = validate_option_chain(df)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["trade_price_health"], "WEAK")
+        self.assertEqual(ph["quote_health"], "GOOD")
+        self.assertEqual(ph["pricing_health"], "GOOD")
+        self.assertEqual(ph["summary_status"], "GOOD")
+        self.assertIn("trade_price_health", ph["non_critical_weak_components"])
+        self.assertEqual(ph["trade_blocking_status"], "PASS")
+        self.assertEqual(ph["trade_blocking_reasons"], [])
+
+    def test_critical_core_pairing_weak_sets_trade_blocking_status_block(self):
+        rows = []
+        # Dense but one-sided option types around core strikes -> critical pairing weakness.
+        for s in range(22400, 22800, 25):
+            rows.append({
+                "strikePrice": s,
+                "OPTION_TYP": "CE",
+                "lastPrice": 100,
+                "bidPrice": 99,
+                "askPrice": 101,
+                "impliedVolatility": 18,
+                "EXPIRY_DT": "2026-03-26",
+            })
+        # Add some distant PE rows that should not rescue core pairing.
+        for s in range(24000, 24400, 50):
+            rows.append({
+                "strikePrice": s,
+                "OPTION_TYP": "PE",
+                "lastPrice": 10,
+                "bidPrice": 9,
+                "askPrice": 11,
+                "impliedVolatility": 22,
+                "EXPIRY_DT": "2026-03-26",
+            })
+        df = pd.DataFrame(rows)
+
+        result = validate_option_chain(df, spot=22600)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["core_pairing_health"], "WEAK")
+        self.assertEqual(ph["trade_blocking_status"], "BLOCK")
+        self.assertIn("core_pairing_weak", ph["trade_blocking_reasons"])
+
+    def test_core_quote_integrity_weak_is_non_blocking_when_marketability_is_good(self):
+        rows = []
+        # Fully priced chain, but one-sided quotes in core window.
+        for s in range(22400, 22800, 25):
+            rows.append(
+                {
+                    "strikePrice": s,
+                    "OPTION_TYP": "CE",
+                    "lastPrice": 100,
+                    "bidPrice": 99,
+                    "askPrice": 0,
+                    "impliedVolatility": 18,
+                    "EXPIRY_DT": "2026-03-26",
+                }
+            )
+            rows.append(
+                {
+                    "strikePrice": s,
+                    "OPTION_TYP": "PE",
+                    "lastPrice": 110,
+                    "bidPrice": 109,
+                    "askPrice": 0,
+                    "impliedVolatility": 19,
+                    "EXPIRY_DT": "2026-03-26",
+                }
+            )
+        df = pd.DataFrame(rows)
+
+        result = validate_option_chain(df, spot=22600)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["core_quote_integrity_health"], "WEAK")
+        self.assertEqual(ph["core_marketability_health"], "GOOD")
+        self.assertEqual(ph["trade_blocking_status"], "PASS")
+        self.assertNotIn("core_quote_integrity_weak", ph["trade_blocking_reasons"])
+
+    def test_core_quote_integrity_weak_can_block_in_strict_mode(self):
+        rows = []
+        for s in range(22400, 22800, 25):
+            rows.append(
+                {
+                    "strikePrice": s,
+                    "OPTION_TYP": "CE",
+                    "lastPrice": 100,
+                    "bidPrice": 99,
+                    "askPrice": 0,
+                    "impliedVolatility": 18,
+                    "EXPIRY_DT": "2026-03-26",
+                }
+            )
+            rows.append(
+                {
+                    "strikePrice": s,
+                    "OPTION_TYP": "PE",
+                    "lastPrice": 110,
+                    "bidPrice": 109,
+                    "askPrice": 0,
+                    "impliedVolatility": 19,
+                    "EXPIRY_DT": "2026-03-26",
+                }
+            )
+        df = pd.DataFrame(rows)
+
+        with temporary_parameter_pack(
+            "quote_integrity_strict_block_test",
+            overrides={
+                "option_chain_validation.provider_health.core_quote_integrity_standalone_block": 1,
+            },
+        ):
+            result = validate_option_chain(df, spot=22600)
+
+        ph = result["provider_health"]
+        self.assertEqual(ph["core_quote_integrity_health"], "WEAK")
+        self.assertEqual(ph["trade_blocking_status"], "BLOCK")
+        self.assertIn("core_quote_integrity_weak", ph["trade_blocking_reasons"])
+
 if __name__ == "__main__":
     unittest.main()

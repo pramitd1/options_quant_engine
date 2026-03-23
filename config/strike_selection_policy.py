@@ -75,6 +75,12 @@ STRIKE_SELECTION_SCORE_CONFIG = {
     "iv_mid_score": 1,
     "iv_high_penalty": -2,
     "strike_window_steps": 8,
+    # Bid-ask spread quality: penalise wide spreads relative to mid-price.
+    # spread_ratio = (ask - bid) / mid.  Above the threshold, apply the penalty.
+    "ba_spread_ratio_threshold": 0.04,
+    "ba_spread_ratio_wide": 0.10,
+    "ba_spread_narrow_bonus": 1,
+    "ba_spread_wide_penalty": -3,
 }
 
 

@@ -1,0 +1,15 @@
+{
+    "_comment": "Regime-conditional parameter auto-switching map.",
+    "_format": "(gamma_regime, vol_regime) -> parameter_pack_name.  Use '*' as a wildcard for either dimension.",
+    "enabled": false,
+    "fallback_pack": "baseline_v1",
+    "map": [
+        {"gamma_regime": "NEGATIVE_GAMMA", "vol_regime": "HIGH_VOL",    "pack": "baseline_v1"},
+        {"gamma_regime": "NEGATIVE_GAMMA", "vol_regime": "NORMAL_VOL",  "pack": "baseline_v1"},
+        {"gamma_regime": "NEGATIVE_GAMMA", "vol_regime": "LOW_VOL",     "pack": "baseline_v1"},
+        {"gamma_regime": "POSITIVE_GAMMA", "vol_regime": "HIGH_VOL",    "pack": "baseline_v1"},
+        {"gamma_regime": "POSITIVE_GAMMA", "vol_regime": "NORMAL_VOL",  "pack": "baseline_v1"},
+        {"gamma_regime": "POSITIVE_GAMMA", "vol_regime": "LOW_VOL",     "pack": "baseline_v1"},
+        {"gamma_regime": "NEUTRAL_GAMMA",  "vol_regime": "*",           "pack": "baseline_v1"}
+    ]
+}

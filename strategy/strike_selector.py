@@ -140,6 +140,24 @@ def _normalize_candidate_rows(rows: pd.DataFrame) -> pd.DataFrame:
     normalized["_normalized_volume"] = _first_numeric(normalized, "totalTradedVolume", "VOLUME", default=0.0)
     normalized["_normalized_open_interest"] = _first_numeric(normalized, "openInterest", "OPEN_INT", default=0.0)
     normalized["_normalized_iv"] = _first_numeric(normalized, "impliedVolatility", "IV", default=0.0)
+
+    # Bid / ask spread columns (multiple provider aliases supported).
+    def _first_bid_ask(df, *candidates, default=0.0):
+        for col in candidates:
+            if col in df.columns:
+                return pd.to_numeric(df[col], errors="coerce").fillna(default)
+        return pd.Series(default, index=df.index, dtype="float64")
+
+    normalized["_normalized_bid"] = _first_bid_ask(
+        normalized, "bidPrice", "BID_PRICE", "best_bid_price", "bestBidPrice", "bid_price", "bid"
+    )
+    normalized["_normalized_ask"] = _first_bid_ask(
+        normalized, "askPrice", "ASK_PRICE", "best_ask_price", "bestAskPrice", "ask_price", "ask"
+    )
+    mid = (normalized["_normalized_bid"] + normalized["_normalized_ask"]) / 2.0
+    spread = (normalized["_normalized_ask"] - normalized["_normalized_bid"]).clip(lower=0.0)
+    has_spread = (mid > 0) & (normalized["_normalized_bid"] > 0) & (normalized["_normalized_ask"] > 0)
+    normalized["_normalized_ba_spread_ratio"] = (spread / mid.where(mid > 0, 1.0)).where(has_spread, np.nan)
     return normalized[normalized["_normalized_strike"].notna()].copy()
 
 
@@ -602,6 +620,45 @@ def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, 
     return pd.Series(scores, index=strikes.index, dtype="float64")
 
 
+def _score_ba_spread_series(spread_ratio: pd.Series, *, cfg) -> pd.Series:
+    """
+    Score candidate strikes by bid-ask spread quality.
+    Rows where bid/ask was unavailable (NaN spread ratio) receive 0 (neutral).
+    Narrow spreads earn a small bonus; wide spreads earn a penalty.
+    """
+    threshold = float(cfg.get("ba_spread_ratio_threshold", 0.04))
+    wide = float(cfg.get("ba_spread_ratio_wide", 0.10))
+    narrow_bonus = float(cfg.get("ba_spread_narrow_bonus", 1))
+    wide_penalty = float(cfg.get("ba_spread_wide_penalty", -3))
+
+    score = pd.Series(0.0, index=spread_ratio.index, dtype="float64")
+    valid = spread_ratio.notna()
+    if _continuous_mode(cfg):
+        # Below threshold → linearly interpolate from narrow_bonus down to 0
+        left = _linear_decay(
+            value=spread_ratio,
+            lower=0.0,
+            upper=threshold,
+            high_score=narrow_bonus,
+            low_score=0.0,
+        )
+        # Between threshold and wide → decrease toward penalty
+        mid_decay = _linear_decay(
+            value=spread_ratio,
+            lower=threshold,
+            upper=max(wide, threshold + 1e-6),
+            high_score=0.0,
+            low_score=wide_penalty,
+        )
+        score = score.mask(valid & (spread_ratio < threshold), left)
+        score = score.mask(valid & (spread_ratio >= threshold) & (spread_ratio < wide), mid_decay)
+        score = score.mask(valid & (spread_ratio >= wide), wide_penalty)
+    else:
+        score = score.mask(valid & (spread_ratio < threshold), narrow_bonus)
+        score = score.mask(valid & (spread_ratio >= wide), wide_penalty)
+    return score.astype("float64")
+
+
 def _score_iv_series(iv: pd.Series, *, cfg) -> pd.Series:
     """
     Purpose:
@@ -742,6 +799,7 @@ def _score_candidate_frame(
         cfg=cfg,
     )
     scored["_iv_score"] = _score_iv_series(scored["_normalized_iv"], cfg=cfg)
+    scored["_ba_spread_score"] = _score_ba_spread_series(scored["_normalized_ba_spread_ratio"], cfg=cfg)
     scored["_base_score"] = (
         scored["_moneyness_score"]
         + scored["_directional_side_score"]
@@ -750,6 +808,7 @@ def _score_candidate_frame(
         + scored["_wall_distance_score"]
         + scored["_gamma_cluster_score"]
         + scored["_iv_score"]
+        + scored["_ba_spread_score"]
     ).astype("float64")
     return scored
 
@@ -920,6 +979,7 @@ def rank_strike_candidates(
             "wall_distance_score": round(_safe_float(_row_get("_wall_distance_score", 0.0), 0.0), 2),
             "gamma_cluster_score": round(_safe_float(_row_get("_gamma_cluster_score", 0.0), 0.0), 2),
             "iv_score": round(_safe_float(_row_get("_iv_score", 0.0), 0.0), 2),
+            "ba_spread_score": round(_safe_float(_row_get("_ba_spread_score", 0.0), 0.0), 2),
         }
 
         hook_payload = {}
@@ -947,6 +1007,7 @@ def rank_strike_candidates(
 
         total_score = round(_safe_float(_row_get("_base_score", 0.0), 0.0) + efficiency_score_adjustment, 2)
         delta_raw = _safe_float(_row_get("DELTA"), None)
+        ba_spread_ratio = _safe_float(_row_get("_normalized_ba_spread_ratio"), None)
 
         # Fallback: compute delta from estimated IV when upstream enrichment missed
         if (delta_raw is None or (isinstance(delta_raw, float) and not (delta_raw == delta_raw))) and iv and iv > 0 and strike and spot:
@@ -972,6 +1033,10 @@ def rank_strike_candidates(
             "score": total_score,
             "score_breakdown": score_breakdown,
         }
+        if ba_spread_ratio is not None:
+            record["ba_spread_ratio"] = round(float(ba_spread_ratio), 4)
+            record["ba_spread_pct"] = round(float(ba_spread_ratio) * 100.0, 2)
+            record["ba_spread_score"] = round(_safe_float(_row_get("_ba_spread_score", 0.0), 0.0), 2)
         if hook_payload:
             record.update({key: value for key, value in hook_payload.items() if key != "score_adjustment"})
 

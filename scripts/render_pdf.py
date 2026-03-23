@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 PDF_COVER_AUTHOR = "Pramit Dutta"
 PDF_COVER_ORGANIZATION = "Quant Engines"
+PDF_COVER_KICKER = "Options Quant Engine"
+PDF_COVER_SERIES = "Technical Documentation Suite"
 
 
 BACKEND_CATEGORY = {
@@ -77,11 +79,11 @@ _OQE_PDF_TOOLS = Path(os.environ.get("PDF_TOOLS_ROOT", Path.home() / ".local" / 
 # ---------------------------------------------------------------------------
 _REPORT_CSS = r"""
 :root {
-  --ink: #16202a;
-  --muted: #5d6b79;
-  --accent: #0e7490;
-  --accent-soft: #e6f4f7;
-  --rule: #d7e2e8;
+    --ink: #1f3653;
+    --muted: #4a6078;
+    --accent: #1f8a8a;
+    --accent-soft: #e8f5f5;
+    --rule: #cfdbe7;
   --paper: #ffffff;
   --code-bg: #f6f8fa;
 }
@@ -171,36 +173,52 @@ tr:nth-child(even) { background: #fafbfc; }
 hr { border: none; border-top: 1px solid var(--rule); margin: 1em 0; }
 
 .oqe-cover {
-    min-height: 88vh;
+    min-height: 90vh;
     display: flex;
     flex-direction: column;
     justify-content: center;
     align-items: flex-start;
-    padding: 8vh 0;
+    padding: 9vh 1.4rem 8vh;
     page-break-after: always;
+        background: linear-gradient(165deg, #eef7fb 0%, #f7fffe 55%, #ffffff 100%);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    box-sizing: border-box;
 }
 .oqe-cover-kicker {
-    font-size: 0.9rem;
-    letter-spacing: 0.08em;
+    font-size: 0.78rem;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 0.8rem;
+    color: var(--accent);
+    margin-bottom: 1rem;
+    font-weight: 700;
 }
 .oqe-cover-title {
-    font-size: 2.1rem;
+    font-size: 2.35rem;
     line-height: 1.2;
-    margin: 0 0 1.4rem;
+    margin: 0 0 0.5rem;
     color: var(--ink);
 }
+.oqe-cover-subtitle {
+    font-size: 1.03rem;
+    letter-spacing: 0.02em;
+    color: var(--muted);
+    margin: 0 0 1.35rem;
+}
 .oqe-cover-meta {
-    font-size: 1rem;
+    font-size: 0.98rem;
     color: #23303d;
-    margin: 0.18rem 0;
+    margin: 0.24rem 0;
 }
 .oqe-cover-rule {
-    width: 78%;
-    border-top: 1px solid var(--rule);
-    margin: 1.2rem 0;
+    width: 82%;
+    border-top: 2px solid #b8d9d9;
+    margin: 1.25rem 0;
+}
+
+/* Hide embedded legacy cover blocks so all documents use the same renderer cover. */
+.memo-cover {
+    display: none !important;
 }
 """
 
@@ -258,11 +276,12 @@ def _build_cover_html(title: str) -> str:
     date_str = _cover_date_string()
     return (
         '<section class="oqe-cover">'
-        '<div class="oqe-cover-kicker">Quant Research Document</div>'
+        f'<div class="oqe-cover-kicker">{PDF_COVER_KICKER}</div>'
         f'<h1 class="oqe-cover-title">{title}</h1>'
+        f'<p class="oqe-cover-subtitle">{PDF_COVER_SERIES}</p>'
         '<div class="oqe-cover-rule"></div>'
         f'<p class="oqe-cover-meta"><strong>Author:</strong> {PDF_COVER_AUTHOR}</p>'
-        f'<p class="oqe-cover-meta"><strong>Organisation:</strong> {PDF_COVER_ORGANIZATION}</p>'
+        f'<p class="oqe-cover-meta"><strong>Organization:</strong> {PDF_COVER_ORGANIZATION}</p>'
         f'<p class="oqe-cover-meta"><strong>Generated:</strong> {date_str}</p>'
         '</section>'
     )

@@ -50,7 +50,13 @@ def detect_unusual_volume(option_chain, spot=None):
 
     working["VOL_OI_RATIO"] = working["VOLUME"] / (working["OPEN_INT"] + 1.0)
     working["OPENING_ACTIVITY"] = working["CHG_IN_OI"].clip(lower=0.0)
-    working["FLOW_NOTIONAL"] = working["VOLUME"] * working["LAST_PRICE"]
+    # Delta-weight the flow notional so large-notional OTM activity doesn't
+    # dominate when it carries little directional exposure.
+    if "DELTA" in working.columns:
+        delta_abs = pd.to_numeric(working["DELTA"], errors="coerce").abs().fillna(0.5)
+    else:
+        delta_abs = pd.Series(0.5, index=working.index)
+    working["FLOW_NOTIONAL"] = working["VOLUME"] * working["LAST_PRICE"] * delta_abs
 
     spikes = working[
         (working["VOL_OI_RATIO"] >= cfg.unusual_volume_ratio_threshold) |
