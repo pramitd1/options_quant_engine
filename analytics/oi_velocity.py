@@ -106,9 +106,16 @@ def compute_oi_velocity(
     # Build per-(strike, side) OI timeseries
     oi_series: Dict[tuple, list] = {}
     for frame in frames:
-        for _, row in frame.iterrows():
-            key = (float(row["STRIKE_PR"]), str(row["OPTION_TYP"]).strip().upper())
-            oi_series.setdefault(key, []).append(float(row["OPEN_INT"]))
+        if frame.empty:
+            continue
+        grouped = (
+            frame.assign(OPTION_TYP=frame["OPTION_TYP"].astype(str).str.strip().str.upper())
+            .groupby(["STRIKE_PR", "OPTION_TYP"], dropna=False)["OPEN_INT"]
+            .sum()
+        )
+        for (strike, side), open_int in grouped.items():
+            key = (float(strike), str(side))
+            oi_series.setdefault(key, []).append(float(open_int))
 
     # Velocity = mean OI change per snapshot interval
     velocities: Dict[tuple, float] = {}

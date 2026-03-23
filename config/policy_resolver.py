@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, is_dataclass
 import os
+import time
 from typing import Any
 
 
@@ -55,6 +56,7 @@ class ParameterRuntimeContext:
 
     name: str
     overrides: dict[str, Any]
+    layers: tuple[str, ...] = ()
 
 
 _DEFAULT_PACK_NAME = os.getenv("OQE_PARAMETER_PACK", DEFAULT_PARAMETER_PACK)
@@ -71,8 +73,37 @@ _MISSING = object()
 _config_cache: dict[tuple, Any] = {}
 _config_cache_context_id: int | None = None
 
+_REGIME_MAP_FIELDS = (
+    "gamma_regime",
+    "vol_regime",
+    "global_risk_state",
+    "macro_regime",
+    "event_risk_bucket",
+    "overnight_bucket",
+)
 
-def _load_pack_overrides(name: str) -> tuple[str, dict[str, Any]]:
+
+def _parse_pack_layers(selection: Any) -> tuple[str, ...]:
+    """Parse a pack selection into normalized ordered layer names."""
+    if selection is None:
+        return ()
+    if isinstance(selection, (list, tuple, set)):
+        raw_items = [str(item or "").strip() for item in selection]
+    else:
+        text = str(selection or "").strip()
+        if not text:
+            return ()
+        # Support both "a+b" and "a,b" composition syntaxes.
+        text = text.replace(",", "+")
+        raw_items = [part.strip() for part in text.split("+")]
+    return tuple(item for item in raw_items if item)
+
+
+def _format_pack_layers(layers: tuple[str, ...]) -> str:
+    return "+".join(layers)
+
+
+def _load_pack_overrides(name: Any) -> tuple[str, dict[str, Any], tuple[str, ...]]:
     """
     Purpose:
         Load the fully inherited override mapping for a named parameter pack.
@@ -94,28 +125,42 @@ def _load_pack_overrides(name: str) -> tuple[str, dict[str, Any]]:
         so configuration getters can still resolve a usable policy bundle.
     """
 
-    pack_name = str(name or DEFAULT_PARAMETER_PACK).strip() or DEFAULT_PARAMETER_PACK
+    requested_layers = _parse_pack_layers(name)
+    if not requested_layers:
+        requested_layers = (DEFAULT_PARAMETER_PACK,)
+
     from tuning.packs import resolve_parameter_pack
 
-    try:
-        return pack_name, dict(resolve_parameter_pack(pack_name).overrides)
-    except Exception as exc:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to load parameter pack '{pack_name}': {exc}")
-        if pack_name != DEFAULT_PARAMETER_PACK:
-            logger.warning(f"Falling back to default pack '{DEFAULT_PARAMETER_PACK}'")
-        if pack_name == DEFAULT_PARAMETER_PACK:
-            return DEFAULT_PARAMETER_PACK, {}
+    import logging
+    logger = logging.getLogger(__name__)
+
+    merged_overrides: dict[str, Any] = {}
+    resolved_layers: list[str] = []
+    for layer in requested_layers:
         try:
-            return DEFAULT_PARAMETER_PACK, dict(resolve_parameter_pack(DEFAULT_PARAMETER_PACK).overrides)
+            pack = resolve_parameter_pack(layer)
+            merged_overrides.update(dict(pack.overrides))
+            resolved_layers.append(layer)
+        except Exception as exc:
+            logger.error("Failed to load parameter pack layer '%s': %s", layer, exc)
+
+    if not resolved_layers:
+        if DEFAULT_PARAMETER_PACK in requested_layers:
+            return DEFAULT_PARAMETER_PACK, {}, (DEFAULT_PARAMETER_PACK,)
+        logger.warning("Falling back to default pack '%s'", DEFAULT_PARAMETER_PACK)
+        try:
+            fallback = resolve_parameter_pack(DEFAULT_PARAMETER_PACK)
+            return DEFAULT_PARAMETER_PACK, dict(fallback.overrides), (DEFAULT_PARAMETER_PACK,)
         except Exception as exc2:
-            logger.critical(f"Even default pack failed to load: {exc2}")
-            return DEFAULT_PARAMETER_PACK, {}
+            logger.critical("Even default pack failed to load: %s", exc2)
+            return DEFAULT_PARAMETER_PACK, {}, (DEFAULT_PARAMETER_PACK,)
+
+    layers_tuple = tuple(resolved_layers)
+    return _format_pack_layers(layers_tuple), merged_overrides, layers_tuple
 
 
 def _build_runtime_context(
-    name: str = DEFAULT_PARAMETER_PACK,
+    name: Any = DEFAULT_PARAMETER_PACK,
     *,
     overrides: dict[str, Any] | None = None,
 ) -> ParameterRuntimeContext:
@@ -143,10 +188,10 @@ def _build_runtime_context(
         new pack file first.
     """
 
-    pack_name, base_overrides = _load_pack_overrides(name)
+    pack_name, base_overrides, layers = _load_pack_overrides(name)
     if overrides:
         base_overrides.update(dict(overrides))
-    return ParameterRuntimeContext(name=pack_name, overrides=base_overrides)
+    return ParameterRuntimeContext(name=pack_name, overrides=base_overrides, layers=layers)
 
 
 def _resolve_active_context() -> ParameterRuntimeContext:
@@ -222,15 +267,18 @@ def get_active_parameter_pack() -> dict[str, Any]:
         in logs, result payloads, and governance artifacts.
     """
 
-    pack_name, overrides = _resolve_active_overrides()
+    context = _resolve_active_context()
+    pack_name = context.name
+    overrides = dict(context.overrides)
     return {
         "name": pack_name,
         "overrides": overrides,
+        "layers": list(context.layers),
     }
 
 
 def set_active_parameter_pack(
-    name: str = DEFAULT_PARAMETER_PACK,
+    name: Any = DEFAULT_PARAMETER_PACK,
     *,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -261,7 +309,7 @@ def set_active_parameter_pack(
 
 @contextmanager
 def temporary_parameter_pack(
-    name: str = DEFAULT_PARAMETER_PACK,
+    name: Any = DEFAULT_PARAMETER_PACK,
     *,
     overrides: dict[str, Any] | None = None,
 ):
@@ -410,9 +458,81 @@ def resolve_dataclass_config(prefix: str, config_obj: Any):
 # ---------------------------------------------------------------------------
 
 
+def _load_regime_auto_pack_config(config_path: str | None = None) -> dict[str, Any] | None:
+    """Load regime auto-pack configuration from JSON.
+
+    Returns None on file-not-found or parse errors.
+    """
+    import json as _json
+    import logging as _logging
+    from pathlib import Path as _Path
+
+    log = _logging.getLogger(__name__)
+    map_path = _Path(config_path) if config_path else (_Path(__file__).resolve().parent / "regime_auto_pack_map.json")
+
+    if not map_path.exists():
+        return None
+
+    try:
+        payload = _json.loads(map_path.read_text())
+        if isinstance(payload, dict):
+            return payload
+    except Exception as exc:
+        log.warning("regime_auto_pack: failed to load map - %s", exc)
+    return None
+
+
+def _normalize_label(value: Any) -> str:
+    return str(value or "").upper().strip()
+
+
+def get_regime_switch_policy(config_path: str | None = None) -> dict[str, Any]:
+    """Return runtime switch guards for regime-based pack switching.
+
+    Policy fields are read from ``switch_policy`` in
+    ``regime_auto_pack_map.json`` and merged with safe defaults.
+    """
+    defaults = {
+        "required_consecutive": 2,
+        "cooldown_seconds": 300,
+        "min_dwell_seconds": 300,
+        "min_regime_confidence": 0.0,
+        "log_decisions": True,
+        "decision_log_path": "logs/regime_switch_decisions.jsonl",
+    }
+    config = _load_regime_auto_pack_config(config_path=config_path) or {}
+    raw = config.get("switch_policy", {}) if isinstance(config, dict) else {}
+
+    try:
+        defaults["required_consecutive"] = max(int(raw.get("required_consecutive", defaults["required_consecutive"])), 1)
+    except Exception:
+        pass
+    try:
+        defaults["cooldown_seconds"] = max(int(raw.get("cooldown_seconds", defaults["cooldown_seconds"])), 0)
+    except Exception:
+        pass
+    try:
+        defaults["min_dwell_seconds"] = max(int(raw.get("min_dwell_seconds", defaults["min_dwell_seconds"])), 0)
+    except Exception:
+        pass
+    try:
+        defaults["min_regime_confidence"] = float(raw.get("min_regime_confidence", defaults["min_regime_confidence"]))
+    except Exception:
+        pass
+    defaults["log_decisions"] = bool(raw.get("log_decisions", defaults["log_decisions"]))
+    defaults["decision_log_path"] = str(raw.get("decision_log_path", defaults["decision_log_path"]))
+    return defaults
+
+
 def suggest_regime_pack(
     gamma_regime: str | None,
     vol_regime: str | None,
+    *,
+    global_risk_state: str | None = None,
+    macro_regime: str | None = None,
+    event_risk_bucket: str | None = None,
+    overnight_bucket: str | None = None,
+    config_path: str | None = None,
 ) -> str | None:
     """Suggest the parameter pack best suited to the current live regime.
 
@@ -432,48 +552,124 @@ def suggest_regime_pack(
     -------
     str | None: Suggested pack name, or ``None`` when no switch is needed.
     """
-    import json as _json
-    import logging as _logging
-    from pathlib import Path as _Path
-
-    log = _logging.getLogger(__name__)
-    map_path = _Path(__file__).resolve().parent / "regime_auto_pack_map.json"
-
-    if not map_path.exists():
-        return None
-
-    try:
-        config = _json.loads(map_path.read_text())
-    except Exception as exc:
-        log.warning("regime_auto_pack: failed to load map — %s", exc)
+    config = _load_regime_auto_pack_config(config_path=config_path)
+    if not isinstance(config, dict):
         return None
 
     if not config.get("enabled", False):
         return None
 
     fallback = config.get("fallback_pack", DEFAULT_PARAMETER_PACK)
-    gr = str(gamma_regime or "").upper().strip()
-    vr = str(vol_regime or "").upper().strip()
+    labels = {
+        "gamma_regime": _normalize_label(gamma_regime),
+        "vol_regime": _normalize_label(vol_regime),
+        "global_risk_state": _normalize_label(global_risk_state),
+        "macro_regime": _normalize_label(macro_regime),
+        "event_risk_bucket": _normalize_label(event_risk_bucket),
+        "overnight_bucket": _normalize_label(overnight_bucket),
+    }
 
     best_pack: str | None = None
-    best_specificity = -1
+    best_rank = (-1, -1)
 
     for entry in config.get("map", []):
-        eg = str(entry.get("gamma_regime", "*")).upper().strip()
-        ev = str(entry.get("vol_regime", "*")).upper().strip()
-        pack = str(entry.get("pack", fallback))
+        if not isinstance(entry, dict):
+            continue
+        if "pack_layers" in entry:
+            parsed_layers = _parse_pack_layers(entry.get("pack_layers"))
+            pack = _format_pack_layers(parsed_layers) if parsed_layers else str(entry.get("pack", fallback))
+        else:
+            pack = str(entry.get("pack", fallback))
+        priority = 0
+        try:
+            priority = int(entry.get("priority", 0))
+        except Exception:
+            priority = 0
 
-        gamma_match = eg == "*" or eg == gr
-        vol_match = ev == "*" or ev == vr
+        specificity = 0
+        matched = True
+        for field in _REGIME_MAP_FIELDS:
+            expected = _normalize_label(entry.get(field, "*"))
+            if expected in {"", "*"}:
+                continue
+            if labels[field] != expected:
+                matched = False
+                break
+            specificity += 1
 
-        if not (gamma_match and vol_match):
+        if not matched:
             continue
 
-        # More specific entries (fewer wildcards) win.
-        specificity = (0 if eg == "*" else 1) + (0 if ev == "*" else 1)
-        if specificity > best_specificity:
-            best_specificity = specificity
+        rank = (specificity, priority)
+        if rank > best_rank:
+            best_rank = rank
             best_pack = pack
 
     return best_pack
+
+
+def evaluate_regime_pack_switch(
+    *,
+    suggested_pack: str | None,
+    current_pack: str | None,
+    regime_signature: str,
+    switch_state: dict[str, Any] | None,
+    required_consecutive: int,
+    cooldown_seconds: int,
+    min_dwell_seconds: int,
+    regime_confidence: float | None = None,
+    min_regime_confidence: float = 0.0,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Gate regime-driven pack switching to avoid noisy flip-flops.
+
+    Returns a dict with:
+    - apply: bool
+    - reason: str
+    - state: updated switch-state dict
+    """
+    now = float(now_ts) if now_ts is not None else time.time()
+    state = dict(switch_state or {})
+    state.setdefault("last_regime_signature", "")
+    state.setdefault("consecutive_regime_hits", 0)
+    state.setdefault("last_switch_ts", None)
+    state.setdefault("active_since_ts", now)
+
+    normalized_suggested = str(suggested_pack or "").strip()
+    normalized_current = str(current_pack or "").strip()
+
+    if regime_signature == state["last_regime_signature"]:
+        state["consecutive_regime_hits"] = int(state.get("consecutive_regime_hits", 0)) + 1
+    else:
+        state["last_regime_signature"] = regime_signature
+        state["consecutive_regime_hits"] = 1
+
+    if not normalized_suggested:
+        return {"apply": False, "reason": "no_suggestion", "state": state}
+
+    if normalized_suggested == normalized_current:
+        return {"apply": False, "reason": "already_active", "state": state}
+
+    if regime_confidence is not None and float(regime_confidence) < float(min_regime_confidence):
+        return {"apply": False, "reason": "confidence_below_floor", "state": state}
+
+    if int(state["consecutive_regime_hits"]) < max(int(required_consecutive), 1):
+        return {"apply": False, "reason": "insufficient_consecutive", "state": state}
+
+    last_switch_ts = state.get("last_switch_ts")
+    if last_switch_ts is not None and (now - float(last_switch_ts)) < max(int(cooldown_seconds), 0):
+        return {"apply": False, "reason": "cooldown_active", "state": state}
+
+    active_since_ts = state.get("active_since_ts")
+    if (
+        last_switch_ts is not None
+        and active_since_ts is not None
+        and (now - float(active_since_ts)) < max(int(min_dwell_seconds), 0)
+    ):
+        return {"apply": False, "reason": "min_dwell_active", "state": state}
+
+    state["last_switch_ts"] = now
+    state["active_since_ts"] = now
+    state["consecutive_regime_hits"] = 0
+    return {"apply": True, "reason": "switch_approved", "state": state}
 

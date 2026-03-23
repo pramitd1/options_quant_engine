@@ -1,15 +1,66 @@
 {
     "_comment": "Regime-conditional parameter auto-switching map.",
-    "_format": "(gamma_regime, vol_regime) -> parameter_pack_name.  Use '*' as a wildcard for either dimension.",
+    "_format": "Entries can match gamma/vol and optional macro-risk dimensions. Use '*' wildcard per field. Highest specificity wins; priority breaks ties.",
     "enabled": false,
     "fallback_pack": "baseline_v1",
+    "switch_policy": {
+        "required_consecutive": 3,
+        "cooldown_seconds": 900,
+        "min_dwell_seconds": 1200,
+        "min_regime_confidence": 0.6,
+        "log_decisions": true,
+        "decision_log_path": "logs/regime_switch_decisions.jsonl"
+    },
     "map": [
-        {"gamma_regime": "NEGATIVE_GAMMA", "vol_regime": "HIGH_VOL",    "pack": "baseline_v1"},
-        {"gamma_regime": "NEGATIVE_GAMMA", "vol_regime": "NORMAL_VOL",  "pack": "baseline_v1"},
-        {"gamma_regime": "NEGATIVE_GAMMA", "vol_regime": "LOW_VOL",     "pack": "baseline_v1"},
-        {"gamma_regime": "POSITIVE_GAMMA", "vol_regime": "HIGH_VOL",    "pack": "baseline_v1"},
-        {"gamma_regime": "POSITIVE_GAMMA", "vol_regime": "NORMAL_VOL",  "pack": "baseline_v1"},
-        {"gamma_regime": "POSITIVE_GAMMA", "vol_regime": "LOW_VOL",     "pack": "baseline_v1"},
-        {"gamma_regime": "NEUTRAL_GAMMA",  "vol_regime": "*",           "pack": "baseline_v1"}
+        {
+            "gamma_regime": "NEGATIVE_GAMMA",
+            "vol_regime": "HIGH_VOL",
+            "global_risk_state": "RISK_OFF",
+            "macro_regime": "*",
+            "event_risk_bucket": "*",
+            "overnight_bucket": "*",
+            "pack_layers": ["baseline_v1", "macro_overlay_v1"],
+            "priority": 30
+        },
+        {
+            "gamma_regime": "*",
+            "vol_regime": "*",
+            "global_risk_state": "EVENT_LOCKDOWN",
+            "macro_regime": "*",
+            "event_risk_bucket": "HIGH_EVENT_RISK",
+            "overnight_bucket": "*",
+            "pack_layers": ["baseline_v1", "macro_overlay_v1"],
+            "priority": 25
+        },
+        {
+            "gamma_regime": "*",
+            "vol_regime": "*",
+            "global_risk_state": "*",
+            "macro_regime": "*",
+            "event_risk_bucket": "*",
+            "overnight_bucket": "OVERNIGHT_BLOCKED",
+            "pack_layers": ["baseline_v1", "overnight_focus_v1"],
+            "priority": 20
+        },
+        {
+            "gamma_regime": "NEUTRAL_GAMMA",
+            "vol_regime": "*",
+            "global_risk_state": "*",
+            "macro_regime": "*",
+            "event_risk_bucket": "*",
+            "overnight_bucket": "*",
+            "pack": "baseline_v1",
+            "priority": 10
+        },
+        {
+            "gamma_regime": "*",
+            "vol_regime": "*",
+            "global_risk_state": "*",
+            "macro_regime": "*",
+            "event_risk_bucket": "*",
+            "overnight_bucket": "*",
+            "pack": "baseline_v1",
+            "priority": 0
+        }
     ]
 }

@@ -116,6 +116,39 @@ def test_promotion_criteria_require_manual_approval_when_enabled():
     assert decision.reason == "manual_approval_required"
 
 
+def test_promotion_blocks_when_important_regime_collapses_beyond_guardrail():
+    candidate = _candidate_result()
+    candidate["comparison_summary"] = {
+        "regime_comparison": {
+            "gamma_regime_bucket": [
+                {
+                    "regime_label": "SHORT_GAMMA",
+                    "sample_count": 25,
+                    "direction_hit_rate_delta": -0.16,
+                },
+                {
+                    "regime_label": "LONG_GAMMA",
+                    "sample_count": 4,
+                    "direction_hit_rate_delta": -0.30,
+                },
+            ]
+        }
+    }
+
+    decision = evaluate_promotion(
+        baseline_result=_baseline_result(),
+        candidate_result=candidate,
+        important_regime_max_collapse=-0.08,
+        minimum_important_regime_sample_count=10,
+        maximum_important_regime_failures=0,
+        important_regime_allowlist={"gamma_regime_bucket": ["SHORT_GAMMA"]},
+    )
+
+    assert decision.approved is False
+    assert decision.reason == "candidate_regime_collapse_exceeds_limit"
+    assert decision.diagnostics["important_regime_failures"] == 1
+
+
 def test_promote_and_rollback_live_pack_are_safe_and_logged(tmp_path):
     state_path = tmp_path / "promotion_state.json"
     ledger_path = tmp_path / "promotion_ledger.jsonl"

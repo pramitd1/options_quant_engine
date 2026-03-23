@@ -26,8 +26,12 @@ def approximate_gamma(strike, spot):
     positioning analysis, a simple inverse-distance proxy is enough.
     """
 
-    distance = abs(strike - spot)
-    return 1 / (1 + distance)
+    strike = float(strike)
+    spot = float(spot)
+    if spot <= 0:
+        return 0.0
+    moneyness_distance = abs(strike - spot) / spot
+    return 1.0 / (1.0 + moneyness_distance)
 
 
 def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
@@ -86,11 +90,39 @@ def gamma_signal(option_chain: pd.DataFrame, spot=None):
     Convert gamma exposure into a simple regime label.
     """
 
-    gamma = calculate_gamma_exposure(option_chain, spot)
+    if option_chain is None or option_chain.empty:
+        return "NEUTRAL_GAMMA"
 
-    if gamma > 0:
+    df = option_chain.copy()
+    strike_col = "strikePrice" if "strikePrice" in df.columns else "STRIKE_PR"
+    oi_col = "openInterest" if "openInterest" in df.columns else "OPEN_INT"
+    type_col = "OPTION_TYP"
+
+    if strike_col not in df.columns or oi_col not in df.columns or type_col not in df.columns:
+        return "NEUTRAL_GAMMA"
+
+    strikes = pd.to_numeric(df[strike_col], errors="coerce")
+    oi = pd.to_numeric(df[oi_col], errors="coerce").fillna(0.0)
+    option_type = df[type_col].astype(str).str.upper()
+
+    if spot is None:
+        spot = float(strikes.median()) if strikes.notna().any() else 0.0
+
+    if "GAMMA" in df.columns:
+        gamma = pd.to_numeric(df["GAMMA"], errors="coerce").fillna(0.0)
+    else:
+        distance = (strikes - float(spot)).abs() / max(float(spot), 1e-6)
+        gamma = 1.0 / (1.0 + distance.fillna(np.inf))
+
+    signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
+    signed_exposure = gamma * oi * signed
+    net_gamma = float(np.nansum(signed_exposure.values))
+    gross_gamma = float(np.nansum(np.abs(signed_exposure.values)))
+
+    if gross_gamma <= 0 or abs(net_gamma) <= gross_gamma * 0.05:
+        return "NEUTRAL_GAMMA"
+    if net_gamma > 0:
         return "LONG_GAMMA"
-
     return "SHORT_GAMMA"
 
 

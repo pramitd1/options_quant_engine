@@ -31,27 +31,28 @@ from utils.math_helpers import norm_pdf as _norm_pdf, norm_cdf as _norm_cdf  # n
 # Newton-Raphson implied-vol estimation (fallback when provider IV is 0/None)
 # ---------------------------------------------------------------------------
 
-def _bs_price_for_iv(spot, strike, t, sigma, option_type, r=RISK_FREE_RATE):
+def _bs_price_for_iv(spot, strike, t, sigma, option_type, r=RISK_FREE_RATE, q=DIVIDEND_YIELD):
     """Black-Scholes European price for IV estimation."""
     if t <= 0 or sigma <= 0 or spot <= 0 or strike <= 0:
         return max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
     sqrt_t = math.sqrt(t)
-    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrt_t)
+    d1 = (math.log(spot / strike) + (r - q + 0.5 * sigma * sigma) * t) / (sigma * sqrt_t)
     d2 = d1 - sigma * sqrt_t
+    discount_q = math.exp(-q * t)
     if option_type == "CE":
-        return spot * _norm_cdf(d1) - strike * math.exp(-r * t) * _norm_cdf(d2)
-    return strike * math.exp(-r * t) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+        return spot * discount_q * _norm_cdf(d1) - strike * math.exp(-r * t) * _norm_cdf(d2)
+    return strike * math.exp(-r * t) * _norm_cdf(-d2) - spot * discount_q * _norm_cdf(-d1)
 
 
-def _bs_vega_for_iv(spot, strike, t, sigma, r=RISK_FREE_RATE):
+def _bs_vega_for_iv(spot, strike, t, sigma, r=RISK_FREE_RATE, q=DIVIDEND_YIELD):
     if t <= 0 or sigma <= 0 or spot <= 0 or strike <= 0:
         return 0.0
-    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
-    return spot * math.sqrt(t) * _norm_pdf(d1)
+    d1 = (math.log(spot / strike) + (r - q + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    return spot * math.exp(-q * t) * math.sqrt(t) * _norm_pdf(d1)
 
 
 def estimate_iv_from_price(market_price, spot, strike, t, option_type,
-                           r=RISK_FREE_RATE, tol=1e-6, max_iter=50):
+                           r=RISK_FREE_RATE, q=DIVIDEND_YIELD, tol=1e-6, max_iter=50):
     """Newton-Raphson IV solver.  Returns IV as percentage points (e.g. 18.0)
     or 0.0 when estimation fails."""
     if market_price is None or spot is None or strike is None or t is None:
@@ -67,9 +68,9 @@ def estimate_iv_from_price(market_price, spot, strike, t, option_type,
         return 0.0
     sigma = 0.20
     for _ in range(max_iter):
-        price = _bs_price_for_iv(spot, strike, t, sigma, option_type, r)
-        vega = _bs_vega_for_iv(spot, strike, t, sigma, r)
-        if vega < 1e-12:
+        price = _bs_price_for_iv(spot, strike, t, sigma, option_type, r, q)
+        vega = _bs_vega_for_iv(spot, strike, t, sigma, r, q)
+        if vega <= 1e-12:
             break
         sigma -= (price - market_price) / vega
         if sigma <= 0:
@@ -338,6 +339,8 @@ def enrich_chain_with_greeks(
                 strike_value,
                 tte_for_iv,
                 option_type_value,
+                r=risk_free_rate,
+                q=dividend_yield,
             )
             if estimated > 0:
                 iv = estimated

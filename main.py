@@ -14,10 +14,12 @@ Downstream Usage:
     Used directly by operators and indirectly by replay, capture, and shadow-evaluation workflows.
 """
 import argparse
+import json
 import os
 import time
 import warnings
 from getpass import getpass
+from pathlib import Path
 
 from urllib3.exceptions import NotOpenSSLWarning
 
@@ -38,7 +40,13 @@ from config.settings import (
 )
 
 from app.engine_runner import run_engine_snapshot
-from config.policy_resolver import suggest_regime_pack, set_active_parameter_pack
+from config.policy_resolver import (
+    evaluate_regime_pack_switch,
+    get_active_parameter_pack,
+    get_regime_switch_policy,
+    set_active_parameter_pack,
+    suggest_regime_pack,
+)
 from notifications.telegram_alert import maybe_alert as _telegram_maybe_alert
 from app.terminal_output import render_snapshot
 from data.data_source_router import DataSourceRouter
@@ -75,6 +83,20 @@ def _refresh_interval_for_source(source: str) -> int:
     if source == "ICICI":
         return ICICI_REFRESH_INTERVAL
     return REFRESH_INTERVAL
+
+
+def _append_regime_switch_log(record: dict, relative_path: str) -> None:
+    """Append one regime-switch decision record to a JSONL log file."""
+    try:
+        log_path = Path(relative_path)
+        if not log_path.is_absolute():
+            log_path = Path.cwd() / log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str) + "\n")
+    except Exception:
+        # Logging should never break live signal generation.
+        return
 
 
 def choose_data_source():
@@ -892,6 +914,12 @@ def main():
     saved_one_option_chain_snapshot = False
     replay_paths_printed = False
     _prev_trade_status: str | None = None
+    _regime_switch_state = {
+        "last_regime_signature": "",
+        "consecutive_regime_hits": 0,
+        "last_switch_ts": None,
+        "active_since_ts": time.time(),
+    }
 
     try:
         while True:
@@ -1016,9 +1044,72 @@ def main():
             if trade_for_display and isinstance(trade_for_display, dict):
                 _gamma_r = trade_for_display.get("gamma_regime")
                 _vol_r = trade_for_display.get("vol_surface_regime")
-                _suggested_pack = suggest_regime_pack(_gamma_r, _vol_r)
+                _global_risk = trade_for_display.get("global_risk_state")
+                _macro_r = trade_for_display.get("macro_regime")
+                _event_bucket = trade_for_display.get("event_risk_bucket")
+                _overnight_bucket = (
+                    "OVERNIGHT_ALLOWED"
+                    if bool(trade_for_display.get("overnight_hold_allowed"))
+                    else "OVERNIGHT_BLOCKED"
+                )
+                _regime_confidence = trade_for_display.get("regime_confidence")
+
+                _suggested_pack = suggest_regime_pack(
+                    _gamma_r,
+                    _vol_r,
+                    global_risk_state=_global_risk,
+                    macro_regime=_macro_r,
+                    event_risk_bucket=_event_bucket,
+                    overnight_bucket=_overnight_bucket,
+                )
+
                 if _suggested_pack:
-                    set_active_parameter_pack(_suggested_pack)
+                    _policy = get_regime_switch_policy()
+                    _active_pack = get_active_parameter_pack().get("name")
+                    _signature = "|".join(
+                        [
+                            str(_gamma_r or ""),
+                            str(_vol_r or ""),
+                            str(_global_risk or ""),
+                            str(_macro_r or ""),
+                            str(_event_bucket or ""),
+                            str(_overnight_bucket or ""),
+                        ]
+                    )
+                    _decision = evaluate_regime_pack_switch(
+                        suggested_pack=_suggested_pack,
+                        current_pack=_active_pack,
+                        regime_signature=_signature,
+                        switch_state=_regime_switch_state,
+                        required_consecutive=_policy["required_consecutive"],
+                        cooldown_seconds=_policy["cooldown_seconds"],
+                        min_dwell_seconds=_policy["min_dwell_seconds"],
+                        regime_confidence=_regime_confidence,
+                        min_regime_confidence=_policy["min_regime_confidence"],
+                    )
+                    _regime_switch_state = _decision.get("state", _regime_switch_state)
+                    if _decision.get("apply"):
+                        set_active_parameter_pack(_suggested_pack)
+
+                    if _policy.get("log_decisions", True):
+                        _append_regime_switch_log(
+                            {
+                                "timestamp": time.time(),
+                                "gamma_regime": _gamma_r,
+                                "vol_regime": _vol_r,
+                                "global_risk_state": _global_risk,
+                                "macro_regime": _macro_r,
+                                "event_risk_bucket": _event_bucket,
+                                "overnight_bucket": _overnight_bucket,
+                                "regime_signature": _signature,
+                                "active_pack_before": _active_pack,
+                                "suggested_pack": _suggested_pack,
+                                "decision_apply": bool(_decision.get("apply")),
+                                "decision_reason": _decision.get("reason"),
+                                "regime_confidence": _regime_confidence,
+                            },
+                            str(_policy.get("decision_log_path", "logs/regime_switch_decisions.jsonl")),
+                        )
 
             if args.replay:
                 break

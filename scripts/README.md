@@ -20,11 +20,13 @@ This directory is organized by purpose.
 - data_prep/: historical/macroeconomic data build and audit utilities
 - simulations/: synthetic regime replay tools
 - ad_hoc/: one-off diagnostics and analysis scripts
+- ops/: operational diagnostics, rollout checks, and resumable offline replay pack suites
 
 Notes:
 
 - The active full-window comparative entrypoint remains at repository root while an existing run is in progress.
 - After that run completes, it can be moved into scripts/backtest with a compatibility wrapper if desired.
+- For resumable baseline-vs-candidate replay evaluation, use `scripts/ops/run_offline_replay_pack_suite.py` and resume with `--resume-dir`.
 
 PDF generation workflow:
 

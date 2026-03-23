@@ -41,6 +41,7 @@ research/parameter_tuning/promotion_state.json
 research/parameter_tuning/*.jsonl
 research/parameter_tuning/candidate_packs/
 research/parameter_tuning/reports/
+research/parameter_tuning/offline_replay_runs/
 research/reports/
 research/reviews/
 research/analytics/

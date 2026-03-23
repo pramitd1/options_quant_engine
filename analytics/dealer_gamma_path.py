@@ -88,29 +88,18 @@ def simulate_gamma_path(option_chain, spot, step=25, range_points=None):
         step
     )
 
-    records = df.to_dict("records")
-    gamma_curve = []
+    strikes_arr = df[strike_col].to_numpy(dtype=float)
+    oi_arr = df[oi_col].to_numpy(dtype=float)
+    gamma_arr = df["GAMMA"].to_numpy(dtype=float)
+    signed_arr = np.where(df["OPTION_TYP"].to_numpy() == "CE", 1.0, -1.0)
 
-    for price in prices:
+    # Keep weighting consistent with market_gamma_map: gamma * OI * sign.
+    widths = np.maximum(np.abs(strikes_arr) * 0.01, max(float(step), 1.0))
+    distance = (strikes_arr[None, :] - prices[:, None]) / widths[None, :]
+    localized_gamma = gamma_arr[None, :] * np.exp(-0.5 * distance * distance)
+    gamma_curve = (localized_gamma * oi_arr[None, :] * signed_arr[None, :]).sum(axis=1)
 
-        gamma_total = 0.0
-
-        for row in records:
-            strike = float(row[strike_col])
-            oi = float(row[oi_col])
-            gamma = float(row["GAMMA"])
-            option_type = row["OPTION_TYP"]
-            signed = 1.0 if option_type == "CE" else -1.0 if option_type == "PE" else 0.0
-
-            # Decay strike influence as the hypothetical price moves away.
-            width = max(abs(strike) * 0.01, float(step), 1.0)
-            distance = (strike - float(price)) / width
-            localized_gamma = gamma * np.exp(-0.5 * distance * distance)
-            gamma_total += localized_gamma * oi * strike * signed
-
-        gamma_curve.append(float(gamma_total))
-
-    return prices, gamma_curve
+    return prices, gamma_curve.tolist()
 
 
 def detect_gamma_squeeze(prices, gamma_curve):

@@ -167,20 +167,33 @@ def compute_dealer_pressure(
         str(gamma_regime or "").upper().strip(), 0.5
     )
 
-    # Flip proximity: higher when closer to flip level
-    flip_dist = safe_float(gamma_flip_distance_pct, 5.0)
-    flip_proximity = clip(1.0 - flip_dist / 5.0, 0.0, 1.0)
+    # Flip proximity: higher when closer to flip level.
+    flip_dist = abs(safe_float(gamma_flip_distance_pct, 5.0))
+    flip_proximity = clip(1.0 - min(flip_dist, 10.0) / 10.0, 0.0, 1.0)
+
+    # Spot-vs-flip context is directional instability information.
+    flip_context = {
+        "AT_FLIP": 1.0,
+        "ABOVE_FLIP": 0.65,
+        "BELOW_FLIP": 0.65,
+    }.get(str(spot_vs_flip or "").upper().strip(), 0.5)
 
     # Hedging bias amplification
     bias_score = _HEDGING_BIAS_SCORES.get(
         str(dealer_hedging_bias or "").upper().strip(), 0.5
     )
 
+    # Convert raw gamma exposure to bounded intensity; only magnitude matters.
+    gex_value = abs(safe_float(dealer_gamma_exposure, 0.0))
+    gex_intensity = clip(math.log1p(gex_value) / 12.0, 0.0, 1.0)
+
     # Combine components
     base_pressure = (
-        0.40 * regime_score
-        + 0.30 * flip_proximity
-        + 0.30 * bias_score
+        0.30 * regime_score
+        + 0.25 * flip_proximity
+        + 0.25 * bias_score
+        + 0.10 * flip_context
+        + 0.10 * gex_intensity
     )
 
     return pd.Series(round(clip(base_pressure, 0.0, 1.0), 4), index=strikes.index)
@@ -229,14 +242,20 @@ def compute_premium_efficiency(
         expected_move = float(spot) * iv * math.sqrt(dte / 365.0)
 
     premium = _safe_series(rows, "_normalized_last_price", "lastPrice", "LAST_PRICE")
+    safe_premium = premium.where(premium > 0.01, np.nan)
+    raw = expected_move / safe_premium
 
-    raw = expected_move / premium.clip(lower=0.01)
+    valid = raw.dropna()
+    if valid.empty:
+        return pd.Series(0.0, index=rows.index)
 
-    rmin, rmax = raw.min(), raw.max()
+    rmin, rmax = valid.min(), valid.max()
     if rmax - rmin < 1e-9:
-        return pd.Series(0.5, index=rows.index)
+        flat = pd.Series(0.5, index=rows.index)
+        flat[raw.isna()] = 0.0
+        return flat
     normalized = (raw - rmin) / (rmax - rmin)
-    return normalized.round(4)
+    return normalized.fillna(0.0).clip(lower=0.0, upper=1.0).round(4)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +374,15 @@ def compute_tradeability_flags(
     days_to_expiry: float | None,
     expected_move: float | None = None,
 ) -> dict[str, pd.Series]:
+    spot_safe = safe_float(spot, None)
+    if spot_safe is None or spot_safe <= 0:
+        return {
+            "tradable_intraday": pd.Series(False, index=rows.index),
+            "tradable_overnight": pd.Series(False, index=rows.index),
+            "liquidity_ok": pd.Series(False, index=rows.index),
+            "premium_reasonable": pd.Series(False, index=rows.index),
+        }
+
     volume = _safe_series(rows, "_normalized_volume", "totalTradedVolume", "VOLUME")
     oi = _safe_series(rows, "_normalized_open_interest", "openInterest", "OPEN_INT")
     premium = _safe_series(rows, "_normalized_last_price", "lastPrice", "LAST_PRICE")
@@ -364,7 +392,7 @@ def compute_tradeability_flags(
         if iv_val > 1.5:
             iv_val = iv_val / 100.0
         dte = max(safe_float(days_to_expiry, 1.0), 0.1)
-        expected_move = float(spot) * iv_val * math.sqrt(dte / 365.0)
+        expected_move = float(spot_safe) * iv_val * math.sqrt(dte / 365.0)
 
     flags = {
         "tradable_intraday": volume >= _MIN_INTRADAY_VOLUME,
@@ -407,6 +435,16 @@ def compute_enhanced_strike_scores(
     if rows.empty:
         return pd.DataFrame()
 
+    spot_safe = safe_float(spot, None)
+    if spot_safe is None or spot_safe <= 0:
+        inferred_spot = safe_float(
+            pd.to_numeric(rows.get("_normalized_strike", rows.get("strikePrice")), errors="coerce").median(),
+            None,
+        )
+        spot_safe = inferred_spot
+    if spot_safe is None or spot_safe <= 0:
+        return pd.DataFrame(index=rows.index)
+
     w = weights or ENHANCED_SCORE_WEIGHTS
     strikes = pd.to_numeric(
         rows.get("_normalized_strike", rows.get("strikePrice")),
@@ -430,10 +468,10 @@ def compute_enhanced_strike_scores(
     if _iv > 1.5:
         _iv = _iv / 100.0
     _dte = max(safe_float(days_to_expiry, 1.0), 0.1)
-    _expected_move = float(spot) * _iv * math.sqrt(_dte / 365.0)
+    _expected_move = float(spot_safe) * _iv * math.sqrt(_dte / 365.0)
 
     prem_eff = compute_premium_efficiency(
-        rows, spot=spot, atm_iv=atm_iv, days_to_expiry=days_to_expiry,
+        rows, spot=spot_safe, atm_iv=atm_iv, days_to_expiry=days_to_expiry,
         expected_move=_expected_move,
     )
 
@@ -450,19 +488,19 @@ def compute_enhanced_strike_scores(
 
     # Tradeability
     flags = compute_tradeability_flags(
-        rows, spot=spot, atm_iv=atm_iv, days_to_expiry=days_to_expiry,
+        rows, spot=spot_safe, atm_iv=atm_iv, days_to_expiry=days_to_expiry,
         expected_move=_expected_move,
     )
 
     # Distance from spot
-    spot_f = float(spot)
+    spot_f = float(spot_safe)
     dist_pts = (strikes - spot_f).round(2)
     dist_pct = ((strikes - spot_f) / max(spot_f, 1e-6) * 100).round(2)
 
     # Payoff efficiency
     payoff_score, payoff_components = compute_payoff_efficiency(
         rows,
-        spot=spot,
+        spot=spot_safe,
         direction=direction,
         atm_iv=atm_iv,
         days_to_expiry=days_to_expiry,

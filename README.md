@@ -96,6 +96,19 @@ python scripts/signal_evaluation_report.py
 python scripts/daily_research_report.py
 ```
 
+### Offline Pack Replay Suite (Resumable)
+
+```bash
+python scripts/ops/run_offline_replay_pack_suite.py
+```
+
+Resume an existing suite directory without re-running completed tasks:
+
+```bash
+python scripts/ops/run_offline_replay_pack_suite.py \
+  --resume-dir research/parameter_tuning/offline_replay_runs/suite_YYYYMMDD_HHMMSS
+```
+
 ### Multiyear Backtest
 
 ```bash
@@ -124,6 +137,13 @@ Commit hygiene:
 - Keep code changes, script reorganization, and generated research artifacts in separate commits.
 - When moving scripts, keep compatibility wrappers at legacy entrypoints until automation is migrated.
 - Do not delete intermediate or final research artifacts that are needed for auditability.
+
+Offline replay suite hygiene:
+
+- Use `scripts/ops/run_offline_replay_pack_suite.py` for baseline-vs-candidate replay checks.
+- Reuse the same suite directory with `--resume-dir` so completed tasks are skipped via checkpoint state.
+- Each invocation writes a dated sub-run under `subruns/` and appends `run_history.csv`.
+- The suite is offline-only and does not mutate production runtime behavior.
 
 ## Current System Shape
 
@@ -188,6 +208,7 @@ These layers are intentionally modifiers and filters. They do not replace the co
 - automated group tuning campaigns in [campaigns.py](tuning/campaigns.py)
 - walk-forward split engine and regime-aware validation in [walk_forward.py](tuning/walk_forward.py), [regimes.py](tuning/regimes.py), and [validation.py](tuning/validation.py)
 - live shadow comparison and rollout logging in [shadow.py](tuning/shadow.py)
+- offline replay pack suite with resumable checkpoints in [run_offline_replay_pack_suite.py](scripts/ops/run_offline_replay_pack_suite.py)
 
 Important distinction:
 

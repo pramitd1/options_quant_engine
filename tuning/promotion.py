@@ -43,6 +43,9 @@ DEFAULT_PROMOTION_CRITERIA = {
     "maximum_drawdown_proxy_ratio": 1.25,
     "require_manual_approval": False,
     "important_regime_max_collapse": -0.08,
+    "minimum_important_regime_sample_count": 10,
+    "maximum_important_regime_failures": 0,
+    "important_regime_allowlist": {},
 }
 
 
@@ -518,6 +521,9 @@ def evaluate_promotion(
     minimum_robustness_score: float = DEFAULT_PROMOTION_CRITERIA["minimum_robustness_score"],
     maximum_drawdown_proxy_ratio: float = DEFAULT_PROMOTION_CRITERIA["maximum_drawdown_proxy_ratio"],
     important_regime_max_collapse: float = DEFAULT_PROMOTION_CRITERIA["important_regime_max_collapse"],
+    minimum_important_regime_sample_count: int = DEFAULT_PROMOTION_CRITERIA["minimum_important_regime_sample_count"],
+    maximum_important_regime_failures: int = DEFAULT_PROMOTION_CRITERIA["maximum_important_regime_failures"],
+    important_regime_allowlist: dict[str, list[str]] | None = None,
     require_manual_approval: bool = DEFAULT_PROMOTION_CRITERIA["require_manual_approval"],
     manual_approval: dict[str, Any] | None = None,
 ) -> PromotionDecision:
@@ -576,9 +582,24 @@ def evaluate_promotion(
 
     comparison_summary = dict(candidate_result.get("comparison_summary") or {})
     worst_regime_delta = 0.0
-    for regime_rows in comparison_summary.get("regime_comparison", {}).values():
+    important_rows_evaluated = 0
+    important_regime_failures = 0
+    allowlist = dict(important_regime_allowlist or {})
+    for regime_dimension, regime_rows in comparison_summary.get("regime_comparison", {}).items():
+        allowed_labels = {str(label) for label in allowlist.get(regime_dimension, [])}
         for row in regime_rows:
-            worst_regime_delta = min(worst_regime_delta, float(row.get("direction_hit_rate_delta", 0.0)))
+            sample_count = int(row.get("sample_count", 0) or 0)
+            if sample_count < int(minimum_important_regime_sample_count):
+                continue
+            regime_label = str(row.get("regime_label", ""))
+            if allowed_labels and regime_label not in allowed_labels:
+                continue
+
+            important_rows_evaluated += 1
+            delta = float(row.get("direction_hit_rate_delta", 0.0))
+            worst_regime_delta = min(worst_regime_delta, delta)
+            if delta < important_regime_max_collapse:
+                important_regime_failures += 1
 
     approval_payload = dict(manual_approval or {})
     approval_required = bool(require_manual_approval)
@@ -593,7 +614,10 @@ def evaluate_promotion(
         and (not validation_hooks_present or candidate_oos_score >= baseline_oos_score + minimum_out_of_sample_improvement)
         and (not validation_hooks_present or candidate_robustness_score >= minimum_robustness_score)
         and (not validation_hooks_present or drawdown_ratio <= maximum_drawdown_proxy_ratio)
-        and (not comparison_summary or worst_regime_delta >= important_regime_max_collapse)
+        and (
+            not comparison_summary
+            or important_regime_failures <= int(maximum_important_regime_failures)
+        )
         and approval_granted
     )
 
@@ -614,7 +638,7 @@ def evaluate_promotion(
         reason = "candidate_robustness_too_low"
     elif validation_hooks_present and drawdown_ratio > maximum_drawdown_proxy_ratio:
         reason = "candidate_drawdown_proxy_worse_than_allowed"
-    elif comparison_summary and worst_regime_delta < important_regime_max_collapse:
+    elif comparison_summary and important_regime_failures > int(maximum_important_regime_failures):
         reason = "candidate_regime_collapse_exceeds_limit"
     elif approval_required and not approval_granted:
         reason = "manual_approval_required"
@@ -642,6 +666,8 @@ def evaluate_promotion(
             "candidate_drawdown_proxy": round(candidate_drawdown, 6),
             "drawdown_proxy_ratio": round(drawdown_ratio, 6),
             "worst_regime_direction_hit_rate_delta": round(worst_regime_delta, 6),
+            "important_rows_evaluated": int(important_rows_evaluated),
+            "important_regime_failures": int(important_regime_failures),
             "manual_approval_required": approval_required,
             "manual_approval": approval_payload,
             "criteria": {
@@ -653,6 +679,9 @@ def evaluate_promotion(
                 "minimum_robustness_score": minimum_robustness_score,
                 "maximum_drawdown_proxy_ratio": maximum_drawdown_proxy_ratio,
                 "important_regime_max_collapse": important_regime_max_collapse,
+                "minimum_important_regime_sample_count": int(minimum_important_regime_sample_count),
+                "maximum_important_regime_failures": int(maximum_important_regime_failures),
+                "important_regime_allowlist": allowlist,
                 "require_manual_approval": approval_required,
             },
             "baseline_safeguards": baseline_safeguards,
