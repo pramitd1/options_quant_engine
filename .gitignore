@@ -11,6 +11,8 @@ logs/
 !.env.example
 data_store/icici_cache/
 data_store/historical/
+data_store/spot_history/
+data_store/decision_journal.sqlite3
 debug_samples/
 
 # Documents — only root README.md is tracked
@@ -42,6 +44,9 @@ research/parameter_tuning/*.jsonl
 research/parameter_tuning/candidate_packs/
 research/parameter_tuning/reports/
 research/parameter_tuning/offline_replay_runs/
+research/parameter_tuning/archive_decisions/
+research/parameter_tuning/guarded_seed_sweeps/
+research/parameter_tuning/promotion_gate_decisions/
 research/reports/
 research/reviews/
 research/analytics/
