@@ -352,6 +352,11 @@ def decide_direction(
     charm_regime=None,
     backtest_mode=False,
     volatility_shock_score=None,
+    oi_velocity_score=None,
+    rr_value=None,
+    rr_momentum=None,
+    volume_pcr_atm=None,
+    gamma_flip_drift=None,
 ):
     """
     Purpose:
@@ -382,8 +387,13 @@ def decide_direction(
     """
     direction_weights = get_direction_vote_weights()
     direction_thresholds = get_direction_thresholds()
+    runtime_thresholds = get_trade_runtime_thresholds()
     bullish_votes = []
     bearish_votes = []
+
+    def _flag_enabled(name, default=True):
+        value = runtime_thresholds.get(name, 1 if default else 0)
+        return str(value).strip().lower() not in {"0", "false", "no", "off"}
 
     def add_vote(side, reason):
         """
@@ -453,6 +463,50 @@ def decide_direction(
         add_vote("BULLISH", "CHARM")
     elif charm_regime == "NEGATIVE_CHARM" and spot_vs_flip in ("BELOW_FLIP", "AT_FLIP"):
         add_vote("BEARISH", "CHARM")
+
+    if _flag_enabled("use_oi_velocity_in_direction", default=True):
+        vel = _safe_float(oi_velocity_score, None)
+        vel_on = abs(_safe_float(runtime_thresholds.get("oi_velocity_vote_on"), 0.18) or 0.18)
+        if vel is not None and abs(vel) >= vel_on:
+            if vel > 0:
+                add_vote("BULLISH", "OI_VELOCITY")
+            else:
+                add_vote("BEARISH", "OI_VELOCITY")
+
+    if _flag_enabled("use_rr_in_direction", default=True):
+        rr = _safe_float(rr_value, None)
+        rr_put_dom = _safe_float(runtime_thresholds.get("rr_skew_put_dominant"), 0.75)
+        rr_call_dom = _safe_float(runtime_thresholds.get("rr_skew_call_dominant"), -0.75)
+        if rr is not None:
+            if rr >= rr_put_dom:
+                add_vote("BEARISH", "RR_SKEW")
+            elif rr <= rr_call_dom:
+                add_vote("BULLISH", "RR_SKEW")
+
+        rr_m = str(rr_momentum or "").upper().strip()
+        if rr_m == "RISING_PUT_SKEW":
+            add_vote("BEARISH", "RR_MOMENTUM")
+        elif rr_m == "FALLING_PUT_SKEW":
+            add_vote("BULLISH", "RR_MOMENTUM")
+
+    pcr = _safe_float(volume_pcr_atm, None)
+    pcr_put_dom = _safe_float(runtime_thresholds.get("volume_pcr_atm_put_dominant"), 1.20)
+    pcr_call_dom = _safe_float(runtime_thresholds.get("volume_pcr_atm_call_dominant"), 0.80)
+    if pcr is not None:
+        if pcr >= pcr_put_dom:
+            add_vote("BEARISH", "PCR_ATM")
+        elif pcr <= pcr_call_dom:
+            add_vote("BULLISH", "PCR_ATM")
+
+    drift = None
+    if isinstance(gamma_flip_drift, dict):
+        drift = _safe_float(gamma_flip_drift.get("drift"), None)
+    drift_on = abs(_safe_float(runtime_thresholds.get("gamma_flip_drift_pts_vote_on"), 80.0) or 80.0)
+    if drift is not None and abs(drift) >= drift_on:
+        if drift > 0:
+            add_vote("BULLISH", "FLIP_DRIFT")
+        else:
+            add_vote("BEARISH", "FLIP_DRIFT")
 
     bullish_score = round(sum(weight for _, weight in bullish_votes), 2)
     bearish_score = round(sum(weight for _, weight in bearish_votes), 2)
@@ -554,6 +608,11 @@ def _compute_signal_state(
         charm_regime=market_state["greek_exposures"].get("charm_regime"),
         backtest_mode=backtest_mode,
         volatility_shock_score=market_state.get("volatility_shock_score", 0.0),
+        oi_velocity_score=market_state.get("oi_velocity_score"),
+        rr_value=market_state.get("rr_value"),
+        rr_momentum=market_state.get("rr_momentum"),
+        volume_pcr_atm=market_state.get("volume_pcr_atm"),
+        gamma_flip_drift=market_state.get("gamma_flip_drift"),
     )
 
     if direction is None:
@@ -591,6 +650,14 @@ def _compute_signal_state(
         ml_move_probability=probability_state["ml_move_probability"],
         flip_distance_pct=probability_state["components"].get("gamma_flip_distance_pct"),
         proximity_buffer=get_microstructure_config(symbol).get("wall_proximity_points", 50.0),
+        oi_velocity_score=market_state.get("oi_velocity_score"),
+        rr_value=market_state.get("rr_value"),
+        rr_momentum=market_state.get("rr_momentum"),
+        volume_pcr_atm=market_state.get("volume_pcr_atm"),
+        gamma_flip_drift=market_state.get("gamma_flip_drift"),
+        max_pain_dist=market_state.get("max_pain_dist"),
+        max_pain_zone=market_state.get("max_pain_zone"),
+        days_to_expiry=market_state.get("days_to_expiry"),
     )
 
     confirmation = compute_confirmation_filters(
@@ -608,6 +675,8 @@ def _compute_signal_state(
         hybrid_move_probability=probability_state["hybrid_move_probability"],
         spot_vs_flip=market_state["spot_vs_flip"],
         gamma_regime=market_state["gamma_regime"],
+        volume_pcr_atm=market_state.get("volume_pcr_atm"),
+        volume_pcr_regime=market_state.get("volume_pcr_regime"),
     )
 
     # Direction vote count measures the breadth of conviction behind the

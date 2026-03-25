@@ -924,6 +924,7 @@ def generate_trade(
         holding_profile=holding_profile,
         support_wall=market_state["support_wall"],
         resistance_wall=market_state["resistance_wall"],
+        gamma_flip_drift=market_state.get("gamma_flip_drift"),
     )
     gamma_vol_trade_modifiers = derive_gamma_vol_trade_modifiers(gamma_vol_state, direction=direction)
     gamma_vol_adjustment_score = gamma_vol_trade_modifiers["effective_adjustment_score"]
@@ -957,6 +958,9 @@ def generate_trade(
         ),
         gamma_vol_acceleration_score=gamma_vol_trade_modifiers["gamma_vol_acceleration_score"],
         holding_profile=holding_profile,
+        max_pain_dist=market_state.get("max_pain_dist"),
+        max_pain_zone=market_state.get("max_pain_zone"),
+        days_to_expiry=market_state.get("days_to_expiry"),
     )
     dealer_pressure_trade_modifiers = derive_dealer_pressure_trade_modifiers(dealer_pressure_state, direction=direction)
     dealer_pressure_adjustment_score = dealer_pressure_trade_modifiers["effective_adjustment_score"]
@@ -1051,9 +1055,9 @@ def generate_trade(
 
     gamma_vol_acceleration_score_normalized = _normalize_gamma_vol_score(
         gamma_vol_trade_modifiers["gamma_vol_acceleration_score"],
-        runtime_thresholds.get("gamma_vol_normalization_scale"),
-        runtime_thresholds.get("gamma_vol_winsor_lower"),
-        runtime_thresholds.get("gamma_vol_winsor_upper"),
+        int(_safe_float(runtime_thresholds.get("gamma_vol_normalization_scale"), 100.0)),
+        int(_safe_float(runtime_thresholds.get("gamma_vol_winsor_lower"), 0.0)),
+        int(_safe_float(runtime_thresholds.get("gamma_vol_winsor_upper"), 100.0)),
     )
     structural_imbalance_audit = _compute_structural_imbalance_audit(
         market_state=market_state,
@@ -1105,6 +1109,19 @@ def generate_trade(
         "volatility_regime": market_state["vol_regime"],
         "vol_surface_regime": market_state["surface_regime"],
         "atm_iv": round(float(market_state["atm_iv"]), 2) if market_state["atm_iv"] is not None else None,
+        "max_pain": market_state.get("max_pain"),
+        "max_pain_dist": market_state.get("max_pain_dist"),
+        "max_pain_zone": market_state.get("max_pain_zone"),
+        "atm_straddle_price": market_state.get("atm_straddle_price"),
+        "expected_move_up": market_state.get("expected_move_up"),
+        "expected_move_down": market_state.get("expected_move_down"),
+        # Keep this field as straddle-derived expected-move percent for
+        # consistency with atm_straddle_price in user-facing output.
+        "expected_move_pct": market_state.get("expected_move_pct"),
+        "volume_pcr": market_state.get("volume_pcr"),
+        "volume_pcr_atm": market_state.get("volume_pcr_atm"),
+        "volume_pcr_regime": market_state.get("volume_pcr_regime"),
+        "gamma_flip_drift": market_state.get("gamma_flip_drift"),
         "flow_signal": market_state["flow_signal_value"],
         "smart_money_flow": market_state["smart_money_signal_value"],
         "final_flow_signal": market_state["final_flow_signal"],
@@ -1301,7 +1318,7 @@ def generate_trade(
             "overnight_dealer_pressure_boost": dealer_pressure_trade_modifiers["overnight_dealer_pressure_boost"],
             "dealer_pressure_adjustment_score": dealer_pressure_adjustment_score,
             "expected_move_points": option_efficiency_trade_modifiers["expected_move_points"],
-            "expected_move_pct": option_efficiency_trade_modifiers["expected_move_pct"],
+            "expected_move_pct_model": option_efficiency_trade_modifiers["expected_move_pct"],
             "expected_move_quality": option_efficiency_trade_modifiers["expected_move_quality"],
             "target_reachability_score": option_efficiency_trade_modifiers["target_reachability_score"],
             "premium_efficiency_score": option_efficiency_trade_modifiers["premium_efficiency_score"],
@@ -1323,8 +1340,6 @@ def generate_trade(
             "global_risk_level": global_risk["global_risk_level"],
             "global_risk_action": global_risk["global_risk_action"],
             "global_risk_size_cap": global_risk["global_risk_size_cap"],
-            "global_risk_state_reasons": global_risk_state.get("global_risk_reasons") if isinstance(global_risk_state, dict) else [],
-            "global_risk_overlay_reasons": global_risk["global_risk_reasons"],
             "global_risk_reasons": global_risk["global_risk_reasons"],
             "global_risk_features": global_risk["global_risk_features"],
             "global_risk_diagnostics": global_risk["global_risk_diagnostics"],
@@ -1531,7 +1546,8 @@ def generate_trade(
 
     # --- Time-based exit recommendation ------------------------------------
     _gr_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
-    _mtc = _safe_float(_gr_features.get("minutes_to_close"), None)
+    _mtc_raw = _gr_features.get("minutes_to_close")
+    _mtc = _safe_float(_mtc_raw, 0.0) if _mtc_raw is not None else None
     _mso = round(375.0 - _mtc, 2) if _mtc is not None else None
     exit_timing = compute_exit_timing(
         trade_strength=adjusted_trade_strength,
@@ -1622,7 +1638,7 @@ def generate_trade(
         "exit_urgency": exit_timing["exit_urgency"],
         "exit_timing_reasons": exit_timing_reasons,
         "expected_move_points": option_efficiency_trade_modifiers["expected_move_points"],
-        "expected_move_pct": option_efficiency_trade_modifiers["expected_move_pct"],
+        "expected_move_pct_model": option_efficiency_trade_modifiers["expected_move_pct"],
         "expected_move_quality": option_efficiency_trade_modifiers["expected_move_quality"],
         "target_reachability_score": option_efficiency_trade_modifiers["target_reachability_score"],
         "premium_efficiency_score": option_efficiency_trade_modifiers["premium_efficiency_score"],
@@ -1637,6 +1653,9 @@ def generate_trade(
         "option_efficiency_features": option_efficiency_state.get("option_efficiency_features", {}),
         "option_efficiency_diagnostics": option_efficiency_state.get("option_efficiency_diagnostics", {}),
     })
+    if base_payload.get("expected_move_pct") is None:
+        base_payload["expected_move_pct"] = base_payload.get("expected_move_pct_model")
+
     # --- Overnight hold consolidation -----------------------------------------
     _overnight_layers = [
         ("global_risk", global_risk_trade_modifiers),

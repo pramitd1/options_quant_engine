@@ -186,7 +186,7 @@ def risk_reversal_velocity(
     current_rr: float | None,
     prev_rr: float | None,
     seconds_elapsed: float = 300.0,
-) -> dict:
+) -> dict:  # noqa: E501
     """
     Compute the rate of change of the risk reversal (RR velocity).
 
@@ -207,4 +207,165 @@ def risk_reversal_velocity(
         momentum = "FALLING_PUT_SKEW"
 
     return {"rr_velocity": round(velocity, 4), "rr_momentum": momentum}
+
+
+def compute_atm_straddle_price(option_chain: pd.DataFrame, spot: float) -> dict:
+    """
+    Compute the ATM straddle price from the front-expiry option chain.
+
+    The straddle price = ATM call last price + ATM put last price.
+    This is the market's direct estimate of how many index points it expects
+    the underlying to move by expiry. It is more grounded than IV-derived
+    expected move because it uses actual traded premiums, not implied vol.
+
+    Returns
+    -------
+    dict with keys:
+        atm_straddle_price  – float | None  (call_price + put_price)
+        atm_call_price      – float | None
+        atm_put_price       – float | None
+        expected_move_up    – float | None  (spot + straddle)
+        expected_move_down  – float | None  (spot - straddle)
+        expected_move_pct   – float | None  (straddle / spot as percentage)
+    """
+    _empty = {
+        "atm_straddle_price": None,
+        "atm_call_price": None,
+        "atm_put_price": None,
+        "expected_move_up": None,
+        "expected_move_down": None,
+        "expected_move_pct": None,
+    }
+
+    if option_chain is None or option_chain.empty or spot is None or spot <= 0:
+        return _empty
+
+    df = option_chain.copy()
+
+    # Infer price column.
+    price_col = None
+    for col in ("LAST_PRICE", "lastPrice", "LTP", "ltp"):
+        if col in df.columns:
+            price_col = col
+            break
+    if price_col is None:
+        return _empty
+
+    strike_col = "STRIKE_PR" if "STRIKE_PR" in df.columns else (
+        "strikePrice" if "strikePrice" in df.columns else None
+    )
+    if strike_col is None:
+        return _empty
+
+    # Restrict to front expiry.
+    if "EXPIRY_DT" in df.columns:
+        try:
+            df["_expiry_dt"] = pd.to_datetime(df["EXPIRY_DT"], errors="coerce")
+            front_exp = df["_expiry_dt"].dropna().min()
+            if pd.notna(front_exp):
+                df = df[df["_expiry_dt"] == front_exp]
+        except Exception:
+            pass
+
+    df[strike_col] = pd.to_numeric(df[strike_col], errors="coerce")
+    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
+    df = df.dropna(subset=[strike_col, price_col])
+    df = df[df[price_col] > 0]
+    if df.empty:
+        return _empty
+
+    # Find ATM strike — the one closest to spot.
+    df["_dist"] = (df[strike_col] - float(spot)).abs()
+    # Use the actual strike value at minimum distance row.
+    atm_row = df.sort_values("_dist").iloc[0]
+    atm_strike = float(atm_row[strike_col])
+
+    calls = df[(df["OPTION_TYP"] == "CE") & (df[strike_col] == atm_strike)]
+    puts  = df[(df["OPTION_TYP"] == "PE") & (df[strike_col] == atm_strike)]
+
+    if calls.empty or puts.empty:
+        # Fallback must remain a true straddle: pick nearest strike that has
+        # both CE and PE prices, rather than mixing different strikes.
+        counts = (
+            df.pivot_table(index=strike_col, columns="OPTION_TYP", values=price_col, aggfunc="count")
+            .fillna(0)
+        )
+        valid_strikes = counts[(counts.get("CE", 0) > 0) & (counts.get("PE", 0) > 0)].index.tolist()
+        if not valid_strikes:
+            return _empty
+        best_strike = min(valid_strikes, key=lambda s: abs(float(s) - float(spot)))
+        calls = df[(df["OPTION_TYP"] == "CE") & (df[strike_col] == best_strike)]
+        puts = df[(df["OPTION_TYP"] == "PE") & (df[strike_col] == best_strike)]
+        if calls.empty or puts.empty:
+            return _empty
+
+    atm_call_price = round(float(calls[price_col].iloc[0]), 2)
+    atm_put_price  = round(float(puts[price_col].iloc[0]), 2)
+    straddle_price = round(atm_call_price + atm_put_price, 2)
+
+    expected_move_pct = round(straddle_price / float(spot) * 100.0, 3) if spot > 0 else None
+
+    return {
+        "atm_straddle_price": straddle_price,
+        "atm_call_price": atm_call_price,
+        "atm_put_price": atm_put_price,
+        "expected_move_up":   round(float(spot) + straddle_price, 2),
+        "expected_move_down": round(float(spot) - straddle_price, 2),
+        "expected_move_pct":  expected_move_pct,
+    }
+
+
+def iv_hv_spread(atm_iv: float | None, realized_hv: float | None) -> dict:
+    """
+    Compute the IV − HV spread to assess option richness vs cheapness.
+
+    A positive spread means implied vol > recent realised vol:
+    options are 'expensive' — sellers have an edge.
+    A negative spread means implied vol < realised vol:
+    options are 'cheap' — buyers have a slight structural edge.
+
+    Both inputs should be annualised decimal fractions (e.g., 0.18 for 18%).
+
+    Returns
+    -------
+    dict with keys:
+        iv_hv_spread    – float | None  (positive = IV rich, negative = IV cheap)
+        iv_hv_regime    – "IV_RICH" | "IV_FAIR" | "IV_CHEAP" | "UNAVAILABLE"
+        atm_iv_pct      – float | None  (ATM IV as percentage)
+        realized_hv_pct – float | None
+    """
+    _empty = {
+        "iv_hv_spread": None,
+        "iv_hv_regime": "UNAVAILABLE",
+        "atm_iv_pct": None,
+        "realized_hv_pct": None,
+    }
+
+    if atm_iv is None or realized_hv is None or realized_hv <= 0:
+        return _empty
+
+    # Normalise: both should be decimal fractions (0–1 range).
+    from utils.regime_normalization import normalize_iv_decimal
+    atm_iv_dec = normalize_iv_decimal(atm_iv, default=None)
+    hv_dec = normalize_iv_decimal(realized_hv, default=None)
+
+    if atm_iv_dec is None or hv_dec is None or hv_dec <= 0:
+        return _empty
+
+    spread = round(atm_iv_dec - hv_dec, 4)
+
+    # ±2 vol points tolerance band for "FAIR"
+    if spread > 0.02:
+        regime = "IV_RICH"
+    elif spread < -0.02:
+        regime = "IV_CHEAP"
+    else:
+        regime = "IV_FAIR"
+
+    return {
+        "iv_hv_spread": spread,
+        "iv_hv_regime": regime,
+        "atm_iv_pct": round(atm_iv_dec * 100.0, 2),
+        "realized_hv_pct": round(hv_dec * 100.0, 2),
+    }
 

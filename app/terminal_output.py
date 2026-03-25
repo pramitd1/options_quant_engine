@@ -238,22 +238,64 @@ def _resolve_move_sigma_points(trade):
 
 
 def _compute_breakout_probability_rows(trade, thresholds=(100, 150, 200)):
-    """Compute directional breakout probabilities for point thresholds."""
+    """Compute directional breakout probabilities for point thresholds.
+
+    Returns:
+        (rows, has_direction) where each row is (threshold_pts, up_prob, down_prob).
+        When has_direction is False the split is symmetric (50/50); the caller
+        should display a single "either direction" probability rather than
+        separate up/down columns.
+    """
     sigma_points = _resolve_move_sigma_points(trade)
     if not isinstance(sigma_points, (int, float)) or sigma_points <= 0:
-        return []
-
-    hybrid_prob = trade.get("hybrid_move_probability") if isinstance(trade, dict) else None
-    if not isinstance(hybrid_prob, (int, float)):
-        hybrid_prob = 0.5
-    hybrid_prob = max(0.0, min(1.0, float(hybrid_prob)))
+        return [], False
 
     direction = str((trade or {}).get("direction") or "").upper().strip()
-    direction_bias = 1.0 if "CALL" in direction else (-1.0 if "PUT" in direction else 0.0)
-    confidence_tilt = min(abs(hybrid_prob - 0.5) * 2.0, 1.0)
-    up_share = 0.5 + (0.25 * direction_bias * confidence_tilt)
-    up_share = max(0.0, min(1.0, up_share))
-    down_share = 1.0 - up_share
+    has_direction = bool(direction and ("CALL" in direction or "PUT" in direction))
+    is_call = "CALL" in direction
+
+    if has_direction:
+        # Derive the directional split from aligned flow/structural signals.
+        # hybrid_move_probability measures omnidirectional move likelihood —
+        # P(|ΔS| > k) — not P(move in the signaled direction), so it is NOT
+        # used here to avoid a semantic mismatch.
+        flow_signal = str((trade or {}).get("final_flow_signal") or "").upper()
+        dealer_bias = str((trade or {}).get("dealer_hedging_bias") or "").upper()
+        spot_vs_flip = str((trade or {}).get("spot_vs_flip") or "").upper()
+        macro_regime = str((trade or {}).get("macro_regime") or "").upper()
+
+        signal_bonus = 0.0
+        if is_call:
+            if "BULLISH" in flow_signal:
+                signal_bonus += 0.07
+            elif "BEARISH" in flow_signal:
+                signal_bonus -= 0.05  # contra-flow reduces confidence
+            if "UPSIDE" in dealer_bias:
+                signal_bonus += 0.04
+            if spot_vs_flip == "ABOVE_FLIP":
+                signal_bonus += 0.03
+            if macro_regime == "RISK_ON":
+                signal_bonus += 0.03
+        else:
+            if "BEARISH" in flow_signal:
+                signal_bonus += 0.07
+            elif "BULLISH" in flow_signal:
+                signal_bonus -= 0.05  # contra-flow reduces confidence
+            if "DOWNSIDE" in dealer_bias:
+                signal_bonus += 0.04
+            if spot_vs_flip == "BELOW_FLIP":
+                signal_bonus += 0.03
+            if "RISK_OFF" in macro_regime:
+                signal_bonus += 0.03
+
+        # P(move in signal direction): base 0.50 + signal alignment bonus,
+        # bounded conservatively so we never overstate directional certainty.
+        signal_share = min(max(0.50 + signal_bonus, 0.35), 0.70)
+        up_share = signal_share if is_call else 1.0 - signal_share
+        down_share = 1.0 - up_share
+    else:
+        up_share = 0.5
+        down_share = 0.5
 
     rows = []
     sqrt_two = math.sqrt(2.0)
@@ -273,7 +315,7 @@ def _compute_breakout_probability_rows(trade, thresholds=(100, 150, 200)):
         down_prob = two_sided_tail * down_share
         rows.append((int(round(k)), up_prob, down_prob))
 
-    return rows
+    return rows, has_direction
 
 
 def _print_section(title, fields):
@@ -284,6 +326,343 @@ def _print_section(title, fields):
         if value is None:
             continue
         print(f"{key:26}: {_fmt(value)}")
+
+
+def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False):
+    """Resolve strongest top-N resistance/support walls from trade payload."""
+    if not isinstance(trade, dict):
+        return [], []
+
+    spot = trade.get("spot")
+    clusters = trade.get("gamma_clusters") or []
+    liquidity_levels = trade.get("liquidity_levels") or []
+    support = trade.get("support_wall")
+    resistance = trade.get("resistance_wall")
+    dlm = trade.get("dealer_liquidity_map") or {}
+
+    strength_scores = {}
+
+    def _add_strength(level, points):
+        try:
+            level_f = float(level)
+        except (TypeError, ValueError):
+            return
+        strength_scores[level_f] = strength_scores.get(level_f, 0.0) + float(points)
+
+    # Liquidity levels are already ordered by heatmap strength (highest first).
+    liq_len = len(liquidity_levels)
+    for idx, level in enumerate(liquidity_levels):
+        _add_strength(level, max(liq_len - idx, 1) * 1.0)
+
+    # Gamma clusters are structural magnets; earlier items are stronger.
+    clu_len = len(clusters)
+    for idx, level in enumerate(clusters):
+        if isinstance(level, dict):
+            level = level.get("strike")
+        _add_strength(level, max(clu_len - idx, 1) * 0.8)
+
+    # Direct walls get strong priors.
+    _add_strength(support, 3.0)
+    _add_strength(resistance, 3.0)
+    _add_strength(dlm.get("next_support"), 2.5)
+    _add_strength(dlm.get("next_resistance"), 2.5)
+
+    wall_candidates = list(strength_scores.keys())
+
+    support_walls = []  # (level, strength)
+    resistance_walls = []  # (level, strength)
+    spot_f = None
+    try:
+        if spot is not None:
+            spot_f = float(spot)
+    except (TypeError, ValueError):
+        spot_f = None
+
+    if spot_f is not None:
+        support_walls = [(lvl, strength_scores.get(lvl, 0.0)) for lvl in wall_candidates if lvl <= spot_f]
+        resistance_walls = [(lvl, strength_scores.get(lvl, 0.0)) for lvl in wall_candidates if lvl >= spot_f]
+
+    # Rank by structural strength first, then by proximity to spot.
+    if spot_f is not None:
+        top_supports = [
+            lvl for lvl, _score in sorted(
+                support_walls,
+                key=lambda item: (-item[1], abs(spot_f - item[0]), -item[0]),
+            )[:top_n]
+        ]
+        top_resistances = [
+            lvl for lvl, _score in sorted(
+                resistance_walls,
+                key=lambda item: (-item[1], abs(spot_f - item[0]), item[0]),
+            )[:top_n]
+        ]
+    else:
+        top_supports = []
+        top_resistances = []
+
+    # Fallback when spot/context is missing.
+    if not top_supports and support is not None:
+        try:
+            top_supports = [float(support)]
+        except (TypeError, ValueError):
+            top_supports = []
+    if not top_resistances and resistance is not None:
+        try:
+            top_resistances = [float(resistance)]
+        except (TypeError, ValueError):
+            top_resistances = []
+
+    if not formatted:
+        return top_supports, top_resistances
+
+    # Re-sort for display: nearest first (most immediately relevant to the trader).
+    # Strength still drives which top-N are chosen; this only affects display order.
+    if spot_f is not None:
+        top_supports = sorted(top_supports, reverse=True)    # highest level = nearest support below spot
+        top_resistances = sorted(top_resistances)            # lowest level  = nearest resistance above spot
+
+    support_display = [
+        _format_proximity(level, spot) if spot is not None else str(level)
+        for level in top_supports
+    ]
+    resistance_display = [
+        _format_proximity(level, spot) if spot is not None else str(level)
+        for level in top_resistances
+    ]
+    return support_display, resistance_display
+
+
+def _format_open_interest_value(value):
+    """Format open-interest values into compact human-readable units."""
+    try:
+        oi = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if oi >= 1_000_000:
+        return f"{oi / 1_000_000:.2f}M"
+    if oi >= 1_000:
+        return f"{oi / 1_000:.1f}K"
+    return f"{oi:.0f}"
+
+
+def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
+    """Resolve top-N CE/PE strikes with raw OI values."""
+    if option_chain_frame is None or not hasattr(option_chain_frame, "copy"):
+        return [], []
+
+    try:
+        import pandas as pd
+    except Exception:
+        return [], []
+
+    if not isinstance(option_chain_frame, pd.DataFrame) or option_chain_frame.empty:
+        return [], []
+
+    df = option_chain_frame.copy()
+
+    def _pick_col(candidates):
+        for col in candidates:
+            if col in df.columns:
+                return col
+        return None
+
+    strike_col = _pick_col(["strike", "STRIKE_PR", "strikePrice", "strike_price"])
+    oi_col = _pick_col(["open_interest", "OPEN_INT", "openInterest", "oi"])
+    type_col = _pick_col(["option_type", "OPTION_TYP", "type", "instrument_type"])
+    oi_change_col = _pick_col(["CHG_IN_OI", "changeinOI", "change_in_oi"])
+    expiry_col = _pick_col(["selected_expiry", "EXPIRY_DT", "expiry", "expiry_date"])
+
+    if not strike_col or not oi_col or not type_col:
+        return [], []
+
+    selected_expiry = trade.get("selected_expiry") if isinstance(trade, dict) else None
+    if selected_expiry and expiry_col:
+        try:
+            sel = pd.Timestamp(selected_expiry).date()
+            exp_dt = pd.to_datetime(df[expiry_col], errors="coerce").dt.date
+            filtered = df[exp_dt == sel]
+            if not filtered.empty:
+                df = filtered
+        except Exception:
+            pass
+
+    selected_cols = [strike_col, oi_col, type_col]
+    if oi_change_col:
+        selected_cols.append(oi_change_col)
+    slim = df[selected_cols].copy()
+    slim[strike_col] = pd.to_numeric(slim[strike_col], errors="coerce")
+    slim[oi_col] = pd.to_numeric(slim[oi_col], errors="coerce")
+    if oi_change_col:
+        slim[oi_change_col] = pd.to_numeric(slim[oi_change_col], errors="coerce").fillna(0.0)
+    slim[type_col] = slim[type_col].astype(str).str.upper().str.strip()
+    slim = slim.dropna(subset=[strike_col, oi_col])
+    if slim.empty:
+        return [], []
+
+    agg_map = {oi_col: "max"}
+    if oi_change_col:
+        agg_map[oi_change_col] = "sum"
+    slim = slim.groupby([strike_col, type_col], as_index=False).agg(agg_map)
+
+    spot = trade.get("spot") if isinstance(trade, dict) else None
+    try:
+        spot_f = float(spot) if spot is not None else None
+    except (TypeError, ValueError):
+        spot_f = None
+
+    prev_close = trade.get("prev_close") if isinstance(trade, dict) else None
+    try:
+        prev_close_f = float(prev_close) if prev_close is not None else None
+    except (TypeError, ValueError):
+        prev_close_f = None
+
+    def _infer_side(option_type, oi_change):
+        try:
+            oi_chg_f = float(oi_change)
+        except (TypeError, ValueError):
+            oi_chg_f = None
+
+        if oi_chg_f is None or prev_close_f is None or spot_f is None:
+            return "OI_ONLY"
+
+        price_bias_up = spot_f > prev_close_f
+        price_bias_down = spot_f < prev_close_f
+
+        opt = str(option_type or "").upper()
+        if opt in {"CE", "CALL", "C"}:
+            premium_up_proxy = price_bias_up
+            premium_down_proxy = price_bias_down
+        else:
+            premium_up_proxy = price_bias_down
+            premium_down_proxy = price_bias_up
+
+        if oi_chg_f > 0:
+            if premium_up_proxy:
+                return "BUY_BUILDUP"
+            if premium_down_proxy:
+                return "WRITE_BUILDUP"
+            return "OPEN_BUILDUP"
+
+        if oi_chg_f < 0:
+            if premium_up_proxy:
+                return "SHORT_COVERING"
+            if premium_down_proxy:
+                return "LONG_UNWIND"
+            return "OI_UNWIND"
+
+        return "OI_FLAT"
+
+    def _top_for(opt_labels):
+        side = slim[slim[type_col].isin(opt_labels)].copy()
+        if side.empty:
+            return []
+        if spot_f is not None:
+            side["_dist"] = (side[strike_col] - spot_f).abs()
+        else:
+            side["_dist"] = 0.0
+        side = side.sort_values(by=[oi_col, "_dist", strike_col], ascending=[False, True, True]).head(top_n)
+        return [
+            (
+                float(r[strike_col]),
+                float(r[oi_col]),
+                _infer_side(r[type_col], r.get(oi_change_col, 0.0) if oi_change_col else 0.0),
+            )
+            for _idx, r in side.iterrows()
+        ]
+
+    top_calls = _top_for({"CE", "CALL", "C"})
+    top_puts = _top_for({"PE", "PUT", "P"})
+    return top_calls, top_puts
+
+
+def _resolve_top_oi_strikes(trade, option_chain_frame, *, top_n=5, formatted=True):
+    """Resolve top-N CE/PE strikes by raw open interest, preference nearest on ties."""
+    top_calls, top_puts = _resolve_top_oi_levels(trade, option_chain_frame, top_n=top_n)
+    if not formatted:
+        return [lvl for lvl, _oi, _inf in top_calls], [lvl for lvl, _oi, _inf in top_puts]
+
+    spot = trade.get("spot") if isinstance(trade, dict) else None
+    try:
+        spot_f = float(spot) if spot is not None else None
+    except (TypeError, ValueError):
+        spot_f = None
+
+    def _format(rows):
+        out = []
+        for lvl, oi, inf in rows:
+            oi_str = _format_open_interest_value(oi)
+            prox = _format_proximity(lvl, spot_f if spot_f is not None else spot)
+            out.append(f"{prox}  (OI {oi_str}; {inf})")
+        return out
+
+    return _format(top_calls), _format(top_puts)
+
+
+def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi, put_oi, sort_mode="GROUPED"):
+    """Render support/resistance and high-OI strikes as separate compact tables."""
+    structural_rows = []
+    oi_rows = []
+
+    def _dist(level):
+        try:
+            lvl = float(level)
+            s = float(spot)
+        except (TypeError, ValueError):
+            return "-", "-"
+        d = lvl - s
+        p = (d / s * 100.0) if s else 0.0
+        return f"{d:+.1f}", f"{p:+.2f}%"
+
+    for idx, lvl in enumerate(sorted([float(x) for x in resistances], reverse=False), start=1):
+        d_pts, d_pct = _dist(lvl)
+        structural_rows.append(("resistance", idx, f"{lvl:.0f}", d_pts, d_pct, "-", 0.0))
+
+    for idx, lvl in enumerate(sorted([float(x) for x in supports], reverse=True), start=1):
+        d_pts, d_pct = _dist(lvl)
+        structural_rows.append(("support", idx, f"{lvl:.0f}", d_pts, d_pct, "-", 0.0))
+
+    for idx, (lvl, oi, inference) in enumerate(call_oi, start=1):
+        d_pts, d_pct = _dist(lvl)
+        oi_rows.append(("CALL", idx, f"{lvl:.0f}", d_pts, d_pct, _format_open_interest_value(oi), str(inference), float(oi)))
+
+    for idx, (lvl, oi, inference) in enumerate(put_oi, start=1):
+        d_pts, d_pct = _dist(lvl)
+        oi_rows.append(("PUT", idx, f"{lvl:.0f}", d_pts, d_pct, _format_open_interest_value(oi), str(inference), float(oi)))
+
+    if not structural_rows and not oi_rows:
+        return
+
+    mode = str(sort_mode or "GROUPED").upper().strip()
+    if mode == "NEAREST":
+        try:
+            spot_f = float(spot)
+        except (TypeError, ValueError):
+            spot_f = None
+        if spot_f is not None:
+            structural_rows = sorted(
+                structural_rows,
+                key=lambda row: abs(float(row[2]) - spot_f),
+            )
+            oi_rows = sorted(
+                oi_rows,
+                key=lambda row: (
+                    abs(float(row[2]) - spot_f),
+                    -float(row[7]),
+                ),
+            )
+
+    if structural_rows:
+        print("\n  SUPPORT / RESISTANCE")
+        print("  kind       rank strike   dist_pts dist_%")
+        for kind, rank, strike, dist_pts, dist_pct, _oi_str, _oi_num in structural_rows:
+            print(f"  {kind:<10} {rank:>4} {strike:>7} {dist_pts:>9} {dist_pct:>8}")
+
+    if oi_rows:
+        print("\n  HIGHEST OI STRIKES")
+        print("  kind       rank strike   dist_pts dist_%    oi inference")
+        for kind, rank, strike, dist_pts, dist_pct, oi_str, inference, _oi_num in oi_rows:
+            print(f"  {kind:<10} {rank:>4} {strike:>7} {dist_pts:>9} {dist_pct:>8} {oi_str:>7} {inference}")
+        print("  note: inference is a proxy based on OI change plus underlying move vs prev_close")
 
 
 def _first_present(mapping, keys, default=None):
@@ -818,19 +1197,16 @@ def _render_dealer_gamma_levels(trade):
     """Print a compact DEALER GAMMA LEVELS block."""
     gamma_flip = trade.get("gamma_flip")
     clusters = trade.get("gamma_clusters") or []
-    support = trade.get("support_wall")
-    resistance = trade.get("resistance_wall")
     spot = trade.get("spot")
-    dlm = trade.get("dealer_liquidity_map") or {}
-
-    # Fall back to dealer_liquidity_map walls if trade-level walls are absent
-    if support is None:
-        support = dlm.get("next_support")
-    if resistance is None:
-        resistance = dlm.get("next_resistance")
+    dealer_flow_state = trade.get("dealer_flow_state")
+    intraday_gamma_state = trade.get("intraday_gamma_state")
+    vanna_regime = trade.get("vanna_regime")
+    charm_regime = trade.get("charm_regime")
+    gex = trade.get("gamma_exposure_greeks")
 
     # Nothing to show if all data is missing
-    if gamma_flip is None and not clusters and support is None and resistance is None:
+    has_pressure = any([dealer_flow_state, intraday_gamma_state, vanna_regime, charm_regime, gex])
+    if gamma_flip is None and not clusters and not has_pressure:
         return
 
     print(f"\nDEALER GAMMA LEVELS")
@@ -854,14 +1230,29 @@ def _render_dealer_gamma_levels(trade):
             m_display = _format_proximity(m, spot) if spot else str(m)
             print(f"    {m_display}")
 
-    if support is not None or resistance is not None:
-        print(f"\n  Liquidity Walls")
-        if resistance is not None:
-            r_display = _format_proximity(resistance, spot) if spot else str(resistance)
-            print(f"    {r_display}  Resistance")
-        if support is not None:
-            s_display = _format_proximity(support, spot) if spot else str(support)
-            print(f"    {s_display}  Support")
+    # Dealer pressure sub-block: flow posture, intraday gamma dynamics, second-order Greek regimes.
+    # These are not shown in REGIME SUMMARY and provide unique structural context for gamma trading.
+    pressure_items = []
+    if dealer_flow_state:
+        pressure_items.append(("flow_state", dealer_flow_state))
+    if gex is not None and gex != 0.0:
+        gex_label = "NET_LONG_GAMMA" if gex > 0 else "NET_SHORT_GAMMA"
+        pressure_items.append(("net_gex", f"{gex:+.4f}  ({gex_label})"))
+    if intraday_gamma_state and intraday_gamma_state not in ("NEUTRAL", "NO_SHIFT"):
+        pressure_items.append(("gamma_shift", intraday_gamma_state))
+    # Gamma flip drift: direction and magnitude vs previous snapshot
+    _flip_drift = trade.get("gamma_flip_drift") or {}
+    if _flip_drift.get("drift_direction") and _flip_drift["drift_direction"] != "STABLE":
+        _drift_pts = _flip_drift.get("drift", 0)
+        pressure_items.append(("flip_drift", f"{_flip_drift['drift_direction']}  ({_drift_pts:+.0f} pts)"))
+    if vanna_regime and vanna_regime not in ("UNKNOWN", "NEUTRAL_VANNA"):
+        pressure_items.append(("vanna", vanna_regime))
+    if charm_regime and charm_regime not in ("UNKNOWN", "NEUTRAL_CHARM"):
+        pressure_items.append(("charm", charm_regime))
+    if pressure_items:
+        print(f"\n  Dealer Pressure")
+        for label, value in pressure_items:
+            print(f"    {label:<22}: {value}")
 
 
 # ---------------------------------------------------------------------------
@@ -1047,7 +1438,8 @@ def _render_signal_confidence(trade, *, show_components=True):
 # ---------------------------------------------------------------------------
 
 def render_compact(*, result, trade, spot_summary, macro_event_state,
-                   global_risk_state, execution_trade):
+                   global_risk_state, execution_trade, option_chain_frame=None,
+                   market_levels_sort_mode="GROUPED"):
     """Render structured compact output following a logical trader workflow.
 
     Section order:
@@ -1064,6 +1456,56 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 
     # ── 1. MARKET SUMMARY ────────────────────────────────────────────────
     spot = spot_summary.get("spot")
+    # Build expected move display with straddle points, range, and optional
+    # model delta when model-vs-straddle percentages diverge materially.
+    _straddle = trade.get("atm_straddle_price") if trade else None
+    _exp_pct = trade.get("expected_move_pct") if trade else None
+    _exp_pct_model = trade.get("expected_move_pct_model") if trade else None
+    _exp_up = trade.get("expected_move_up") if trade else None
+    _exp_down = trade.get("expected_move_down") if trade else None
+    _expected_move_str = None
+    if _straddle is not None:
+        _expected_move_str = f"±{_straddle:.0f} pts"
+        if _exp_down is not None and _exp_up is not None:
+            _expected_move_str += f"  [{_exp_down:.0f} - {_exp_up:.0f}]"
+        if _exp_pct is not None:
+            _expected_move_str += f"  ({_exp_pct:.2f}%)"
+            if _exp_pct_model is not None and abs(float(_exp_pct) - float(_exp_pct_model)) >= 0.30:
+                _expected_move_str += f" | model {float(_exp_pct_model):.2f}%"
+    elif _exp_pct_model is not None:
+        _expected_move_str = f"model {float(_exp_pct_model):.2f}%"
+    # Max pain display with proximity zone annotation.
+    _max_pain = trade.get("max_pain") if trade else None
+    _max_pain_zone = trade.get("max_pain_zone") if trade else None
+    _max_pain_str = None
+    if _max_pain is not None:
+        try:
+            _max_pain_num = float(_max_pain)
+            _max_pain_str = str(int(round(_max_pain_num))) if abs(_max_pain_num - round(_max_pain_num)) < 1e-6 else f"{_max_pain_num:.2f}"
+        except Exception:
+            _max_pain_str = str(_max_pain)
+        if _max_pain_zone and _max_pain_zone not in ("UNAVAILABLE",):
+            _zone_label = {"BELOW_SPOT": "below spot", "ABOVE_SPOT": "above spot", "AT_SPOT": "at spot"}.get(_max_pain_zone, "")
+            if _zone_label:
+                _max_pain_dist = trade.get("max_pain_dist")
+                _dist_str = f"  ({abs(_max_pain_dist):.0f} pts {_zone_label})" if _max_pain_dist is not None else f"  ({_zone_label})"
+                _max_pain_str += _dist_str
+
+    _trade_with_prev_close = dict(trade) if trade else None
+    if _trade_with_prev_close is not None:
+        _trade_with_prev_close["prev_close"] = spot_summary.get("prev_close")
+
+    _top_support_levels, _top_resistance_levels = _resolve_top_liquidity_walls(
+        trade,
+        top_n=3,
+        formatted=False,
+    ) if trade else ([], [])
+    _top_call_oi_levels, _top_put_oi_levels = _resolve_top_oi_levels(
+        _trade_with_prev_close,
+        option_chain_frame,
+        top_n=5,
+    ) if trade else ([], [])
+
     _print_section("MARKET SUMMARY", {
         "spot": spot,
         "day_range": (
@@ -1071,13 +1513,20 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             if spot_summary.get("day_low") is not None else None
         ),
         "prev_close": spot_summary.get("prev_close"),
-        "gamma_flip": trade.get("gamma_flip") if trade else None,
-        "support_wall": trade.get("support_wall") if trade else None,
-        "resistance_wall": trade.get("resistance_wall") if trade else None,
+        "max_pain": _max_pain_str,
+        "expected_move": _expected_move_str,
         "atm_iv": trade.get("atm_iv") if trade else None,
         "macro_event_risk": macro_event_state.get("macro_event_risk_score"),
         "event_lockdown": macro_event_state.get("event_lockdown_flag"),
     })
+    _render_market_summary_levels_table(
+        spot=spot,
+        resistances=_top_resistance_levels,
+        supports=_top_support_levels,
+        call_oi=_top_call_oi_levels,
+        put_oi=_top_put_oi_levels,
+        sort_mode=market_levels_sort_mode,
+    )
 
     # ── 2. REGIME SUMMARY ────────────────────────────────────────────────
     if trade:
@@ -1093,12 +1542,21 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         vol_regime = trade.get("vol_surface_regime")
         vol_icon = "📈" if vol_regime == "HIGH_VOL" else ("📉" if vol_regime == "LOW_VOL" else "")
 
+        # Volume PCR display: "1.42 (PUT_DOMINANT)"
+        _vol_pcr_atm = trade.get("volume_pcr_atm")
+        _vol_pcr_regime = trade.get("volume_pcr_regime")
+        _vol_pcr_str = None
+        if _vol_pcr_atm is not None:
+            _vol_pcr_str = f"{_vol_pcr_atm:.2f}"
+            if _vol_pcr_regime:
+                _vol_pcr_str += f"  ({_vol_pcr_regime})"
         _print_section("REGIME SUMMARY", {
             "gamma_regime": f"{gamma_icon} {gamma_regime}".strip(),
             "spot_vs_flip": trade.get("spot_vs_flip"),
             "flow_signal": f"{flow_icon} {flow_signal}".strip(),
             "vol_regime": f"{vol_icon} {vol_regime}".strip(),
             "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
+            "volume_pcr": _vol_pcr_str,
             "risk_reversal": regime_extras.get("risk_reversal"),
             "rr_momentum": regime_extras.get("rr_momentum"),
             "oi_velocity_score": regime_extras.get("oi_velocity_score"),
@@ -1342,9 +1800,23 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
     else:
         oe_display = oe_status
 
+    # global_risk state label is already shown in REGIME SUMMARY; avoid duplication here.
+    # Annotate the score when the RISK_OFF state is driven by macro regime rather than
+    # the numeric score alone (score < 50 but state = RISK_OFF indicates macro override).
+    _grs_score = global_risk_state.get("global_risk_score")
+    _grs_state = global_risk_state.get("global_risk_state")
+    if (
+        _grs_score is not None
+        and isinstance(_grs_score, (int, float))
+        and _grs_state == "RISK_OFF"
+        and _grs_score < 50
+    ):
+        _grs_display = f"{_grs_score} (macro-driven)"
+    else:
+        _grs_display = _grs_score
+
     risk_fields = {
-        "global_risk": global_risk_state.get("global_risk_state"),
-        "global_risk_state_score": global_risk_state.get("global_risk_score"),
+        "global_risk_state_score": _grs_display,
         "event_lockdown": event_lock if event_lock else None,
         "watchlist": watchlist if watchlist else None,
         "macro_news_status": trade.get("macro_news_status"),
@@ -1356,12 +1828,15 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
     _print_section("RISK SUMMARY", risk_fields)
 
     # ── 7. BREAKOUT PROBABILITY (POINTS) ───────────────────────────────
-    breakout_rows = _compute_breakout_probability_rows(trade)
+    breakout_rows, breakout_has_direction = _compute_breakout_probability_rows(trade)
     if breakout_rows:
         print("\nBREAKOUT PROBABILITY (POINTS)")
         print("---------------------------")
         for threshold, up_prob, down_prob in breakout_rows:
-            print(f"{f'+/- {threshold} pts':26}: up {up_prob:.0%} | down {down_prob:.0%}")
+            if breakout_has_direction:
+                print(f"{f'+/- {threshold} pts':26}: up {up_prob:.0%} | down {down_prob:.0%}")
+            else:
+                print(f"{f'+/- {threshold} pts':26}: {up_prob + down_prob:.0%} either direction")
 
 # ---------------------------------------------------------------------------
 # STANDARD mode — compact + scoring/confirmation diagnostics
@@ -1370,7 +1845,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 def render_standard(*, result, trade, spot_summary, spot_validation,
                     option_chain_validation, macro_event_state,
                     macro_news_state, global_risk_state, global_market_snapshot,
-                    execution_trade, headline_state):
+                    execution_trade, headline_state, option_chain_frame=None):
     """Render standard output: compact sections plus scoring and confirmation."""
     # Validations
     _print_validation("SPOT VALIDATION", spot_validation)
@@ -1429,6 +1904,13 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         if key in display:
             print(f"{key:26}: {display[key]}")
 
+    _exp_pct_straddle = trade.get("expected_move_pct")
+    _exp_pct_model = trade.get("expected_move_pct_model")
+    _exp_pct_div = None
+    _top_call_oi, _top_put_oi = _resolve_top_oi_strikes(trade, option_chain_frame, top_n=5, formatted=True)
+    if isinstance(_exp_pct_straddle, (int, float)) and isinstance(_exp_pct_model, (int, float)):
+        _exp_pct_div = round(float(_exp_pct_model) - float(_exp_pct_straddle), 3)
+
     # Signal summary
     _print_section("QUANT TRADE SIGNAL", {
         "symbol": trade.get("symbol"),
@@ -1445,7 +1927,22 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "hybrid_move_probability": trade.get("hybrid_move_probability"),
         "gamma_regime": trade.get("gamma_regime"),
         "spot_vs_flip": trade.get("spot_vs_flip"),
+        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[1],
+        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[0],
+        "top_call_oi_strikes": _top_call_oi,
+        "top_put_oi_strikes": _top_put_oi,
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
+        "gamma_flip_drift": trade.get("gamma_flip_drift"),
+        "max_pain": trade.get("max_pain"),
+        "max_pain_dist": trade.get("max_pain_dist"),
+        "max_pain_zone": trade.get("max_pain_zone"),
+        "atm_straddle_price": trade.get("atm_straddle_price"),
+        "expected_move_pct_straddle": _exp_pct_straddle,
+        "expected_move_pct_model": _exp_pct_model,
+        "expected_move_pct_divergence": _exp_pct_div,
+        "volume_pcr": trade.get("volume_pcr"),
+        "volume_pcr_atm": trade.get("volume_pcr_atm"),
+        "volume_pcr_regime": trade.get("volume_pcr_regime"),
         "macro_regime": trade.get("macro_regime"),
         "global_risk_state": trade.get("global_risk_state"),
         "option_efficiency_score": trade.get("option_efficiency_score"),
@@ -1524,6 +2021,7 @@ _DEALER_DASHBOARD_KEYS = [
     ("Vanna Exposure", "vanna_exposure"),
     ("Charm Exposure", "charm_exposure"),
     ("Gamma Flip Level", "gamma_flip"),
+    ("Gamma Flip Drift", "gamma_flip_drift"),
     ("Spot vs Flip", "spot_vs_flip"),
     ("Gamma Regime", "gamma_regime"),
     ("Vanna Regime", "vanna_regime"),
@@ -1540,6 +2038,14 @@ _DEALER_DASHBOARD_KEYS = [
     ("Volatility Regime", "volatility_regime"),
     ("Vol Surface Regime", "vol_surface_regime"),
     ("ATM IV", "atm_iv"),
+    ("ATM Straddle", "atm_straddle_price"),
+    ("Expected Move %", "expected_move_pct"),
+    ("Max Pain", "max_pain"),
+    ("Max Pain Dist", "max_pain_dist"),
+    ("Max Pain Zone", "max_pain_zone"),
+    ("Volume PCR", "volume_pcr"),
+    ("Volume PCR ATM", "volume_pcr_atm"),
+    ("Volume PCR Regime", "volume_pcr_regime"),
     ("Flow Signal", "flow_signal"),
     ("Smart Money Flow", "smart_money_flow"),
     ("Final Flow Signal", "final_flow_signal"),
@@ -1561,8 +2067,10 @@ _DEALER_DASHBOARD_KEYS = [
     ("Macro Size Mult", "macro_position_size_multiplier"),
     ("Macro Lots Hook", "macro_suggested_lots"),
     ("Gamma Event", "gamma_event"),
-    ("Support Wall", "support_wall"),
-    ("Resistance Wall", "resistance_wall"),
+    ("Top Resistance Walls", "top_resistance_walls"),
+    ("Top Support Walls", "top_support_walls"),
+    ("Top Call OI Strikes", "top_call_oi_strikes"),
+    ("Top Put OI Strikes", "top_put_oi_strikes"),
     ("Liquidity Levels", "liquidity_levels"),
     ("Liquidity Voids", "liquidity_voids"),
     ("Liquidity Void Signal", "liquidity_void_signal"),
@@ -1577,6 +2085,7 @@ _DIAGNOSTIC_KEYS = [
     "liquidity_voids",
     "liquidity_vacuum_zones",
     "dealer_liquidity_map",
+    "gamma_flip_drift",
     "move_probability_components",
     "spot_validation",
     "option_chain_validation",
@@ -1655,6 +2164,12 @@ def _render_diagnostics(trade):
 
 def _render_full_signal_summary(trade):
     """Print the exhaustive quant trade signal block."""
+    _exp_pct_straddle = trade.get("expected_move_pct")
+    _exp_pct_model = trade.get("expected_move_pct_model")
+    _exp_pct_div = None
+    if isinstance(_exp_pct_straddle, (int, float)) and isinstance(_exp_pct_model, (int, float)):
+        _exp_pct_div = round(float(_exp_pct_model) - float(_exp_pct_straddle), 3)
+
     compact = {
         "symbol": trade.get("symbol"),
         "direction": trade.get("direction"),
@@ -1676,6 +2191,8 @@ def _render_full_signal_summary(trade):
         "flow_signal": trade.get("final_flow_signal"),
         "gamma_regime": trade.get("gamma_regime"),
         "spot_vs_flip": trade.get("spot_vs_flip"),
+        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[1],
+        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[0],
         "dealer_position": trade.get("dealer_position"),
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
         "macro_event_risk_score": trade.get("macro_event_risk_score"),
@@ -1699,8 +2216,18 @@ def _render_full_signal_summary(trade):
         "dealer_hedging_pressure_score": trade.get("dealer_hedging_pressure_score"),
         "dealer_flow_state": trade.get("dealer_flow_state"),
         "expected_move_points": trade.get("expected_move_points"),
-        "expected_move_pct": trade.get("expected_move_pct"),
+        "atm_straddle_price": trade.get("atm_straddle_price"),
+        "expected_move_pct_straddle": _exp_pct_straddle,
+        "expected_move_pct_model": _exp_pct_model,
+        "expected_move_pct_divergence": _exp_pct_div,
         "expected_move_quality": trade.get("expected_move_quality"),
+        "max_pain": trade.get("max_pain"),
+        "max_pain_dist": trade.get("max_pain_dist"),
+        "max_pain_zone": trade.get("max_pain_zone"),
+        "volume_pcr": trade.get("volume_pcr"),
+        "volume_pcr_atm": trade.get("volume_pcr_atm"),
+        "volume_pcr_regime": trade.get("volume_pcr_regime"),
+        "gamma_flip_drift": trade.get("gamma_flip_drift"),
         "target_reachability_score": trade.get("target_reachability_score"),
         "premium_efficiency_score": trade.get("premium_efficiency_score"),
         "strike_efficiency_score": trade.get("strike_efficiency_score"),
@@ -1748,7 +2275,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
                       option_chain_validation, macro_event_state,
                       macro_news_state, global_risk_state,
                       global_market_snapshot, headline_state,
-                      execution_trade):
+                      execution_trade, option_chain_frame=None):
     """Render full debug output — all sections, all diagnostics."""
     _print_validation("SPOT VALIDATION", spot_validation)
 
@@ -1850,6 +2377,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
 
     # Dealer dashboard
     dashboard = dict(trade)
+    _top_call_oi, _top_put_oi = _resolve_top_oi_strikes(trade, option_chain_frame, top_n=5, formatted=True)
     dashboard.update({
         "spot": spot_summary.get("spot"),
         "spot_timestamp": spot_summary.get("timestamp"),
@@ -1865,6 +2393,10 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         "volatility_shock_score": macro_news_state.get("volatility_shock_score"),
         "news_confidence_score": macro_news_state.get("news_confidence_score"),
         "headline_velocity": macro_news_state.get("headline_velocity"),
+        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[0],
+        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[1],
+        "top_call_oi_strikes": _top_call_oi,
+        "top_put_oi_strikes": _top_put_oi,
     })
     _render_dealer_dashboard(dashboard)
 
@@ -1904,7 +2436,7 @@ def render_snapshot(mode, *, result, spot_summary, spot_validation,
                     option_chain_validation, macro_event_state,
                     macro_news_state, global_risk_state,
                     global_market_snapshot, headline_state,
-                    trade, execution_trade):
+                    trade, execution_trade, market_levels_sort_mode="GROUPED"):
     """Dispatch to the appropriate renderer based on *mode*.
 
     Falls back to STANDARD if the mode is unrecognised.
@@ -1925,11 +2457,13 @@ def render_snapshot(mode, *, result, spot_summary, spot_validation,
         trade=trade,
         spot_summary=spot_summary,
         execution_trade=execution_trade,
+        option_chain_frame=result.get("option_chain_frame") if isinstance(result, dict) else None,
     )
 
     if renderer is render_compact:
         kwargs["macro_event_state"] = macro_event_state
         kwargs["global_risk_state"] = global_risk_state
+        kwargs["market_levels_sort_mode"] = market_levels_sort_mode
     else:
         kwargs["spot_validation"] = spot_validation
         kwargs["option_chain_validation"] = option_chain_validation

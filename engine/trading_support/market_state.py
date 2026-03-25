@@ -36,6 +36,9 @@ from analytics import volatility_surface as volatility_surface_mod
 from analytics.dealer_liquidity_map import build_dealer_liquidity_map
 from analytics.greeks_engine import summarize_greek_exposures
 
+from analytics import max_pain as max_pain_mod
+from analytics import oi_velocity as oi_velocity_mod
+from analytics import volume_pcr as volume_pcr_mod
 from .common import _call_first, _clean_zone_list, _safe_float, _to_python_number
 from .signal_state import classify_spot_vs_flip_for_symbol, normalize_flow_signal
 
@@ -335,6 +338,103 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
             default=None,
         )
 
+    # ATM straddle price and market-implied expected move in index points.
+    straddle_data = _call_first(
+        volatility_surface_mod,
+        ["compute_atm_straddle_price"],
+        df,
+        spot,
+        default={},
+    ) or {}
+
+    # Max pain — expiry-gravity strike computed from full option-chain holder payout.
+    max_pain_data = _call_first(
+        max_pain_mod,
+        ["compute_max_pain"],
+        df,
+        spot,
+        default={},
+    ) or {}
+
+    # Volume PCR — real-time put/call sentiment ratio (full chain + near-ATM).
+    volume_pcr_data = _call_first(
+        volume_pcr_mod,
+        ["compute_volume_pcr"],
+        df,
+        spot,
+        default={},
+    ) or {}
+
+    # Risk-reversal skew and momentum (front expiry), informative for direction.
+    rr_data = _call_first(
+        volatility_surface_mod,
+        ["compute_risk_reversal"],
+        df,
+        spot,
+        default={},
+    ) or {}
+    rr_momentum_data = {}
+    if prev_df is not None:
+        prev_rr_data = _call_first(
+            volatility_surface_mod,
+            ["compute_risk_reversal"],
+            prev_df,
+            spot,
+            default={},
+        ) or {}
+        rr_momentum_data = _call_first(
+            volatility_surface_mod,
+            ["risk_reversal_velocity"],
+            rr_data.get("rr_value"),
+            prev_rr_data.get("rr_value"),
+            default={},
+        ) or {}
+
+    # OI velocity — fresh positioning speed from rolling OI changes.
+    oi_velocity_data = {}
+    oi_velocity_regime = "BALANCED"
+    if prev_df is not None:
+        oi_velocity_data = _call_first(
+            oi_velocity_mod,
+            ["compute_oi_velocity"],
+            [prev_df, df],
+            spot=spot,
+            default={},
+        ) or {}
+        oi_velocity_regime = _call_first(
+            oi_velocity_mod,
+            ["oi_velocity_regime"],
+            oi_velocity_data.get("velocity_score", 0.0),
+            default="BALANCED",
+        )
+
+    # Gamma flip drift — direction and magnitude the flip level moved vs prior snapshot.
+    # Requires two snapshots; gracefully absent when prev_df is None.
+    gamma_flip_drift: dict = {}
+    if prev_df is not None:
+        prev_flip = _call_first(
+            gamma_flip_mod,
+            ["gamma_flip_level", "find_gamma_flip"],
+            prev_df,
+            # Use spot-independent selection for previous snapshot to avoid
+            # injecting current-spot drift into historical flip estimation.
+            spot=None,
+            default=None,
+        )
+        if prev_flip is not None and flip is not None:
+            drift = round(float(flip) - float(prev_flip), 2)
+            if abs(drift) < 1e-6:
+                drift_direction = "STABLE"
+            elif drift > 0:
+                drift_direction = "RISING"
+            else:
+                drift_direction = "FALLING"
+            gamma_flip_drift = {
+                "drift": drift,
+                "drift_direction": drift_direction,
+                "prev_flip": float(prev_flip),
+            }
+
     spot_vs_flip = classify_spot_vs_flip_for_symbol(symbol, spot, flip)
     dealer_liquidity_map = build_dealer_liquidity_map(
         spot=spot,
@@ -376,4 +476,21 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None):
         "surface_regime": surface_regime,
         "spot_vs_flip": spot_vs_flip,
         "dealer_liquidity_map": dealer_liquidity_map,
+        # New enrichment signals
+        "max_pain": max_pain_data.get("max_pain"),
+        "max_pain_dist": max_pain_data.get("max_pain_dist"),
+        "max_pain_zone": max_pain_data.get("max_pain_zone", "UNAVAILABLE"),
+        "atm_straddle_price": straddle_data.get("atm_straddle_price"),
+        "expected_move_up": straddle_data.get("expected_move_up"),
+        "expected_move_down": straddle_data.get("expected_move_down"),
+        "expected_move_pct": straddle_data.get("expected_move_pct"),
+        "volume_pcr": volume_pcr_data.get("volume_pcr"),
+        "volume_pcr_atm": volume_pcr_data.get("volume_pcr_atm"),
+        "volume_pcr_regime": volume_pcr_data.get("volume_pcr_regime", "UNAVAILABLE"),
+        "rr_value": rr_data.get("rr_value"),
+        "rr_momentum": rr_momentum_data.get("rr_momentum", "UNAVAILABLE"),
+        "rr_velocity": rr_momentum_data.get("rr_velocity"),
+        "oi_velocity_score": oi_velocity_data.get("velocity_score"),
+        "oi_velocity_regime": oi_velocity_regime,
+        "gamma_flip_drift": gamma_flip_drift,
     }

@@ -13,8 +13,7 @@ Key Outputs:
 Downstream Usage:
     Consumed by the signal engine and by research tooling that inspects trade construction choices.
 """
-
-from config.signal_policy import get_confirmation_filter_config
+from config.signal_policy import get_confirmation_filter_config, get_trade_runtime_thresholds
 from config.symbol_microstructure import DEFAULT_MICROSTRUCTURE_CONFIG, get_microstructure_config
 from utils.numerics import safe_float as _safe_float  # noqa: F401
 
@@ -130,6 +129,8 @@ def compute_confirmation_filters(
     hybrid_move_probability=None,
     spot_vs_flip=None,
     gamma_regime=None,
+    volume_pcr_atm=None,
+    volume_pcr_regime=None,
 ):
     """
     Returns a dict:
@@ -154,6 +155,7 @@ def compute_confirmation_filters(
         "flip_zone_gamma_score": 0.0,
         "direction_change_penalty": 0.0,
         "direction_change_decay_penalty": 0.0,
+        "pcr_alignment": 0.0,
     }
 
     reasons = []
@@ -171,6 +173,9 @@ def compute_confirmation_filters(
     cfg = get_confirmation_filter_config()
     if cfg is None or not isinstance(cfg, dict):
         cfg = {}
+
+    rt = get_trade_runtime_thresholds()
+    use_pcr = str(rt.get("use_pcr_in_confirmation", 1)).strip().lower() not in {"0", "false", "no", "off"}
     
     continuous_mode = _continuous_mode(cfg)
     cont_open = continuous_mode and _as_bool(cfg.get("continuous_open_alignment", 1), default=True)
@@ -428,6 +433,26 @@ def compute_confirmation_filters(
         elif gamma_regime == "NEUTRAL_GAMMA":
             breakdown["flip_zone_gamma_score"] = cfg.get("flip_zone_gamma_penalty_neutral", -2)
             reasons.append("at_flip_neutral_gamma_reduced_edge")
+
+    if use_pcr:
+        pcr = _safe_float(volume_pcr_atm, None)
+        pcr_put_dom = _safe_float(rt.get("volume_pcr_atm_put_dominant"), 1.20)
+        pcr_call_dom = _safe_float(rt.get("volume_pcr_atm_call_dominant"), 0.80)
+        if pcr is not None:
+            if (bullish and pcr <= pcr_call_dom) or (bearish and pcr >= pcr_put_dom):
+                breakdown["pcr_alignment"] = float(cfg.get("pcr_confirmation_support", 1.0))
+                reasons.append("pcr_confirms_direction")
+            elif (bullish and pcr >= pcr_put_dom) or (bearish and pcr <= pcr_call_dom):
+                breakdown["pcr_alignment"] = float(cfg.get("pcr_confirmation_conflict", -1.0))
+                reasons.append("pcr_conflicts_direction")
+        elif isinstance(volume_pcr_regime, str):
+            regime = volume_pcr_regime.strip().upper()
+            if (bullish and regime in {"CALL_DOMINANT", "BULLISH"}) or (bearish and regime in {"PUT_DOMINANT", "BEARISH"}):
+                breakdown["pcr_alignment"] = float(cfg.get("pcr_confirmation_support", 1.0))
+                reasons.append("pcr_regime_confirms_direction")
+            elif (bullish and regime in {"PUT_DOMINANT", "BEARISH"}) or (bearish and regime in {"CALL_DOMINANT", "BULLISH"}):
+                breakdown["pcr_alignment"] = float(cfg.get("pcr_confirmation_conflict", -1.0))
+                reasons.append("pcr_regime_conflicts_direction")
 
     total = sum(breakdown.values())
 

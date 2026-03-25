@@ -575,6 +575,14 @@ def compute_trade_strength(
     proximity_buffer=50,
     flip_distance_pct=None,
     scoring_mode=None,
+    oi_velocity_score=None,
+    rr_value=None,
+    rr_momentum=None,
+    volume_pcr_atm=None,
+    gamma_flip_drift=None,
+    max_pain_dist=None,
+    max_pain_zone=None,
+    days_to_expiry=None,
 ):
     """
     Purpose:
@@ -631,6 +639,11 @@ def compute_trade_strength(
         "move_model_score": 0,
         "directional_consensus_score": 0,
         "flip_zone_dampener_score": 0,
+        "oi_velocity_score_component": 0,
+        "rr_score_component": 0,
+        "pcr_score_component": 0,
+        "flip_drift_score_component": 0,
+        "max_pain_expiry_component": 0,
     }
 
     if not scoring_mode:
@@ -753,6 +766,69 @@ def compute_trade_strength(
         spot_vs_flip,
         gamma_regime,
     )
+
+    rt = get_trade_runtime_thresholds()
+    use_oi_velocity = str(rt.get("use_oi_velocity_in_direction", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    use_rr = str(rt.get("use_rr_in_direction", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    use_pcr = str(rt.get("use_pcr_in_confirmation", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    use_max_pain = str(rt.get("use_max_pain_expiry_overlay", 1)).strip().lower() not in {"0", "false", "no", "off"}
+
+    vel = _safe_float(oi_velocity_score, None)
+    vel_on = abs(_safe_float(rt.get("oi_velocity_vote_on"), 0.18) or 0.18)
+    if use_oi_velocity and vel is not None and abs(vel) >= vel_on:
+        if (direction == "CALL" and vel > 0) or (direction == "PUT" and vel < 0):
+            breakdown["oi_velocity_score_component"] = weights.get("oi_velocity_alignment_bonus", 4)
+        else:
+            breakdown["oi_velocity_score_component"] = weights.get("oi_velocity_conflict_penalty", -3)
+
+    rr = _safe_float(rr_value, None)
+    if use_rr and rr is not None:
+        rr_put_dom = _safe_float(rt.get("rr_skew_put_dominant"), 0.75)
+        rr_call_dom = _safe_float(rt.get("rr_skew_call_dominant"), -0.75)
+        rr_score = 0
+        if (direction == "PUT" and rr >= rr_put_dom) or (direction == "CALL" and rr <= rr_call_dom):
+            rr_score += weights.get("rr_alignment_bonus", 3)
+        elif (direction == "CALL" and rr >= rr_put_dom) or (direction == "PUT" and rr <= rr_call_dom):
+            rr_score += weights.get("rr_conflict_penalty", -2)
+
+        rr_m = str(rr_momentum or "").upper().strip()
+        if rr_m == "RISING_PUT_SKEW":
+            rr_score += 1 if direction == "PUT" else -1
+        elif rr_m == "FALLING_PUT_SKEW":
+            rr_score += 1 if direction == "CALL" else -1
+        breakdown["rr_score_component"] = int(_clip(rr_score, -4, 4))
+
+    pcr = _safe_float(volume_pcr_atm, None)
+    if use_pcr and pcr is not None:
+        pcr_put_dom = _safe_float(rt.get("volume_pcr_atm_put_dominant"), 1.20)
+        pcr_call_dom = _safe_float(rt.get("volume_pcr_atm_call_dominant"), 0.80)
+        if (direction == "PUT" and pcr >= pcr_put_dom) or (direction == "CALL" and pcr <= pcr_call_dom):
+            breakdown["pcr_score_component"] = weights.get("pcr_alignment_bonus", 2)
+        elif (direction == "CALL" and pcr >= pcr_put_dom) or (direction == "PUT" and pcr <= pcr_call_dom):
+            breakdown["pcr_score_component"] = weights.get("pcr_conflict_penalty", -2)
+
+    drift_pts = None
+    if isinstance(gamma_flip_drift, dict):
+        drift_pts = _safe_float(gamma_flip_drift.get("drift"), None)
+    drift_on = abs(_safe_float(rt.get("gamma_flip_drift_pts_vote_on"), 80.0) or 80.0)
+    if drift_pts is not None and abs(drift_pts) >= drift_on:
+        if (direction == "CALL" and drift_pts > 0) or (direction == "PUT" and drift_pts < 0):
+            breakdown["flip_drift_score_component"] = weights.get("flip_drift_alignment_bonus", 2)
+        else:
+            breakdown["flip_drift_score_component"] = weights.get("flip_drift_conflict_penalty", -2)
+
+    if use_max_pain:
+        dte = _safe_float(days_to_expiry, None)
+        max_dte = _safe_float(rt.get("max_pain_overlay_max_dte"), 2.0)
+        mp_dist = _safe_float(max_pain_dist, None)
+        if dte is not None and dte <= max_dte and mp_dist is not None:
+            pin_pts_min = abs(_safe_float(rt.get("max_pain_pin_distance_pts_min"), 80.0) or 80.0)
+            pin_base = int(_safe_float(rt.get("max_pain_pin_penalty_base"), -2))
+            pin_strong = int(_safe_float(rt.get("max_pain_pin_penalty_strong"), -4))
+            if abs(mp_dist) <= pin_pts_min * 0.5:
+                breakdown["max_pain_expiry_component"] = pin_strong
+            elif abs(mp_dist) <= pin_pts_min:
+                breakdown["max_pain_expiry_component"] = pin_base
 
     total_score = sum(v for v in breakdown.values() if isinstance(v, (int, float)))
     total_score = max(0, min(total_score, 100))

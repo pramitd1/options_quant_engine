@@ -26,6 +26,11 @@ DIRECTION_VOTE_WEIGHTS = {
     "DEALER_VOL": 0.8,
     "VANNA": 0.55,
     "CHARM": 0.55,
+    "OI_VELOCITY": 0.45,
+    "RR_SKEW": 0.40,
+    "RR_MOMENTUM": 0.30,
+    "PCR_ATM": 0.25,
+    "FLIP_DRIFT": 0.30,
 }
 
 DIRECTION_MIN_SCORE = 1.50
@@ -63,6 +68,14 @@ TRADE_STRENGTH_WEIGHTS = {
     "intraday_gamma_decrease_bonus": 3,
     "flip_zone_negative_gamma_penalty": -12,
     "flip_zone_neutral_gamma_penalty": -8,
+    "oi_velocity_alignment_bonus": 4,
+    "oi_velocity_conflict_penalty": -3,
+    "rr_alignment_bonus": 3,
+    "rr_conflict_penalty": -2,
+    "pcr_alignment_bonus": 2,
+    "pcr_conflict_penalty": -2,
+    "flip_drift_alignment_bonus": 2,
+    "flip_drift_conflict_penalty": -2,
 }
 
 CONSENSUS_SCORE_CONFIG = {
@@ -112,6 +125,33 @@ TRADE_RUNTIME_THRESHOLDS = {
     # a WEAK/CONFLICTED environment demands a higher bar (surcharge).
     "high_confidence_strength_relief": 5,
     "low_confidence_strength_surcharge": 8,
+    # Feature toggles for optional directional/score enrichments.
+    "use_oi_velocity_in_direction": 1,
+    "use_rr_in_direction": 1,
+    "use_pcr_in_confirmation": 1,
+    "use_flip_drift_in_overlays": 1,
+    "use_max_pain_expiry_overlay": 1,
+    # OI velocity thresholds.
+    "oi_velocity_vote_on": 0.18,
+    "oi_velocity_vote_strong": 0.40,
+    # Risk-reversal thresholds (vol points).
+    "rr_skew_put_dominant": 0.75,
+    "rr_skew_call_dominant": -0.75,
+    "rr_momentum_vote_threshold": 0.20,
+    # PCR confirmation thresholds.
+    "volume_pcr_atm_put_dominant": 1.20,
+    "volume_pcr_atm_call_dominant": 0.80,
+    # Flip drift thresholds and overlay weighting.
+    "gamma_flip_drift_pts_vote_on": 80,
+    "gamma_flip_drift_pts_strong": 180,
+    "gamma_flip_drift_gamma_vol_weight": 0.08,
+    # Expiry-conditioned max pain pinning settings.
+    "max_pain_overlay_max_dte": 2,
+    "max_pain_pin_distance_pct": 0.35,
+    "max_pain_pin_distance_pts_min": 80,
+    "max_pain_pin_penalty_base": -2,
+    "max_pain_pin_penalty_strong": -4,
+    "max_pain_overlay_weight": 0.12,
 }
 
 CONFIRMATION_FILTER_CONFIG = {
@@ -165,6 +205,9 @@ CONFIRMATION_FILTER_CONFIG = {
     "flip_alignment_conflict": -1,
     "flip_zone_gamma_penalty_negative": -3,
     "flip_zone_gamma_penalty_neutral": -2,
+    # Optional PCR alignment check.
+    "pcr_confirmation_support": 1,
+    "pcr_confirmation_conflict": -2,
     "veto_hard_conflicts": 3,
     "veto_move_probability_ceiling": 0.55,
 }

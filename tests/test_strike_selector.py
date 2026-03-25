@@ -145,3 +145,41 @@ def test_trade_strength_continuous_mode_includes_breakdown_scores():
     assert "spot_vs_flip_score" in breakdown
     assert "wall_proximity_score" in breakdown
     assert isinstance(total_score, (int, float))
+
+
+def test_trade_strength_includes_new_signal_components_and_max_pain_penalty():
+    from strategy.trade_strength import compute_trade_strength
+
+    total_score, breakdown = compute_trade_strength(
+        direction="CALL",
+        flow_signal_value="BULLISH_FLOW",
+        smart_money_signal_value="BULLISH_FLOW",
+        gamma_event="NONE",
+        dealer_pos="Short Gamma",
+        vol_regime="VOL_EXPANSION",
+        void_signal="VOID_NEAR",
+        vacuum_state="BREAKOUT_ZONE",
+        spot_vs_flip="ABOVE_FLIP",
+        hedging_bias="UPSIDE_ACCELERATION",
+        gamma_regime="SHORT_GAMMA_ZONE",
+        intraday_gamma_state="VOL_EXPANSION",
+        support_wall=21900.0,
+        resistance_wall=22300.0,
+        spot=22010.0,
+        scoring_mode="discrete",
+        oi_velocity_score=0.32,
+        rr_value=-1.0,
+        rr_momentum="FALLING_PUT_SKEW",
+        volume_pcr_atm=0.72,
+        gamma_flip_drift={"drift": 120.0},
+        max_pain_dist=20.0,
+        max_pain_zone="AT_MAX_PAIN",
+        days_to_expiry=1,
+    )
+
+    assert isinstance(total_score, (int, float))
+    assert breakdown["oi_velocity_score_component"] > 0
+    assert breakdown["rr_score_component"] > 0
+    assert breakdown["pcr_score_component"] > 0
+    assert breakdown["flip_drift_score_component"] > 0
+    assert breakdown["max_pain_expiry_component"] < 0

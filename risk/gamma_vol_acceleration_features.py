@@ -16,6 +16,7 @@ Downstream Usage:
 
 from __future__ import annotations
 
+from config.signal_policy import get_trade_runtime_thresholds
 from config.gamma_vol_acceleration_policy import get_gamma_vol_acceleration_policy_config
 from utils.numerics import clip as _clip, safe_float as _safe_float  # noqa: F401
 
@@ -335,6 +336,23 @@ def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_ex
     ), 4)
 
 
+def _flip_drift_alignment(gamma_flip_drift):
+    """Return directional boosts from gamma flip drift payload."""
+    rt = get_trade_runtime_thresholds()
+    use_drift = str(rt.get("use_flip_drift_in_overlays", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    if not use_drift or not isinstance(gamma_flip_drift, dict):
+        return 0.0, 0.0
+
+    drift = _safe_float(gamma_flip_drift.get("drift"), None)
+    vote_on = abs(_safe_float(rt.get("gamma_flip_drift_pts_vote_on"), 80.0) or 80.0)
+    weight = _clip(_safe_float(rt.get("gamma_flip_drift_gamma_vol_weight"), 0.10), 0.0, 0.5)
+    if drift is None or abs(drift) < vote_on:
+        return 0.0, 0.0
+    if drift > 0:
+        return weight, 0.0
+    return 0.0, weight
+
+
 def build_gamma_vol_acceleration_features(
     *,
     gamma_regime=None,
@@ -351,6 +369,7 @@ def build_gamma_vol_acceleration_features(
     holding_profile="AUTO",
     support_wall=None,
     resistance_wall=None,
+    gamma_flip_drift=None,
 ):
     """
     Purpose:
@@ -425,6 +444,7 @@ def build_gamma_vol_acceleration_features(
         global_state_label,
         volatility_explosion_probability,
     )
+    drift_up_boost, drift_down_boost = _flip_drift_alignment(gamma_flip_drift)
 
     # Positive values here mean structurally unstable, acceleration-prone
     # conditions. Negative values instead contribute to dampening.
@@ -466,6 +486,8 @@ def build_gamma_vol_acceleration_features(
         upside_alignment += min(cfg.alignment_bias_cap, hedging_bias_score * cfg.alignment_bias_weight)
     elif hedging_bias_score < 0:
         downside_alignment += min(cfg.alignment_bias_cap, abs(hedging_bias_score) * cfg.alignment_bias_weight)
+    upside_alignment += drift_up_boost
+    downside_alignment += drift_down_boost
 
     # Directional risks reuse the same structural ingredients but add side-
     # specific alignment terms so the overlay can distinguish upside squeezes
@@ -529,6 +551,11 @@ def build_gamma_vol_acceleration_features(
         "macro_event_risk_score": _safe_int(macro_event_risk_score, 0),
         "global_risk_state": str(global_state_label or "GLOBAL_NEUTRAL").upper().strip() or "GLOBAL_NEUTRAL",
         "volatility_explosion_probability": round(_clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0), 4),
+        "gamma_flip_drift": (
+            _safe_float(gamma_flip_drift.get("drift"), None)
+            if isinstance(gamma_flip_drift, dict)
+            else None
+        ),
         "support_wall_available": support_wall is not None,
         "resistance_wall_available": resistance_wall is not None,
         "holding_context": holding_context,
@@ -542,6 +569,8 @@ def build_gamma_vol_acceleration_features(
         "pinning_dampener": round(pinning_dampener, 4),
         "intraday_extension_score": round(intraday_extension_score, 4),
         "macro_global_boost": round(macro_global_boost, 4),
+        "drift_up_boost": round(drift_up_boost, 4),
+        "drift_down_boost": round(drift_down_boost, 4),
         "acceleration_core": round(acceleration_core, 4),
         "dampening_core": round(dampening_core, 4),
         "normalized_acceleration": round(normalized_acceleration, 4),

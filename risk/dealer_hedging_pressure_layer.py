@@ -44,6 +44,9 @@ def build_dealer_hedging_pressure_state(
     volatility_explosion_probability=None,
     gamma_vol_acceleration_score=None,
     holding_profile="AUTO",
+    max_pain_dist=None,
+    max_pain_zone=None,
+    days_to_expiry=None,
 ):
     """
     Purpose:
@@ -105,5 +108,8 @@ def build_dealer_hedging_pressure_state(
         volatility_explosion_probability=volatility_explosion_probability,
         gamma_vol_acceleration_score=gamma_vol_acceleration_score,
         holding_profile=holding_profile,
+        max_pain_dist=max_pain_dist,
+        max_pain_zone=max_pain_zone,
+        days_to_expiry=days_to_expiry,
     )
     return classify_dealer_hedging_pressure_state(features).to_dict()

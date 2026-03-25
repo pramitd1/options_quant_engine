@@ -48,7 +48,7 @@ from config.policy_resolver import (
     suggest_regime_pack,
 )
 from notifications.telegram_alert import maybe_alert as _telegram_maybe_alert
-from app.terminal_output import render_snapshot
+from app.terminal_output import render_snapshot, _resolve_top_liquidity_walls
 from data.data_source_router import DataSourceRouter
 from data.replay_loader import save_option_chain_snapshot
 from data.spot_downloader import save_spot_snapshot
@@ -169,6 +169,12 @@ def parse_runtime_args():
         default=None,
         choices=["COMPACT", "STANDARD", "FULL_DEBUG"],
         help="Terminal verbosity: COMPACT, STANDARD (default), or FULL_DEBUG",
+    )
+    parser.add_argument(
+        "--market-levels-sort",
+        default="GROUPED",
+        choices=["GROUPED", "NEAREST"],
+        help="Sort mode for COMPACT market level table: GROUPED (default) or NEAREST",
     )
     return parser.parse_args()
 
@@ -565,6 +571,15 @@ def print_dealer_dashboard(summary: dict):
     """
     print("\nDEALER POSITIONING DASHBOARD")
     print("--------------------------------------------------")
+    top_support_walls, top_resistance_walls = _resolve_top_liquidity_walls(
+        summary,
+        top_n=3,
+        formatted=True,
+    )
+    summary = dict(summary)
+    summary["top_support_walls"] = top_support_walls
+    summary["top_resistance_walls"] = top_resistance_walls
+
     ordered_keys = [
         ("Spot Price", "spot"),
         ("Gamma Exposure", "gamma_exposure"),
@@ -614,8 +629,8 @@ def print_dealer_dashboard(summary: dict):
         ("Macro Size Mult", "macro_position_size_multiplier"),
         ("Macro Lots Hook", "macro_suggested_lots"),
         ("Gamma Event", "gamma_event"),
-        ("Support Wall", "support_wall"),
-        ("Resistance Wall", "resistance_wall"),
+        ("Top Support Walls", "top_support_walls"),
+        ("Top Resistance Walls", "top_resistance_walls"),
         ("Liquidity Levels", "liquidity_levels"),
         ("Liquidity Voids", "liquidity_voids"),
         ("Liquidity Void Signal", "liquidity_void_signal"),
@@ -661,6 +676,12 @@ def print_signal_summary(trade):
     Notes:
         These views mirror the same payload captured by research logging so operators and researchers can inspect a common signal contract.
     """
+    top_support_walls, top_resistance_walls = _resolve_top_liquidity_walls(
+        trade,
+        top_n=3,
+        formatted=True,
+    )
+
     compact = {
         "symbol": trade.get("symbol"),
         "direction": trade.get("direction"),
@@ -682,6 +703,8 @@ def print_signal_summary(trade):
         "flow_signal": trade.get("final_flow_signal"),
         "gamma_regime": trade.get("gamma_regime"),
         "spot_vs_flip": trade.get("spot_vs_flip"),
+        "top_resistance_walls": top_resistance_walls,
+        "top_support_walls": top_support_walls,
         "dealer_position": trade.get("dealer_position"),
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
         "macro_event_risk_score": trade.get("macro_event_risk_score"),
@@ -1030,6 +1053,7 @@ def main():
                 headline_state=headline_state,
                 trade=trade_for_display,
                 execution_trade=execution_trade,
+                market_levels_sort_mode=args.market_levels_sort,
             )
 
             previous_chain = option_chain_frame.copy()

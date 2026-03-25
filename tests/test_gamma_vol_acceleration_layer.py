@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from tuning.runtime import temporary_parameter_pack
 from risk import build_gamma_vol_acceleration_state
 from risk.gamma_vol_acceleration_features import build_gamma_vol_acceleration_features
 
@@ -93,3 +94,42 @@ class GammaVolAccelerationLayerTests(unittest.TestCase):
         self.assertEqual(state["squeeze_risk_state"], "LOW_ACCELERATION_RISK")
         self.assertEqual(state["directional_convexity_state"], "NO_CONVEXITY_EDGE")
         self.assertLessEqual(state["gamma_vol_adjustment_score"], 0)
+
+    def test_flip_drift_boosts_directional_alignment_when_enabled(self):
+        base = build_gamma_vol_acceleration_features(
+            gamma_regime="SHORT_GAMMA_ZONE",
+            spot_vs_flip="AT_FLIP",
+            gamma_flip_distance_pct=0.08,
+            dealer_hedging_bias="PINNING",
+            liquidity_vacuum_state="BREAKOUT_ZONE",
+            intraday_range_pct=0.75,
+            volatility_compression_score=0.60,
+            volatility_shock_score=0.25,
+            macro_event_risk_score=12,
+            global_risk_state={"global_risk_state": "GLOBAL_NEUTRAL"},
+            volatility_explosion_probability=0.45,
+            gamma_flip_drift={"drift": 140.0},
+        )
+
+        with temporary_parameter_pack(
+            "disable_flip_drift_overlay",
+            overrides={"trade_strength.runtime_thresholds.use_flip_drift_in_overlays": 0},
+        ):
+            disabled = build_gamma_vol_acceleration_features(
+                gamma_regime="SHORT_GAMMA_ZONE",
+                spot_vs_flip="AT_FLIP",
+                gamma_flip_distance_pct=0.08,
+                dealer_hedging_bias="PINNING",
+                liquidity_vacuum_state="BREAKOUT_ZONE",
+                intraday_range_pct=0.75,
+                volatility_compression_score=0.60,
+                volatility_shock_score=0.25,
+                macro_event_risk_score=12,
+                global_risk_state={"global_risk_state": "GLOBAL_NEUTRAL"},
+                volatility_explosion_probability=0.45,
+                gamma_flip_drift={"drift": 140.0},
+            )
+
+        self.assertGreater(base["drift_up_boost"], 0.0)
+        self.assertEqual(disabled["drift_up_boost"], 0.0)
+        self.assertGreater(base["upside_squeeze_risk"], disabled["upside_squeeze_risk"])

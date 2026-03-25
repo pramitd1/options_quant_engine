@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from tuning.runtime import temporary_parameter_pack
 from risk import build_dealer_hedging_pressure_state
 from risk.dealer_hedging_pressure_features import build_dealer_hedging_pressure_features
 
@@ -100,3 +101,38 @@ class DealerHedgingPressureLayerTests(unittest.TestCase):
         self.assertFalse(state["overnight_hold_allowed"])
         self.assertGreaterEqual(state["overnight_dealer_pressure_penalty"], 7)
         self.assertGreater(state["overnight_hedging_risk"], 0.7)
+
+    def test_max_pain_overlay_increases_pinning_near_expiry(self):
+        base = build_dealer_hedging_pressure_features(
+            spot=22000,
+            gamma_regime="LONG_GAMMA_ZONE",
+            spot_vs_flip="AT_FLIP",
+            gamma_flip_distance_pct=0.12,
+            dealer_position="Long Gamma",
+            dealer_hedging_bias="PINNING",
+            intraday_gamma_state="VOL_SUPPRESSION",
+            max_pain_dist=30,
+            max_pain_zone="AT_MAX_PAIN",
+            days_to_expiry=1,
+        )
+
+        with temporary_parameter_pack(
+            "disable_max_pain_overlay",
+            overrides={"trade_strength.runtime_thresholds.use_max_pain_expiry_overlay": 0},
+        ):
+            disabled = build_dealer_hedging_pressure_features(
+                spot=22000,
+                gamma_regime="LONG_GAMMA_ZONE",
+                spot_vs_flip="AT_FLIP",
+                gamma_flip_distance_pct=0.12,
+                dealer_position="Long Gamma",
+                dealer_hedging_bias="PINNING",
+                intraday_gamma_state="VOL_SUPPRESSION",
+                max_pain_dist=30,
+                max_pain_zone="AT_MAX_PAIN",
+                days_to_expiry=1,
+            )
+
+        self.assertGreater(base["max_pain_pinning_boost"], 0.0)
+        self.assertEqual(disabled["max_pain_pinning_boost"], 0.0)
+        self.assertGreater(base["pinning_base"], disabled["pinning_base"])

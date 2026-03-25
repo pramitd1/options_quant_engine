@@ -263,6 +263,66 @@ python scripts/backtest/compare_scoring_modes_full_backtest.py
 
 Runs all 8 predictor methods under both `discrete` and `continuous` trade-strength scoring (16 backtest stages total) and writes CSV/JSON/Markdown artifacts to `scripts/backtest/reports/`. Use this to measure per-method accuracy, trade volume, and composite score deltas between scoring modes before changing production defaults.
 
+## March 2026 Integration Update
+
+This repository now integrates additional analytics into direction inference,
+trade-strength scoring, confirmation, and risk overlays.
+
+Integrated signals:
+
+- OI velocity
+- risk reversal skew and momentum
+- ATM volume PCR
+- gamma flip drift
+- expiry-conditioned max pain pinning
+
+Core implementation surfaces:
+
+- direction votes and signal state: `engine/trading_support/signal_state.py`
+- trade-strength components: `strategy/trade_strength.py`
+- confirmation PCR path: `strategy/confirmation_filters.py`
+- overlay enrichments:
+  - `risk/gamma_vol_acceleration_features.py`
+  - `risk/dealer_hedging_pressure_features.py`
+- orchestration pass-through: `engine/signal_engine.py`
+- runtime policy defaults: `config/signal_policy.py`
+
+Default runtime toggles (all enabled):
+
+- `use_oi_velocity_in_direction = 1`
+- `use_rr_in_direction = 1`
+- `use_pcr_in_confirmation = 1`
+- `use_flip_drift_in_overlays = 1`
+- `use_max_pain_expiry_overlay = 1`
+
+Selected default thresholds:
+
+- `oi_velocity_vote_on = 0.18`
+- `rr_skew_put_dominant = 0.75`
+- `rr_skew_call_dominant = -0.75`
+- `volume_pcr_atm_put_dominant = 1.20`
+- `volume_pcr_atm_call_dominant = 0.80`
+- `gamma_flip_drift_pts_vote_on = 80`
+- `max_pain_overlay_max_dte = 2`
+- `max_pain_pin_distance_pts_min = 80`
+
+Recommended staged rollout order:
+
+1. `use_pcr_in_confirmation`
+2. `use_oi_velocity_in_direction`
+3. `use_rr_in_direction`
+4. `use_flip_drift_in_overlays`
+5. `use_max_pain_expiry_overlay`
+
+Validation status for this integration:
+
+- targeted integration tests passed
+- full regression suite passed (`434 passed, 12 subtests passed`)
+
+Detailed implementation and rollout notes:
+
+- `documentation/implementation_notes/ANALYTICS_INTEGRATION_DIRECTION_STRENGTH_OVERLAYS_2026-03-25.md`
+
 ## Pluggable Predictor Architecture
 
 The engine now supports multiple prediction methods for move direction and magnitude. Switch between methods without code changes using configuration.

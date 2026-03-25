@@ -478,7 +478,10 @@ def summarize_greek_exposures(option_chain: pd.DataFrame):
             Missing or malformed provider values are treated as zero so the
             aggregate exposure calculation stays robust across data sources.
         """
-        return pd.to_numeric(df.get(name), errors="coerce").fillna(0.0)
+        raw = df.get(name)
+        if not isinstance(raw, pd.Series):
+            return pd.Series(0.0, index=df.index)
+        return pd.to_numeric(raw, errors="coerce").fillna(0.0)
 
     delta_exposure = float((_series("DELTA") * oi).sum())
     gamma_exposure = float((_series("GAMMA") * oi).sum())

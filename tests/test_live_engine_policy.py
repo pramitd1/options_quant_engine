@@ -4,6 +4,7 @@ import unittest
 
 import pandas as pd
 
+from tuning.runtime import temporary_parameter_pack
 from data.provider_normalization import normalize_live_option_chain
 from data.option_chain_validation import validate_option_chain
 from engine.trading_engine import (
@@ -73,6 +74,59 @@ class LiveEnginePolicyTests(unittest.TestCase):
             vanna_regime=None,
             charm_regime=None,
         )
+
+        self.assertIsNone(direction)
+        self.assertIsNone(source)
+
+    def test_direction_policy_uses_rr_oi_pcr_and_flip_drift_votes(self):
+        direction, source = decide_direction(
+            final_flow_signal=None,
+            dealer_pos=None,
+            vol_regime=None,
+            spot_vs_flip="AT_FLIP",
+            gamma_regime=None,
+            hedging_bias=None,
+            gamma_event=None,
+            vanna_regime=None,
+            charm_regime=None,
+            oi_velocity_score=0.35,
+            rr_value=-1.2,
+            rr_momentum="FALLING_PUT_SKEW",
+            volume_pcr_atm=0.70,
+            gamma_flip_drift={"drift": 120.0},
+        )
+
+        self.assertEqual(direction, "CALL")
+        self.assertIn("OI_VELOCITY", source)
+        self.assertIn("RR_SKEW", source)
+        self.assertIn("PCR_ATM", source)
+        self.assertIn("FLIP_DRIFT", source)
+
+    def test_direction_policy_toggle_can_disable_new_votes(self):
+        with temporary_parameter_pack(
+            "disable_new_direction_votes",
+            overrides={
+                "trade_strength.runtime_thresholds.use_oi_velocity_in_direction": 0,
+                "trade_strength.runtime_thresholds.use_rr_in_direction": 0,
+                "trade_strength.runtime_thresholds.gamma_flip_drift_pts_vote_on": 1,
+            },
+        ):
+            direction, source = decide_direction(
+                final_flow_signal=None,
+                dealer_pos=None,
+                vol_regime=None,
+                spot_vs_flip="AT_FLIP",
+                gamma_regime=None,
+                hedging_bias=None,
+                gamma_event=None,
+                vanna_regime=None,
+                charm_regime=None,
+                oi_velocity_score=0.50,
+                rr_value=-1.0,
+                rr_momentum="FALLING_PUT_SKEW",
+                volume_pcr_atm=1.0,
+                gamma_flip_drift=None,
+            )
 
         self.assertIsNone(direction)
         self.assertIsNone(source)

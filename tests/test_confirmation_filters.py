@@ -204,3 +204,25 @@ def test_reversal_veto_inactive_when_disabled():
     # Should not be forced to MIXED
     assert result["status"] != "MIXED"
     assert "reversal_grace_period_active" not in result["reasons"]
+
+
+def test_pcr_alignment_adds_confirmation_score_for_bearish_setup():
+    result = compute_confirmation_filters(
+        **_BEARISH_KWARGS,
+        volume_pcr_atm=1.35,
+    )
+    assert result["breakdown"]["pcr_alignment"] > 0
+    assert "pcr_confirms_direction" in result["reasons"]
+
+
+def test_pcr_alignment_can_be_switched_off_via_runtime_flag():
+    with temporary_parameter_pack(
+        "disable_pcr_confirmation",
+        overrides={"trade_strength.runtime_thresholds.use_pcr_in_confirmation": 0},
+    ):
+        result = compute_confirmation_filters(
+            **_BEARISH_KWARGS,
+            volume_pcr_atm=1.35,
+        )
+
+    assert result["breakdown"]["pcr_alignment"] == 0.0

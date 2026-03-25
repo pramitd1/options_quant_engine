@@ -36,6 +36,7 @@ def build_gamma_vol_acceleration_state(
     holding_profile="AUTO",
     support_wall=None,
     resistance_wall=None,
+    gamma_flip_drift=None,
 ):
     """
     Purpose:
@@ -81,5 +82,6 @@ def build_gamma_vol_acceleration_state(
         holding_profile=holding_profile,
         support_wall=support_wall,
         resistance_wall=resistance_wall,
+        gamma_flip_drift=gamma_flip_drift,
     )
     return classify_gamma_vol_acceleration_state(features).to_dict()

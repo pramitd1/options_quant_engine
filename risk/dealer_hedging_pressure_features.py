@@ -16,6 +16,7 @@ Downstream Usage:
 
 from __future__ import annotations
 
+from config.signal_policy import get_trade_runtime_thresholds
 from config.dealer_hedging_pressure_policy import get_dealer_hedging_pressure_policy_config
 from utils.numerics import clip as _clip, safe_float as _safe_float  # noqa: F401
 
@@ -417,6 +418,30 @@ def _macro_global_boost(macro_event_risk_score, global_risk_state, volatility_ex
     ), 4)
 
 
+def _max_pain_pinning_boost(max_pain_dist, max_pain_zone, days_to_expiry):
+    rt = get_trade_runtime_thresholds()
+    enabled = str(rt.get("use_max_pain_expiry_overlay", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    if not enabled:
+        return 0.0
+
+    dte = _safe_float(days_to_expiry, None)
+    max_dte = _safe_float(rt.get("max_pain_overlay_max_dte"), 2.0)
+    if dte is None or dte > max_dte:
+        return 0.0
+
+    dist = _safe_float(max_pain_dist, None)
+    if dist is None:
+        zone = str(max_pain_zone or "").upper().strip()
+        return 0.25 if zone in {"AT_MAX_PAIN", "NEAR_MAX_PAIN", "PINNING"} else 0.0
+
+    pin_pts = abs(_safe_float(rt.get("max_pain_pin_distance_pts_min"), 80.0) or 80.0)
+    if abs(dist) <= pin_pts * 0.5:
+        return 0.35
+    if abs(dist) <= pin_pts:
+        return 0.2
+    return 0.0
+
+
 def build_dealer_hedging_pressure_features(
     *,
     spot=None,
@@ -441,6 +466,9 @@ def build_dealer_hedging_pressure_features(
     volatility_explosion_probability=None,
     gamma_vol_acceleration_score=None,
     holding_profile="AUTO",
+    max_pain_dist=None,
+    max_pain_zone=None,
+    days_to_expiry=None,
 ):
     """
     Purpose:
@@ -535,6 +563,7 @@ def build_dealer_hedging_pressure_features(
     )
     intraday_range_score = _clip(_safe_float(intraday_range_pct, 0.0) / cfg.intraday_range_norm_divisor, 0.0, 1.0)
     gamma_vol_overlay = _clip(_safe_float(gamma_vol_acceleration_score, 0.0) / 100.0, 0.0, 1.0)
+    max_pain_boost = _max_pain_pinning_boost(max_pain_dist, max_pain_zone, days_to_expiry)
 
     acceleration_base = _clip(
         (cfg.acceleration_base_gamma_weight * gamma_acceleration_base)
@@ -549,7 +578,8 @@ def build_dealer_hedging_pressure_features(
         (cfg.pinning_base_gamma_weight * gamma_pinning_base)
         + (cfg.pinning_base_bias_weight * bias_pinning)
         + (cfg.pinning_base_structure_weight * pinning_structure_score)
-        + (cfg.pinning_base_intraday_weight * intraday_pinning_score),
+        + (cfg.pinning_base_intraday_weight * intraday_pinning_score)
+        + max_pain_boost,
         0.0,
         1.0,
     )
@@ -644,6 +674,9 @@ def build_dealer_hedging_pressure_features(
         ).upper().strip() or "GLOBAL_NEUTRAL",
         "volatility_explosion_probability": round(_clip(_safe_float(volatility_explosion_probability, 0.0), 0.0, 1.0), 4),
         "gamma_vol_acceleration_score": _safe_int(gamma_vol_acceleration_score, 0),
+        "max_pain_dist": _safe_float(max_pain_dist, None),
+        "max_pain_zone": max_pain_zone,
+        "days_to_expiry": _safe_float(days_to_expiry, None),
         "holding_context": holding_context,
         "input_availability": input_availability,
         "feature_confidence": round(feature_confidence, 4),
@@ -664,6 +697,7 @@ def build_dealer_hedging_pressure_features(
         "nearest_level_distance_pct": nearest_level_distance_pct,
         "far_level_dampener": round(far_level_dampener, 4),
         "macro_global_boost": macro_global_boost,
+        "max_pain_pinning_boost": round(max_pain_boost, 4),
         "acceleration_base": round(acceleration_base, 4),
         "pinning_base": round(pinning_base, 4),
         "upside_hedging_pressure": upside_hedging_pressure,
