@@ -16,6 +16,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -61,6 +62,17 @@ st.set_page_config(
 )
 
 st.markdown(OQE_GLOBAL_CSS, unsafe_allow_html=True)
+
+
+_LOG = logging.getLogger(__name__)
+_WARN_ONCE_KEYS: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args) -> None:
+    if key in _WARN_ONCE_KEYS:
+        return
+    _WARN_ONCE_KEYS.add(key)
+    _LOG.warning(message, *args)
 
 
 def _safe_metric_value(value):
@@ -561,7 +573,13 @@ def _extract_snapshot_timestamp(path_str: str):
     token = re.sub(r"(?<=\+\d{2})-(?=\d{2}$)", ":", token)
     try:
         return pd.to_datetime(token, errors="coerce")
-    except Exception:
+    except Exception as exc:
+        _warn_once(
+            "streamlit_snapshot_timestamp_parse_failed",
+            "streamlit_app: failed to parse snapshot timestamp from %r (%s)",
+            path_str,
+            exc,
+        )
         return None
 
 

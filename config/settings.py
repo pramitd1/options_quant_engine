@@ -327,6 +327,51 @@ GLOBAL_MARKET_LOOKBACK_DAYS = int(os.getenv("GLOBAL_MARKET_LOOKBACK_DAYS", "90")
 GLOBAL_MARKET_STALE_DAYS = int(os.getenv("GLOBAL_MARKET_STALE_DAYS", "5"))
 
 
+def _validate_runtime_settings() -> None:
+    allowed_backtest_sources = {"historical", "live", "combined"}
+    if BACKTEST_DATA_SOURCE not in allowed_backtest_sources:
+        raise ValueError(
+            "Invalid BACKTEST_DATA_SOURCE=%r. Allowed values: %s"
+            % (BACKTEST_DATA_SOURCE, sorted(allowed_backtest_sources))
+        )
+
+    allowed_headline_providers = {"MOCK", "RSS"}
+    if HEADLINE_PROVIDER not in allowed_headline_providers:
+        raise ValueError(
+            "Invalid HEADLINE_PROVIDER=%r. Allowed values: %s"
+            % (HEADLINE_PROVIDER, sorted(allowed_headline_providers))
+        )
+
+    non_negative_checks = {
+        "MACRO_EVENT_PRE_EVENT_WARNING_MINUTES": MACRO_EVENT_PRE_EVENT_WARNING_MINUTES,
+        "MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES": MACRO_EVENT_PRE_EVENT_LOCKDOWN_MINUTES,
+        "MACRO_EVENT_EVENT_DURATION_MINUTES": MACRO_EVENT_EVENT_DURATION_MINUTES,
+        "MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES": MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES,
+        "HEADLINE_STALE_MINUTES": HEADLINE_STALE_MINUTES,
+    }
+    for field_name, field_value in non_negative_checks.items():
+        if field_value < 0:
+            raise ValueError(f"{field_name} must be >= 0 (got {field_value})")
+
+    positive_checks = {
+        "HEADLINE_MAX_RECORDS": HEADLINE_MAX_RECORDS,
+        "GLOBAL_MARKET_LOOKBACK_DAYS": GLOBAL_MARKET_LOOKBACK_DAYS,
+        "GLOBAL_MARKET_STALE_DAYS": GLOBAL_MARKET_STALE_DAYS,
+    }
+    for field_name, field_value in positive_checks.items():
+        if field_value <= 0:
+            raise ValueError(f"{field_name} must be > 0 (got {field_value})")
+
+    if MACRO_EVENT_STRONG_WATCH_RISK_THRESHOLD < MACRO_EVENT_WATCH_RISK_THRESHOLD:
+        raise ValueError(
+            "MACRO_EVENT_STRONG_WATCH_RISK_THRESHOLD must be >= "
+            "MACRO_EVENT_WATCH_RISK_THRESHOLD"
+        )
+
+
+_validate_runtime_settings()
+
+
 # ================================
 # Logging Configuration
 # ================================

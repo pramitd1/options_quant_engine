@@ -645,7 +645,13 @@ def _persist_snapshot_artifacts(
     saved_paths = {}
     try:
         saved_paths["spot"] = save_spot_snapshot(spot_snapshot)
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Failed to persist live spot snapshot for %s/%s: %s",
+            symbol,
+            source,
+            exc,
+        )
         saved_paths["spot"] = None
     try:
         saved_paths["chain"] = save_option_chain_snapshot(
@@ -653,7 +659,13 @@ def _persist_snapshot_artifacts(
             symbol=symbol,
             source=source,
         )
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Failed to persist live option-chain snapshot for %s/%s: %s",
+            symbol,
+            source,
+            exc,
+        )
         saved_paths["chain"] = None
     return saved_paths
 

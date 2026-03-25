@@ -1424,7 +1424,7 @@ def generate_trade(
     # and risk gating. That keeps expensive contract-specific work off the
     # path for obvious no-trade scenarios.
     if direction is not None:
-        def option_efficiency_candidate_hook(row):
+        def option_efficiency_candidate_hook(row, candidate_context=None):
             """
             Purpose:
                 Score a strike candidate with contract-level option-efficiency
@@ -1447,8 +1447,19 @@ def generate_trade(
                 The hook is nested because it depends on the fully assembled
                 signal state for the current snapshot.
             """
+            candidate_context = candidate_context if isinstance(candidate_context, dict) else {}
+            row_payload = dict(row) if isinstance(row, dict) else row
+            if isinstance(row_payload, dict) and candidate_context:
+                # Support strike-selector hook contract that provides a compact
+                # context payload for candidate diagnostics.
+                row_payload.setdefault("strikePrice", candidate_context.get("strike"))
+                row_payload.setdefault("lastPrice", candidate_context.get("last_price"))
+                row_payload.setdefault("totalTradedVolume", candidate_context.get("volume"))
+                row_payload.setdefault("openInterest", candidate_context.get("open_interest"))
+                row_payload.setdefault("IV", candidate_context.get("iv"))
+
             return score_option_efficiency_candidate(
-                row,
+                row_payload,
                 spot=spot,
                 direction=direction,
                 atm_iv=market_state["atm_iv"],

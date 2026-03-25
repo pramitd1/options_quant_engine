@@ -16,11 +16,23 @@ Downstream Usage:
 
 import numpy as np
 import pandas as pd
+import logging
 
 from analytics.greeks_engine import estimate_iv_from_price, compute_option_greeks, _parse_expiry_years
 from config.strike_selection_policy import get_strike_selection_score_config
 from strategy.enhanced_strike_scoring import compute_enhanced_strike_scores
 from utils.numerics import safe_float as _safe_float, to_python_number as _to_python_number  # noqa: F401
+
+
+_LOG = logging.getLogger(__name__)
+_WARN_ONCE_KEYS: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args) -> None:
+    if key in _WARN_ONCE_KEYS:
+        return
+    _WARN_ONCE_KEYS.add(key)
+    _LOG.warning(message, *args)
 
 
 def _infer_strike_step(rows):
@@ -581,7 +593,13 @@ def _score_gamma_cluster_distance_series(strikes: pd.Series, gamma_clusters, *, 
     for cluster in gamma_clusters:
         try:
             clean_clusters.append(float(cluster))
-        except Exception:
+        except (TypeError, ValueError) as exc:
+            _warn_once(
+                "gamma_cluster_parse_failed",
+                "strike_selector: ignored malformed gamma cluster value %r (%s)",
+                cluster,
+                exc,
+            )
             continue
 
     if not clean_clusters:
@@ -996,7 +1014,12 @@ def rank_strike_candidates(
                         "iv": round(iv, 2) if iv else 0,
                     },
                 ) or {}
-            except Exception:
+            except Exception as exc:
+                _warn_once(
+                    "candidate_score_hook_failed",
+                    "strike_selector: candidate_score_hook failed; using neutral hook payload (%s)",
+                    exc,
+                )
                 hook_payload = {}
 
         # The hook is used by option-efficiency scoring to reward contracts that

@@ -15,6 +15,8 @@ Downstream Usage:
 """
 from __future__ import annotations
 
+import logging
+
 from config.probability_feature_policy import get_probability_feature_policy_config
 from config.symbol_microstructure import get_microstructure_config
 import models.feature_builder as feature_builder_mod
@@ -26,6 +28,15 @@ from .common import _call_first, _clip, _safe_float
 
 
 _MOVE_PREDICTOR = None
+_WARN_ONCE_KEYS: set[str] = set()
+_LOG = logging.getLogger(__name__)
+
+
+def _warn_once(key: str, message: str, *args) -> None:
+    if key in _WARN_ONCE_KEYS:
+        return
+    _WARN_ONCE_KEYS.add(key)
+    _LOG.warning(message, *args)
 
 
 def _map_vacuum_strength(vacuum_state, liquidity_voids=None, nearest_vacuum_gap_pct=None):
@@ -62,8 +73,12 @@ def _map_vacuum_strength(vacuum_state, liquidity_voids=None, nearest_vacuum_gap_
     if liquidity_voids is not None:
         try:
             base += min(len(liquidity_voids), int(cfg.vacuum_void_count_cap)) * cfg.vacuum_void_increment
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:
+            _warn_once(
+                "vacuum_void_count_invalid",
+                "probability: invalid liquidity_voids payload; using base vacuum strength (%s)",
+                exc,
+            )
 
     return round(_clip(base, 0.0, 1.0), 3)
 
@@ -376,10 +391,19 @@ def _get_move_predictor():
 
 
 
-            except Exception:
-                pass
+            except Exception as exc:
+                _warn_once(
+                    "move_predictor_model_load_failed",
+                    "probability: failed to load ACTIVE_MODEL registry artifact; using heuristic ML leg (%s)",
+                    exc,
+                )
             _MOVE_PREDICTOR = predictor_class(base_model=base_model)
-        except Exception:
+        except Exception as exc:
+            _warn_once(
+                "move_predictor_init_failed",
+                "probability: ML predictor init failed; disabling ML leg for this process (%s)",
+                exc,
+            )
             _MOVE_PREDICTOR = False
 
     if _MOVE_PREDICTOR is False:
@@ -698,7 +722,12 @@ def _compute_probability_state_impl(
                         _clip(float(ml_move_probability), cfg.probability_floor, cfg.probability_ceiling),
                         2,
                     )
-            except Exception:
+            except Exception as exc:
+                _warn_once(
+                    "ml_predict_inference_failed",
+                    "probability: ML inference failed; falling back to rule probability (%s)",
+                    exc,
+                )
                 ml_move_probability = None
 
     components = {
