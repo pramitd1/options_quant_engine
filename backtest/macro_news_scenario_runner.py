@@ -146,6 +146,7 @@ def run_scenario(scenario: dict):
         event_state=event_state,
         headline_state=headline_state,
         as_of=as_of,
+        symbol=symbol,
     ).to_dict()
 
     classifications = [item.to_dict() for item in classify_headlines(headline_state.records)]

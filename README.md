@@ -459,6 +459,42 @@ Recent optimizations achieve **31-45x speedup** over baseline engine (warm runs)
 
 For profiling details, see the local developer guide section on performance caching systems.
 
+### Reproducible Hotspot Benchmarks (p50/p95)
+
+To quantify runtime hotspots with reproducible traces (and keep optimization passes measurable), use:
+
+```bash
+python scripts/micro_benchmark_hotspots.py --iterations 200 --warmup 25
+```
+
+This script benchmarks:
+
+1. spot-history load latency
+2. event-feature aggregation latency
+
+and writes both summary + raw artifacts under `debug_samples/performance/`:
+
+- `micro_benchmark_hotspots_<timestamp>.json`
+- `micro_benchmark_hotspots_<timestamp>_raw.csv`
+
+To compare two benchmark runs (absolute and percent deltas):
+
+```bash
+python scripts/compare_micro_benchmark_hotspots.py
+```
+
+By default this auto-selects the latest two summaries. You can also pass explicit files:
+
+```bash
+python scripts/compare_micro_benchmark_hotspots.py \
+  --baseline debug_samples/performance/micro_benchmark_hotspots_<old>.json \
+  --current debug_samples/performance/micro_benchmark_hotspots_<new>.json
+```
+
+The compare script prints delta tables and writes a comparison artifact:
+
+- `micro_benchmark_hotspots_comparison_<timestamp>.json`
+
 ## March 2026 Runtime Stability Updates
 
 Recent production-hardening updates focused on evaluation correctness, regime semantics, and hot-path efficiency:

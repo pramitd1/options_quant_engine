@@ -308,6 +308,19 @@ HEADLINE_MAX_RECORDS = int(os.getenv("HEADLINE_MAX_RECORDS", "50"))
 
 
 # ================================
+# Event Intelligence (Options NLP)
+# ================================
+
+EVENT_INTELLIGENCE_ENABLED = os.getenv("EVENT_INTELLIGENCE_ENABLED", "true").strip().lower() == "true"
+EVENT_INTELLIGENCE_LLM_ENABLED = os.getenv("EVENT_INTELLIGENCE_LLM_ENABLED", "false").strip().lower() == "true"
+EVENT_INTELLIGENCE_LLM_PROVIDER = os.getenv("EVENT_INTELLIGENCE_LLM_PROVIDER", "OPENAI").strip().upper()
+EVENT_INTELLIGENCE_LLM_MODEL = os.getenv("EVENT_INTELLIGENCE_LLM_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
+EVENT_INTELLIGENCE_LLM_TIMEOUT_SECONDS = float(os.getenv("EVENT_INTELLIGENCE_LLM_TIMEOUT_SECONDS", "8"))
+EVENT_INTELLIGENCE_LLM_TEMPERATURE = float(os.getenv("EVENT_INTELLIGENCE_LLM_TEMPERATURE", "0"))
+EVENT_INTELLIGENCE_LLM_MIN_CONFIDENCE = float(os.getenv("EVENT_INTELLIGENCE_LLM_MIN_CONFIDENCE", "0.62"))
+
+
+# ================================
 # Macro / News Aggregation
 # ================================
 

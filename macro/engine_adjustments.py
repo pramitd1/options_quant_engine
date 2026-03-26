@@ -16,6 +16,7 @@ Downstream Usage:
 
 from __future__ import annotations
 
+from decision_policy.event_overlay import apply_event_overlay
 from macro.macro_news_config import get_macro_news_adjustment_config
 from utils.numerics import clip as _clip, safe_float as _safe_float  # noqa: F401
 
@@ -47,6 +48,8 @@ def compute_macro_news_adjustments(*, direction, macro_news_state=None):
     news_confidence_score = _safe_float(macro_news_state.get("news_confidence_score"), 0.0)
     event_lockdown_flag = bool(macro_news_state.get("event_lockdown_flag", False))
     neutral_fallback = bool(macro_news_state.get("neutral_fallback", True))
+    event_overlay_enabled = bool(macro_news_state.get("event_intelligence_enabled", False))
+    event_features = macro_news_state.get("event_features") if isinstance(macro_news_state, dict) else {}
 
     adjustment_score = 0
     confirmation_adjustment = 0
@@ -68,6 +71,11 @@ def compute_macro_news_adjustments(*, direction, macro_news_state=None):
             "fallback": True,  # NEW: explicit flag
             "_note": "Returning neutral adjustments because macro news state unavailable",
             "macro_position_size_multiplier": 1.0,
+            "event_overlay_probability_multiplier": 1.0,
+            "event_overlay_size_multiplier": 1.0,
+            "event_overlay_score_adjustment": 0,
+            "event_overlay_suppress_signal": False,
+            "event_overlay_reasons": ["event_overlay_neutral_fallback"],
             "macro_adjustment_reasons": reasons,
         }
 
@@ -135,6 +143,18 @@ def compute_macro_news_adjustments(*, direction, macro_news_state=None):
     if abs(macro_sentiment_score) < 8 and macro_regime == "MACRO_NEUTRAL":
         reasons.append("macro_news_neutral")
 
+    event_overlay = apply_event_overlay(
+        direction=direction,
+        event_features=event_features,
+        enabled=event_overlay_enabled,
+    )
+    adjustment_score += event_overlay.score_adjustment
+    size_multiplier = _clip(size_multiplier * event_overlay.size_multiplier, 0.0, 1.0)
+    if event_overlay.suppress_signal:
+        adjustment_score -= 6
+        size_multiplier = 0.0
+    reasons.extend(event_overlay.reasons)
+
     return {
         "macro_regime": macro_regime,
         "macro_sentiment_score": round(macro_sentiment_score, 2),
@@ -144,5 +164,10 @@ def compute_macro_news_adjustments(*, direction, macro_news_state=None):
         "macro_adjustment_score": int(_clip(adjustment_score, -12, 6)),
         "macro_confirmation_adjustment": int(_clip(confirmation_adjustment, -4, 2)),
         "macro_position_size_multiplier": round(_clip(size_multiplier, 0.0, 1.0), 2),
+        "event_overlay_probability_multiplier": event_overlay.probability_multiplier,
+        "event_overlay_size_multiplier": event_overlay.size_multiplier,
+        "event_overlay_score_adjustment": event_overlay.score_adjustment,
+        "event_overlay_suppress_signal": event_overlay.suppress_signal,
+        "event_overlay_reasons": event_overlay.reasons,
         "macro_adjustment_reasons": reasons,
     }

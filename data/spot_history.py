@@ -19,6 +19,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +29,32 @@ from config.market_data_policy import IST_TIMEZONE
 logger = logging.getLogger(__name__)
 
 SPOT_HISTORY_DIR = Path("data_store") / "spot_history"
+
+
+def _safe_dir_mtime_ns(path: Path) -> int:
+    try:
+        return int(path.stat().st_mtime_ns)
+    except Exception:
+        return -1
+
+
+@lru_cache(maxsize=128)
+def _cached_symbol_csv_files(symbol_dir_str: str, dir_mtime_ns: int) -> tuple[Path, ...]:
+    # dir_mtime_ns participates in cache key to invalidate after appends.
+    _ = dir_mtime_ns
+    symbol_dir = Path(symbol_dir_str)
+    return tuple(sorted(symbol_dir.glob("*.csv")))
+
+
+@lru_cache(maxsize=4096)
+def _cached_file_date_from_stem(stem: str):
+    if "_" not in stem:
+        return None
+    candidate = stem.rsplit("_", 1)[-1]
+    try:
+        return pd.Timestamp(candidate).date()
+    except Exception:
+        return None
 
 
 def _history_path(symbol: str, date: str, *, base_dir: Path = SPOT_HISTORY_DIR) -> Path:
@@ -89,10 +116,30 @@ def load_spot_history(
     start = _to_ist(start_ts)
     end = _to_ist(end_ts)
 
+    candidate_files = list(_cached_symbol_csv_files(str(symbol_dir), _safe_dir_mtime_ns(symbol_dir)))
+    if start is not None or end is not None:
+        lower_date = (start.normalize() - pd.Timedelta(days=1)).date() if start is not None else None
+        upper_date = (end.normalize() + pd.Timedelta(days=1)).date() if end is not None else None
+
+        filtered: list[Path] = []
+        for csv_file in candidate_files:
+            file_date = _cached_file_date_from_stem(csv_file.stem)
+
+            # If filename date cannot be parsed, keep file to avoid false negatives.
+            if file_date is None:
+                filtered.append(csv_file)
+                continue
+            if lower_date is not None and file_date < lower_date:
+                continue
+            if upper_date is not None and file_date > upper_date:
+                continue
+            filtered.append(csv_file)
+        candidate_files = filtered
+
     frames: list[pd.DataFrame] = []
-    for csv_file in sorted(symbol_dir.glob("*.csv")):
+    for csv_file in candidate_files:
         try:
-            df = pd.read_csv(csv_file, parse_dates=["timestamp"])
+            df = pd.read_csv(csv_file)
         except Exception:
             logger.warning("Skipping corrupt spot history file: %s", csv_file)
             continue
@@ -123,5 +170,6 @@ def load_spot_history(
         return pd.DataFrame(columns=["timestamp", "spot"])
 
     combined = pd.concat(frames, ignore_index=True)
-    combined = combined.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    # Keep the latest appended row per timestamp so corrections/late writes win.
+    combined = combined.drop_duplicates(subset=["timestamp"], keep="last").sort_values("timestamp").reset_index(drop=True)
     return combined[["timestamp", "spot"]]

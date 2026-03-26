@@ -1011,6 +1011,7 @@ def _evaluate_snapshot_for_pack(
                 event_state=macro_event_state,
                 headline_state=headline_state,
                 as_of=spot_timestamp,
+                symbol=symbol,
             ).to_dict()
         except Exception as exc:
             logging.getLogger(__name__).warning(

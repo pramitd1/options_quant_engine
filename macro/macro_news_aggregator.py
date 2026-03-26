@@ -21,10 +21,14 @@ from typing import Any
 
 import pandas as pd
 
+from config.settings import EVENT_INTELLIGENCE_ENABLED, EVENT_INTELLIGENCE_LLM_ENABLED
+from features.event_features import aggregate_event_features
 from macro.macro_news_config import (
     get_macro_news_aggregation_config,
     get_macro_news_regime_config,
 )
+from nlp.extraction.structured_extractor import extract_structured_event
+from nlp.ingestion.event_ingestion import build_raw_event_payloads
 from news.classifier import HeadlineClassification, classify_headlines
 from news.models import HeadlineIngestionState
 from utils.numerics import clip as _clip, safe_float as _safe_float  # noqa: F401
@@ -82,6 +86,10 @@ class MacroNewsState:
     issues: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     classification_preview: list[dict[str, Any]] = field(default_factory=list)
+    event_intelligence_enabled: bool = False
+    event_features: dict[str, Any] = field(default_factory=dict)
+    event_explanations: list[str] = field(default_factory=list)
+    structured_event_preview: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -143,7 +151,52 @@ def _neutral_macro_news_state(event_state: dict | None = None, issues=None, warn
         issues=issues or [],
         warnings=warnings or [],
         classification_preview=[],
+        event_intelligence_enabled=False,
+        event_features={},
+        event_explanations=["event_intelligence_neutral_fallback"],
+        structured_event_preview=[],
     )
+
+
+def _build_event_intelligence_state(
+    *,
+    headline_state: HeadlineIngestionState,
+    direction_hint: str | None = None,
+    underlying_symbol: str | None = None,
+    as_of=None,
+) -> dict[str, Any]:
+    if not EVENT_INTELLIGENCE_ENABLED:
+        return {
+            "event_intelligence_enabled": False,
+            "event_features": {},
+            "event_explanations": ["event_intelligence_disabled"],
+            "structured_event_preview": [],
+        }
+
+    raw_events = build_raw_event_payloads(headline_state.records)
+    structured = []
+    for item in raw_events:
+        record = extract_structured_event(
+            text=item.get("text"),
+            timestamp=item.get("timestamp"),
+            source=str(item.get("source") or "headline"),
+            llm_enabled=EVENT_INTELLIGENCE_LLM_ENABLED,
+        )
+        if record is not None:
+            structured.append(record)
+
+    feature_state = aggregate_event_features(
+        structured,
+        direction_hint=direction_hint,
+        underlying_symbol=underlying_symbol,
+        as_of=as_of,
+    )
+    return {
+        "event_intelligence_enabled": True,
+        "event_features": feature_state.to_dict(),
+        "event_explanations": list(feature_state.explanation_lines),
+        "structured_event_preview": feature_state.structured_events[:5],
+    }
 
 
 def _weighted_headline_aggregates(classified: list[HeadlineClassification], as_of=None):
@@ -306,6 +359,7 @@ def build_macro_news_state(
     event_state: dict | None,
     headline_state: HeadlineIngestionState | None,
     as_of=None,
+    symbol: str | None = None,
 ) -> MacroNewsState:
     """
     Purpose:
@@ -357,6 +411,13 @@ def build_macro_news_state(
         volatility_shock_score=volatility_shock_score,
     )
 
+    event_intel_state = _build_event_intelligence_state(
+        headline_state=headline_state,
+        direction_hint=None,
+        underlying_symbol=symbol,
+        as_of=as_of or headline_state.fetched_at,
+    )
+
     return MacroNewsState(
         macro_regime=macro_regime,
         macro_event_risk_score=macro_event_risk_score,
@@ -377,4 +438,8 @@ def build_macro_news_state(
         issues=list(headline_state.issues),
         warnings=list(headline_state.warnings),
         classification_preview=aggregates["classification_preview"],
+        event_intelligence_enabled=bool(event_intel_state["event_intelligence_enabled"]),
+        event_features=event_intel_state["event_features"],
+        event_explanations=event_intel_state["event_explanations"],
+        structured_event_preview=event_intel_state["structured_event_preview"],
     )

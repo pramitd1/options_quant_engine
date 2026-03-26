@@ -1131,6 +1131,24 @@ def generate_trade(
         direction=direction,
         macro_news_state=macro_news_state,
     )
+    event_overlay_probability_multiplier = _safe_float(
+        macro_news_adjustments.get("event_overlay_probability_multiplier"),
+        1.0,
+    )
+    if probability_state.get("hybrid_move_probability") is not None:
+        probability_state["hybrid_move_probability"] = round(
+            _clip(
+                _safe_float(probability_state.get("hybrid_move_probability"), 0.0)
+                * event_overlay_probability_multiplier,
+                0.0,
+                1.0,
+            ),
+            4,
+        )
+    if bool(macro_news_adjustments.get("event_overlay_suppress_signal", False)):
+        direction = None
+        confirmation["reasons"].append("event_overlay_signal_suppressed")
+
     event_cfg = get_event_window_policy_config()
 
     # Scheduled events and headline overlays are scored separately so operators
@@ -1156,6 +1174,10 @@ def generate_trade(
     scoring_breakdown["confirmation_filter_score"] = confirmation["score_adjustment"]
     scoring_breakdown["macro_event_score"] = macro_event_score_adjustment
     scoring_breakdown["macro_news_score"] = macro_news_adjustments["macro_adjustment_score"]
+    scoring_breakdown["event_overlay_score"] = _safe_float(
+        macro_news_adjustments.get("event_overlay_score_adjustment"),
+        0.0,
+    )
     global_risk_trade_modifiers = derive_global_risk_trade_modifiers(global_risk_state)
     global_risk_adjustment_score = global_risk_trade_modifiers["effective_adjustment_score"]
     scoring_breakdown["global_risk_base_adjustment_score"] = global_risk_trade_modifiers["base_adjustment_score"]
@@ -1444,6 +1466,26 @@ def generate_trade(
         "macro_confirmation_adjustment": macro_news_adjustments["macro_confirmation_adjustment"],
         "macro_position_size_multiplier": macro_news_adjustments["macro_position_size_multiplier"],
         "macro_adjustment_reasons": macro_news_adjustments["macro_adjustment_reasons"],
+        "event_intelligence_enabled": bool((macro_news_state or {}).get("event_intelligence_enabled", False)),
+        "event_bullish_score": ((macro_news_state or {}).get("event_features") or {}).get("bullish_event_score"),
+        "event_bearish_score": ((macro_news_state or {}).get("event_features") or {}).get("bearish_event_score"),
+        "event_vol_expansion_score": ((macro_news_state or {}).get("event_features") or {}).get("vol_expansion_score"),
+        "event_vol_compression_score": ((macro_news_state or {}).get("event_features") or {}).get("vol_compression_score"),
+        "event_uncertainty_score": ((macro_news_state or {}).get("event_features") or {}).get("event_uncertainty_score"),
+        "event_gap_risk_score": ((macro_news_state or {}).get("event_features") or {}).get("gap_risk_score"),
+        "event_catalyst_alignment_score": ((macro_news_state or {}).get("event_features") or {}).get("catalyst_alignment_score"),
+        "event_contradictory_penalty": ((macro_news_state or {}).get("event_features") or {}).get("contradictory_event_penalty"),
+        "event_cluster_score": ((macro_news_state or {}).get("event_features") or {}).get("recent_event_cluster_score"),
+        "event_decayed_signal": ((macro_news_state or {}).get("event_features") or {}).get("decayed_event_signal"),
+        "event_relevance_score": ((macro_news_state or {}).get("event_features") or {}).get("routed_event_relevance_score"),
+        "event_count": ((macro_news_state or {}).get("event_features") or {}).get("event_count"),
+        "event_routed_count": ((macro_news_state or {}).get("event_features") or {}).get("routed_event_count"),
+        "event_explanations": (macro_news_state or {}).get("event_explanations", []),
+        "event_overlay_probability_multiplier": macro_news_adjustments.get("event_overlay_probability_multiplier", 1.0),
+        "event_overlay_size_multiplier": macro_news_adjustments.get("event_overlay_size_multiplier", 1.0),
+        "event_overlay_score_adjustment": macro_news_adjustments.get("event_overlay_score_adjustment", 0),
+        "event_overlay_suppress_signal": bool(macro_news_adjustments.get("event_overlay_suppress_signal", False)),
+        "event_overlay_reasons": macro_news_adjustments.get("event_overlay_reasons", []),
         "global_risk_state": global_risk_state.get("global_risk_state") if isinstance(global_risk_state, dict) else "GLOBAL_NEUTRAL",
         "global_risk_state_score": global_risk_state.get("global_risk_score") if isinstance(global_risk_state, dict) else 0,
         "global_risk_overlay_score": None,
@@ -2002,7 +2044,11 @@ def generate_trade(
 
     # Macro and global-risk size caps can reduce exposure without vetoing the
     # idea entirely, which is useful for elevated-risk but still actionable setups.
-    risk_size_cap = min(_safe_float(global_risk["global_risk_size_cap"], 1.0), _safe_float(at_flip_size_cap, 1.0))
+    risk_size_cap = min(
+        _safe_float(global_risk["global_risk_size_cap"], 1.0),
+        _safe_float(at_flip_size_cap, 1.0),
+        _safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0),
+    )
     if bool(int(_safe_float(runtime_thresholds.get("enable_regime_conditional_thresholds"), 1.0))):
         risk_size_cap *= _safe_float(regime_thresholds.get("position_size_multiplier"), 1.0)
     else:

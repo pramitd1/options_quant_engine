@@ -64,6 +64,14 @@ class TestLoadSpotHistory:
         df = load_spot_history("NIFTY", base_dir=tmp_path)
         assert len(df) == 1
 
+    def test_dedup_guard_keeps_latest_spot_for_same_timestamp(self, tmp_path):
+        append_spot_observation("NIFTY", 23100.0, "2026-03-16T12:30:00+05:30", base_dir=tmp_path)
+        append_spot_observation("NIFTY", 23150.0, "2026-03-16T12:30:00+05:30", base_dir=tmp_path)
+
+        df = load_spot_history("NIFTY", base_dir=tmp_path)
+        assert len(df) == 1
+        assert df["spot"].iloc[0] == 23150.0
+
     def test_spans_multiple_dates(self, tmp_path):
         append_spot_observation("NIFTY", 23100.0, "2026-03-15T15:00:00+05:30", base_dir=tmp_path)
         append_spot_observation("NIFTY", 23200.0, "2026-03-16T09:15:00+05:30", base_dir=tmp_path)
@@ -73,3 +81,42 @@ class TestLoadSpotHistory:
         assert len(df) == 3
         assert df["spot"].iloc[0] == 23100.0
         assert df["spot"].iloc[-1] == 23250.0
+
+    def test_dedupes_duplicate_timestamps_across_files_in_window(self, tmp_path):
+        symbol_dir = tmp_path / "NIFTY"
+        symbol_dir.mkdir(parents=True, exist_ok=True)
+
+        day_one = symbol_dir / "NIFTY_2026-03-15.csv"
+        day_two = symbol_dir / "NIFTY_2026-03-16.csv"
+
+        day_one.write_text(
+            "\n".join(
+                [
+                    "timestamp,spot",
+                    "2026-03-15T15:20:00+05:30,23090.0",
+                    "2026-03-16T09:15:00+05:30,23100.0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        day_two.write_text(
+            "\n".join(
+                [
+                    "timestamp,spot",
+                    "2026-03-16T09:15:00+05:30,23125.0",
+                    "2026-03-16T09:20:00+05:30,23140.0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        start = pd.Timestamp("2026-03-16T09:15:00+05:30")
+        end = pd.Timestamp("2026-03-16T09:20:00+05:30")
+        df = load_spot_history("NIFTY", start_ts=start, end_ts=end, base_dir=tmp_path)
+
+        assert len(df) == 2
+        assert df["timestamp"].iloc[0].isoformat() == "2026-03-16T09:15:00+05:30"
+        assert df["spot"].iloc[0] == 23125.0
+        assert df["timestamp"].iloc[1].isoformat() == "2026-03-16T09:20:00+05:30"
