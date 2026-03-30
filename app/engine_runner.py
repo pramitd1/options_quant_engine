@@ -1440,6 +1440,7 @@ def run_engine_snapshot(
             return {
                 "ok": False,
                 "reason": "DATA_UNAVAILABLE_SPOT",
+                "error": f"Spot snapshot unavailable/invalid for {symbol}",
                 "trade": None,
                 "data_quality_status": "WEAK",
                 "mode": mode,
@@ -1454,6 +1455,7 @@ def run_engine_snapshot(
             return {
                 "ok": False,
                 "reason": "DATA_UNAVAILABLE_OPTION_CHAIN",
+                "error": f"Option chain empty/invalid for {symbol}",
                 "trade": None,
                 "data_quality_status": "WEAK",
                 "mode": mode,

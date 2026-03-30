@@ -188,7 +188,7 @@ def test_run_engine_snapshot_closes_managed_router(monkeypatch):
     router = _Router()
 
     monkeypatch.setattr(engine_runner, "DataSourceRouter", lambda source: router)
-    monkeypatch.setattr(engine_runner, "get_spot_snapshot", lambda symbol: _spot_snapshot())
+    monkeypatch.setattr(engine_runner, "get_spot_snapshot", lambda symbol, **kwargs: _spot_snapshot())
     monkeypatch.setattr(engine_runner, "evaluate_scheduled_event_risk", lambda symbol, as_of: {"macro_event_risk_score": 0})
     monkeypatch.setattr(engine_runner, "build_global_market_snapshot", lambda symbol, as_of: {"vix": 13.0})
     monkeypatch.setattr(engine_runner, "resolve_selected_expiry", lambda option_chain: "2026-03-26")
@@ -278,3 +278,37 @@ def test_run_engine_snapshot_replay_uses_source_aware_selection_and_emits_diagno
     assert result["replay_paths"]["chain"] == "chain.csv"
     assert result["replay_selection"]["selection_reason"] == "latest_valid_for_source"
     assert result["replay_selection"]["skipped_chain_files"][0]["reason"] == "empty_file"
+
+
+def test_run_engine_snapshot_returns_error_when_live_option_chain_is_empty(monkeypatch):
+    class _Router:
+        def __init__(self):
+            self.closed = False
+
+        def get_option_chain(self, symbol):
+            return pd.DataFrame()
+
+        def close(self):
+            self.closed = True
+
+    router = _Router()
+
+    monkeypatch.setattr(engine_runner, "DataSourceRouter", lambda source: router)
+    monkeypatch.setattr(engine_runner, "get_spot_snapshot", lambda symbol, **kwargs: _spot_snapshot())
+
+    result = engine_runner.run_engine_snapshot(
+        symbol="NIFTY",
+        mode="LIVE",
+        source="NSE",
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        capture_signal_evaluation=False,
+        headline_service=_HeadlineService(),
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "DATA_UNAVAILABLE_OPTION_CHAIN"
+    assert "Option chain empty/invalid" in result["error"]
+    assert router.closed is True
