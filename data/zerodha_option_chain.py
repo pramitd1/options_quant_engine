@@ -137,10 +137,11 @@ class ZerodhaOptionChain:
             quotes = self.kite.quote(token_batch)
 
             for token in token_batch:
-                if token not in quotes:
+                quote_key = str(token)
+                if token not in quotes and quote_key not in quotes:
                     continue
 
-                q = quotes[token]
+                q = quotes.get(token, quotes.get(quote_key, {}))
                 inst = options[
                     options["instrument_token"] == token
                 ].iloc[0]
