@@ -604,7 +604,11 @@ def _load_market_inputs(
     if data_router is None:
         data_router = DataSourceRouter(source)
         managed_data_router = data_router
-    spot_snapshot = get_spot_snapshot(symbol)
+    spot_snapshot = get_spot_snapshot(
+        symbol,
+        source=source,
+        data_router=data_router,
+    )
     option_chain = data_router.get_option_chain(symbol)
     return spot_snapshot, option_chain, None, managed_data_router, None
 

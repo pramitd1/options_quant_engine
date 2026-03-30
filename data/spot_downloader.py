@@ -28,6 +28,79 @@ from utils.numerics import safe_float as _safe_float
 IST_TIMEZONE = "Asia/Kolkata"
 
 
+def _zerodha_quote_candidates(symbol: str) -> list[str]:
+    """Return likely Kite quote symbols for common index underlyings."""
+    normalized = normalize_underlying_symbol(symbol)
+    mapping = {
+        "NIFTY": ["NSE:NIFTY 50", "NSE:NIFTY50"],
+        "NIFTY50": ["NSE:NIFTY 50", "NSE:NIFTY50"],
+        "BANKNIFTY": ["NSE:NIFTY BANK", "NSE:BANKNIFTY"],
+        "FINNIFTY": ["NSE:NIFTY FIN SERVICE", "NSE:FINNIFTY"],
+        "MIDCPNIFTY": ["NSE:NIFTY MID SELECT", "NSE:MIDCPNIFTY"],
+    }
+    candidates = mapping.get(normalized, [f"NSE:{normalized}"])
+    # Deduplicate while preserving order.
+    cleaned = []
+    for item in candidates:
+        if item and item not in cleaned:
+            cleaned.append(item)
+    return cleaned
+
+
+def _fetch_zerodha_quote_snapshot(symbol: str, data_router) -> Optional[dict]:
+    """Best-effort spot snapshot from Zerodha quote API via an existing DataSourceRouter."""
+    if data_router is None or str(getattr(data_router, "source", "")).upper().strip() != "ZERODHA":
+        return None
+
+    loader = getattr(data_router, "loader", None)
+    kite = getattr(loader, "kite", None)
+    if kite is None:
+        return None
+
+    attempts = []
+    for quote_symbol in _zerodha_quote_candidates(symbol):
+        try:
+            payload = kite.quote([quote_symbol])
+            if not isinstance(payload, dict) or quote_symbol not in payload:
+                attempts.append(f"{quote_symbol}:missing_quote")
+                continue
+
+            quote = payload.get(quote_symbol) or {}
+            spot = _safe_float(quote.get("last_price"), None)
+            if spot is None:
+                attempts.append(f"{quote_symbol}:missing_last_price")
+                continue
+
+            ohlc = quote.get("ohlc") if isinstance(quote.get("ohlc"), dict) else {}
+            snapshot = {
+                "symbol": normalize_underlying_symbol(symbol),
+                "ticker": quote_symbol,
+                "spot": round(float(spot), 4),
+                "day_open": round(float(_safe_float(ohlc.get("open"), 0.0)), 4) if _safe_float(ohlc.get("open"), None) is not None else None,
+                "day_high": round(float(_safe_float(ohlc.get("high"), 0.0)), 4) if _safe_float(ohlc.get("high"), None) is not None else None,
+                "day_low": round(float(_safe_float(ohlc.get("low"), 0.0)), 4) if _safe_float(ohlc.get("low"), None) is not None else None,
+                "prev_close": round(float(_safe_float(ohlc.get("close"), 0.0)), 4) if _safe_float(ohlc.get("close"), None) is not None else None,
+                "timestamp": pd.Timestamp.now(tz=IST_TIMEZONE).isoformat(),
+                "lookback_avg_range_pct": None,
+                "spot_source": "zerodha_quote",
+            }
+            snapshot["validation"] = validate_spot_snapshot(snapshot)
+            return snapshot
+        except Exception as exc:
+            msg = str(exc)
+            lowered = msg.lower()
+            if any(token in lowered for token in ("incorrect `api_key`", "access_token", "token is invalid", "token expired", "permission")):
+                raise ValueError(
+                    "Zerodha auth error: incorrect/expired access token. "
+                    "Regenerate ZERODHA_ACCESS_TOKEN and retry."
+                )
+            attempts.append(f"{quote_symbol}:{msg}")
+
+    if attempts:
+        raise ValueError("Zerodha quote spot fetch failed: " + " | ".join(attempts[:4]))
+    return None
+
+
 def normalize_underlying_symbol(symbol: str) -> str:
     """
     Purpose:
@@ -238,7 +311,13 @@ def _extract_quote_fallback(ticker_obj) -> Optional[dict]:
     }
 
 
-def get_spot_snapshot(symbol: str, max_retries: int = 3) -> dict:
+def get_spot_snapshot(
+    symbol: str,
+    max_retries: int = 3,
+    *,
+    source: Optional[str] = None,
+    data_router=None,
+) -> dict:
     """
     Returns a richer live spot snapshot for the engine with retry logic:
     - spot
@@ -253,13 +332,21 @@ def get_spot_snapshot(symbol: str, max_retries: int = 3) -> dict:
     """
 
     normalized_symbol = normalize_underlying_symbol(symbol)
+    normalized_source = str(source or "").upper().strip()
     ticker = _normalize_symbol(normalized_symbol)
 
     last_error = None
     intraday = None
     daily = None
+    attempt_causes = []
     for attempt in range(1, max_retries + 1):
         try:
+            # Prefer source-native Zerodha quote snapshot when Zerodha is selected.
+            if normalized_source == "ZERODHA":
+                zerodha_snapshot = _fetch_zerodha_quote_snapshot(normalized_symbol, data_router)
+                if zerodha_snapshot is not None:
+                    return zerodha_snapshot
+
             data = yf.Ticker(ticker)
             intraday = None
             for period, interval in (("5d", "5m"), ("1d", "1m"), ("5d", "15m"), ("1d", "5m")):
@@ -300,13 +387,20 @@ def get_spot_snapshot(symbol: str, max_retries: int = 3) -> dict:
             break
         except Exception as e:
             last_error = e
+            attempt_causes.append(f"attempt_{attempt}:{e}")
+            lowered = str(e).lower()
+            if any(token in lowered for token in ("zerodha auth error", "incorrect/expired access token")):
+                raise ValueError(str(e))
             if attempt < max_retries:
                 wait_seconds = (2 ** (attempt - 1)) + random.uniform(0.0, 1.0)
                 time.sleep(min(wait_seconds, 8.0))
             continue
     else:
         # All retries exhausted
-        raise ValueError(f"Unable to fetch intraday spot data after {max_retries} attempts: {str(last_error)}")
+        reason = str(last_error)
+        if attempt_causes:
+            reason = f"{reason}; causes={'; '.join(attempt_causes[:6])}"
+        raise ValueError(f"Unable to fetch intraday spot data after {max_retries} attempts: {reason}")
 
     intraday = intraday.copy()
     intraday.index = [_to_ist_timestamp(x) for x in intraday.index]
