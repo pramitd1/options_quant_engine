@@ -352,6 +352,8 @@ def build_option_efficiency_features(
         expected_move_pct = round((expected_move_points / spot_value) * 100.0, 4)
 
     effective_delta = _effective_delta(delta)
+    if effective_delta is None:
+        effective_delta = cfg.fallback_delta
     option_gain_target = None
     target_distance_points = None
     target_distance_pct = None
@@ -420,6 +422,8 @@ def build_option_efficiency_features(
         warnings.append("india_vix_used")
     elif iv_source == "FALLBACK_IV":
         warnings.append("fallback_iv_used")
+    if _effective_delta(delta) is None:
+        warnings.append("fallback_delta_used")
 
     return {
         "spot": spot_value,

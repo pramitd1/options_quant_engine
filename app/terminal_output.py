@@ -328,7 +328,7 @@ def _print_section(title, fields):
         print(f"{key:26}: {_fmt(value)}")
 
 
-def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False):
+def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False, option_chain_frame=None):
     """Resolve strongest top-N resistance/support walls from trade payload."""
     if not isinstance(trade, dict):
         return [], []
@@ -399,6 +399,91 @@ def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False):
     else:
         top_supports = []
         top_resistances = []
+
+    # Symmetry fallback: always try to provide top_n supports and top_n resistances.
+    # Priority: (1) OI strikes when chain is available, (2) nearest known strikes,
+    # (3) synthetic nearest strikes using inferred strike step.
+    if spot_f is not None and top_n > 0:
+        top_supports = [float(x) for x in top_supports]
+        top_resistances = [float(x) for x in top_resistances]
+
+        def _append_unique(levels, candidate, *, side):
+            try:
+                c = float(candidate)
+            except (TypeError, ValueError):
+                return
+            if side == "support" and c > spot_f:
+                return
+            if side == "resistance" and c < spot_f:
+                return
+            if c not in levels:
+                levels.append(c)
+
+        # 1) Fill from top OI strikes when option-chain frame is available.
+        if len(top_supports) < top_n or len(top_resistances) < top_n:
+            oi_calls, oi_puts = _resolve_top_oi_levels(trade, option_chain_frame, top_n=max(2 * top_n, 6))
+            for level, _oi, _chg_oi, _inf in (oi_calls + oi_puts):
+                if level <= spot_f:
+                    _append_unique(top_supports, level, side="support")
+                if level >= spot_f:
+                    _append_unique(top_resistances, level, side="resistance")
+
+        # 2) Fill from nearest known wall candidates on each side.
+        if len(top_supports) < top_n or len(top_resistances) < top_n:
+            _support_candidates = sorted(
+                [lvl for lvl in wall_candidates if lvl <= spot_f and lvl not in top_supports],
+                key=lambda lvl: abs(spot_f - lvl),
+            )
+            _resistance_candidates = sorted(
+                [lvl for lvl in wall_candidates if lvl >= spot_f and lvl not in top_resistances],
+                key=lambda lvl: abs(spot_f - lvl),
+            )
+            for lvl in _support_candidates:
+                if len(top_supports) >= top_n:
+                    break
+                _append_unique(top_supports, lvl, side="support")
+            for lvl in _resistance_candidates:
+                if len(top_resistances) >= top_n:
+                    break
+                _append_unique(top_resistances, lvl, side="resistance")
+
+        # 3) Synthetic nearest strikes if one side is still short.
+        if len(top_supports) < top_n or len(top_resistances) < top_n:
+            _all_levels = sorted(set(float(x) for x in wall_candidates))
+            _diffs = [
+                _all_levels[i + 1] - _all_levels[i]
+                for i in range(len(_all_levels) - 1)
+                if (_all_levels[i + 1] - _all_levels[i]) > 0
+            ]
+            strike_step = min(_diffs) if _diffs else 50.0
+            if not isinstance(strike_step, (int, float)) or strike_step <= 0:
+                strike_step = 50.0
+
+            def _next_support_seed():
+                seed = math.floor(spot_f / strike_step) * strike_step
+                if seed > spot_f:
+                    seed -= strike_step
+                return float(seed)
+
+            def _next_resistance_seed():
+                seed = math.ceil(spot_f / strike_step) * strike_step
+                if seed < spot_f:
+                    seed += strike_step
+                return float(seed)
+
+            sup_seed = _next_support_seed()
+            res_seed = _next_resistance_seed()
+            sup_iter = 0
+            res_iter = 0
+            while len(top_supports) < top_n and sup_iter < 20:
+                _append_unique(top_supports, sup_seed - (sup_iter * strike_step), side="support")
+                sup_iter += 1
+            while len(top_resistances) < top_n and res_iter < 20:
+                _append_unique(top_resistances, res_seed + (res_iter * strike_step), side="resistance")
+                res_iter += 1
+
+        top_supports = top_supports[:top_n]
+        top_resistances = top_resistances[:top_n]
 
     # Fallback when spot/context is missing.
     if not top_supports and support is not None:
@@ -971,6 +1056,260 @@ def _describe_effective_strength_gate(trade):
     return f"{effective} (base~{base_est}; conf:{confidence_note}; regime:{regime_note})"
 
 
+def _humanize_requirement_token(token):
+    """Convert requirement codes into compact trader-readable labels."""
+    raw = str(token or "").strip()
+    if not raw:
+        return None
+
+    mapping = {
+        "missing_directional_consensus": "directional consensus missing",
+        "confirmation_filter_not_met": "confirmation filter not met",
+        "missing_flow_confirmation": "flow confirmation missing",
+        "pinning_structure_dampens_signal": "pinning structure dampens edge",
+        "insufficient_trade_strength": "trade strength below threshold",
+        "move_probability_not_high_enough": "move probability below conviction floor",
+        "option_efficiency_unavailable": "option efficiency unavailable",
+        "direction_confirmation_conflict": "direction and confirmation conflict",
+    }
+    lowered = raw.lower()
+    if lowered in mapping:
+        return mapping[lowered]
+    return lowered.replace("_", " ")
+
+
+def _build_directionality_diagnostics(trade, *, mode="standard"):
+    """Build a concise directionality verdict with evidence and blockers."""
+    if not isinstance(trade, dict):
+        return {
+            "verdict": "UNAVAILABLE",
+            "verdict_reason": "trade payload unavailable",
+            "direction": "-",
+            "direction_source": "-",
+            "confirmation": "-",
+            "activation": None,
+            "maturity": None,
+            "flow_alignment": "UNKNOWN",
+            "structure_context": "UNKNOWN",
+            "evidence": [],
+            "blockers": [],
+        }
+
+    direction = str(trade.get("direction") or "").upper().strip()
+    confirmation = str(
+        trade.get("confirmation_status")
+        or trade.get("confirmation")
+        or ""
+    ).upper().strip()
+    direction_source = str(trade.get("direction_source") or "UNKNOWN").strip()
+    decision = str(trade.get("decision_classification") or "").upper().strip()
+
+    activation = trade.get("setup_activation_score")
+    maturity = trade.get("setup_maturity_score")
+    directional_resolution_needed = bool(trade.get("directional_resolution_needed"))
+
+    # Tightened trust gate: direction must clear minimum setup activation and
+    # maturity floors, not just directional alignment.
+    try:
+        from config.signal_policy import get_activation_score_policy_config
+
+        _acfg = get_activation_score_policy_config()
+        _dead_floor = int(getattr(_acfg, "dead_inactive_threshold", 35))
+    except Exception:
+        _dead_floor = 35
+
+    activation_floor = max(50, _dead_floor + 15)
+    maturity_floor = 65
+    if str(mode).lower() == "compact":
+        # Compact mode is intentionally stricter to reduce false confidence.
+        activation_floor += 5
+        maturity_floor += 5
+
+    try:
+        activation_value = float(activation) if activation is not None else None
+    except (TypeError, ValueError):
+        activation_value = None
+    try:
+        maturity_value = float(maturity) if maturity is not None else None
+    except (TypeError, ValueError):
+        maturity_value = None
+
+    activation_ok = activation_value is not None and activation_value >= activation_floor
+    maturity_ok = maturity_value is not None and maturity_value >= maturity_floor
+
+    flow_signal = str(trade.get("final_flow_signal") or "").upper().strip()
+    smart_flow = str(trade.get("smart_money_flow") or "").upper().strip()
+    if direction == "CALL":
+        aligned = sum(1 for x in (flow_signal, smart_flow) if "BULLISH" in x)
+        conflicted = sum(1 for x in (flow_signal, smart_flow) if "BEARISH" in x)
+    elif direction == "PUT":
+        aligned = sum(1 for x in (flow_signal, smart_flow) if "BEARISH" in x)
+        conflicted = sum(1 for x in (flow_signal, smart_flow) if "BULLISH" in x)
+    else:
+        aligned = 0
+        conflicted = 0
+
+    if direction not in {"CALL", "PUT"}:
+        flow_alignment = "NO_DIRECTION"
+    elif aligned >= 2 and conflicted == 0:
+        flow_alignment = "STRONG"
+    elif aligned >= 1 and conflicted == 0:
+        flow_alignment = "PARTIAL"
+    elif conflicted > 0:
+        flow_alignment = "CONFLICTED"
+    else:
+        flow_alignment = "WEAK"
+
+    spot_vs_flip = str(trade.get("spot_vs_flip") or "UNKNOWN").upper().strip()
+    dealer_bias = str(trade.get("dealer_hedging_bias") or "UNKNOWN").upper().strip()
+    if "PINNING" in dealer_bias or spot_vs_flip == "AT_FLIP":
+        structure_context = "CHOP_RISK"
+    elif spot_vs_flip in {"ABOVE_FLIP", "BELOW_FLIP"} and "ACCELERATION" in str(trade.get("dealer_flow_state") or "").upper():
+        structure_context = "TREND_SUPPORTIVE"
+    else:
+        structure_context = "MIXED"
+
+    blockers = []
+    for item in (trade.get("missing_signal_requirements") or []):
+        human = _humanize_requirement_token(item)
+        if human:
+            blockers.append(human)
+    no_trade_reason = str(trade.get("no_trade_reason") or "").strip()
+    if no_trade_reason:
+        blockers.append(no_trade_reason)
+
+    evidence = []
+    if direction in {"CALL", "PUT"}:
+        evidence.append(f"direction selected: {direction}")
+    if confirmation:
+        evidence.append(f"confirmation: {confirmation}")
+    if flow_alignment in {"STRONG", "PARTIAL"}:
+        evidence.append(f"flow alignment: {flow_alignment.lower()}")
+    if structure_context == "TREND_SUPPORTIVE":
+        evidence.append("structure supports continuation")
+
+    trusted = (
+        direction in {"CALL", "PUT"}
+        and confirmation in {"CONFIRMED", "STRONG_CONFIRMATION"}
+        and activation_ok
+        and maturity_ok
+        and not directional_resolution_needed
+        and flow_alignment in {"STRONG", "PARTIAL"}
+        and decision not in {"DEAD_INACTIVE", "DIRECTIONALLY_AMBIGUOUS"}
+    )
+
+    if trusted:
+        verdict = "TRUSTED"
+        verdict_reason = "direction, confirmation, and flow are aligned"
+    else:
+        verdict = "UNRESOLVED"
+        if direction not in {"CALL", "PUT"}:
+            verdict_reason = "directional consensus not formed"
+        elif confirmation in {"NO_DIRECTION", "CONFLICT"}:
+            verdict_reason = f"confirmation is {confirmation.lower()}"
+        elif flow_alignment == "CONFLICTED":
+            verdict_reason = "flow and smart-money signals conflict"
+        elif structure_context == "CHOP_RISK":
+            verdict_reason = "at-flip/pinning structure increases chop risk"
+        else:
+            if not activation_ok or not maturity_ok:
+                verdict_reason = "activation/maturity floors not met"
+            else:
+                verdict_reason = "execution prerequisites are incomplete"
+
+    return {
+        "verdict": verdict,
+        "verdict_reason": verdict_reason,
+        "direction": direction if direction else "NONE",
+        "direction_source": direction_source,
+        "confirmation": confirmation if confirmation else "UNKNOWN",
+        "activation": activation,
+        "maturity": maturity,
+        "flow_alignment": flow_alignment,
+        "structure_context": structure_context,
+        "activation_floor": activation_floor,
+        "maturity_floor": maturity_floor,
+        "activation_ok": activation_ok,
+        "maturity_ok": maturity_ok,
+        "decision_classification": decision,
+        "directional_resolution_needed": directional_resolution_needed,
+        "final_flow_signal": flow_signal,
+        "smart_money_flow": smart_flow,
+        "no_trade_reason_code": str(trade.get("no_trade_reason_code") or "").strip() or None,
+        "missing_signal_requirements": list(trade.get("missing_signal_requirements") or []),
+        "setup_upgrade_conditions": list(trade.get("setup_upgrade_conditions") or []),
+        "likely_next_trigger": trade.get("likely_next_trigger"),
+        "evidence": evidence[:4],
+        "blockers": list(dict.fromkeys(blockers))[:5],
+    }
+
+
+def _render_directionality_diagnostics(trade, *, mode="standard"):
+    """Render direction-trust diagnostics for every snapshot."""
+    mode_key = str(mode or "standard").lower()
+    diag = _build_directionality_diagnostics(trade, mode=mode_key)
+
+    base_fields = {
+        "direction_verdict": f"{diag['verdict']} ({diag['verdict_reason']})",
+        "direction": diag.get("direction"),
+        "direction_source": diag.get("direction_source"),
+        "confirmation": diag.get("confirmation"),
+        "activation_score": diag.get("activation"),
+        "activation_floor": diag.get("activation_floor"),
+        "maturity_score": diag.get("maturity"),
+        "maturity_floor": diag.get("maturity_floor"),
+    }
+
+    if mode_key != "compact":
+        base_fields["flow_alignment"] = diag.get("flow_alignment")
+        base_fields["structure_context"] = diag.get("structure_context")
+
+    if mode_key == "full_debug":
+        base_fields["activation_gate_pass"] = diag.get("activation_ok")
+        base_fields["maturity_gate_pass"] = diag.get("maturity_ok")
+        base_fields["decision_classification"] = diag.get("decision_classification")
+        base_fields["directional_resolution_needed"] = diag.get("directional_resolution_needed")
+        base_fields["final_flow_signal"] = diag.get("final_flow_signal")
+        base_fields["smart_money_flow"] = diag.get("smart_money_flow")
+        base_fields["no_trade_reason_code"] = diag.get("no_trade_reason_code")
+
+    _print_section("DIRECTIONALITY DIAGNOSTICS", base_fields)
+
+    evidence = diag.get("evidence") or []
+    blockers = diag.get("blockers") or []
+
+    if mode_key == "compact":
+        evidence = evidence[:2]
+        blockers = blockers[:2]
+    elif mode_key == "standard":
+        evidence = evidence[:3]
+        blockers = blockers[:3]
+
+    if evidence:
+        print("  trust_evidence:")
+        for item in evidence:
+            print(f"    • {item}")
+    if blockers and diag.get("verdict") != "TRUSTED":
+        print("  unresolved_reasons:")
+        for item in blockers:
+            print(f"    • {item}")
+
+    if mode_key == "full_debug":
+        missing = diag.get("missing_signal_requirements") or []
+        upgrades = diag.get("setup_upgrade_conditions") or []
+        next_trigger = diag.get("likely_next_trigger")
+        if missing:
+            print("  missing_signal_requirements_raw:")
+            for item in missing:
+                print(f"    • {item}")
+        if upgrades:
+            print("  setup_upgrade_conditions_raw:")
+            for item in upgrades:
+                print(f"    • {item}")
+        if next_trigger:
+            print(f"  likely_next_trigger_raw: {next_trigger}")
+
+
 def _print_validation(title, validation):
     """Print a validation block with preferred key ordering."""
     print(f"\n{title}")
@@ -1124,12 +1463,26 @@ def _render_ranked_strikes(candidates, expiry=None, *, extended=False,
         parts = []
         for key, _, fmt in cols:
             val = row.get(key, "-")
-            if isinstance(val, float):
-                val = round(val, 2)
+            if val in (None, ""):
+                val = "-"
+            elif isinstance(val, float):
+                if math.isnan(val) or math.isinf(val):
+                    val = "-"
+                else:
+                    val = round(val, 2)
             if isinstance(val, bool):
                 val = "Y" if val else "N"
+            if key == "iv" and row.get("iv_is_proxy") and val != "-":
+                val = f"{val}*"
+            if key == "delta" and row.get("delta_is_proxy") and val != "-":
+                val = f"{val}*"
             parts.append(f"{str(val):{fmt}}")
         print(" ".join(parts))
+
+    if any(bool(row.get("iv_is_proxy")) for row in candidates[:5]):
+        print("  * iv uses proxy fallback (neighbor interpolation or atm/moneyness model)")
+    if any(bool(row.get("delta_is_proxy")) for row in candidates[:5]):
+        print("  * delta uses proxy fallback (neighbor interpolation or moneyness model)")
 
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1612,9 @@ def _render_dealer_gamma_levels(trade):
 
     if gamma_flip is not None:
         flip_display = _format_proximity(gamma_flip, spot) if spot else str(gamma_flip)
-        print(f"{'gamma_flip':26}: {flip_display}")
+    else:
+        flip_display = "UNAVAILABLE"
+    print(f"{'gamma_flip':26}: {flip_display}")
 
     # Top 3 gamma magnet levels
     magnets = []
@@ -1544,6 +1899,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         trade,
         top_n=3,
         formatted=False,
+        option_chain_frame=option_chain_frame,
     ) if trade else ([], [])
     _top_call_oi_levels, _top_put_oi_levels = _resolve_top_oi_levels(
         _trade_with_prev_close,
@@ -1584,8 +1940,14 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         flow_signal = trade.get("final_flow_signal")
         flow_icon = _get_flow_signal_icon(flow_signal)
 
-        vol_regime = trade.get("vol_surface_regime")
-        vol_icon = "📈" if vol_regime == "HIGH_VOL" else ("📉" if vol_regime == "LOW_VOL" else "")
+        vol_regime = trade.get("volatility_regime") or trade.get("vol_surface_regime")
+        _vol_upper = str(vol_regime or "").upper()
+        if _vol_upper in {"VOL_EXPANSION", "HIGH_VOL", "SHOCK_VOL", "VOLATILE"}:
+            vol_icon = "📈"
+        elif _vol_upper in {"VOL_CONTRACTION", "LOW_VOL", "COMPRESSED_VOL"}:
+            vol_icon = "📉"
+        else:
+            vol_icon = ""
 
         # Volume PCR display: "1.42 (PUT_DOMINANT)"
         _vol_pcr_atm = trade.get("volume_pcr_atm")
@@ -1629,6 +1991,8 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         }
         
         _print_section("TRADE DECISION", decision_dict)
+
+        _render_directionality_diagnostics(trade, mode="compact")
         
         # For blocked trades, add regime constraint explanation
         if "BLOCKED" in str(decision_classification):
@@ -1676,6 +2040,16 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         print(f"{'capital_required':26}: {d.get('capital_required')}")
         print(f"{'expiry':26}: {d.get('selected_expiry')}")
         print(f"{'execution_regime':26}: {d.get('execution_regime')}")
+        _override_active = bool(d.get("provider_health_override_active") or trade.get("provider_health_override_active"))
+        if _override_active:
+            print(
+                f"{'provider_override_mode':26}: "
+                f"{d.get('provider_health_override_mode') or trade.get('provider_health_override_mode')}"
+            )
+            print(
+                f"{'provider_override_reason':26}: "
+                f"{d.get('provider_health_override_reason') or trade.get('provider_health_override_reason')}"
+            )
 
         triggers = _build_trade_triggers(trade)
         if triggers:
@@ -1683,7 +2057,29 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             for trigger in triggers:
                 print(f"    • {trigger}")
     else:
-        print("  No trade yet. Waiting for confirmation.")
+        _reason_code = str((trade or {}).get("no_trade_reason_code") or "").upper()
+        _reason_text = str((trade or {}).get("no_trade_reason") or "").strip()
+        _blocked_by = {
+            str(item).strip().lower()
+            for item in ((trade or {}).get("blocked_by") or [])
+            if item is not None
+        }
+        _confirmation = str(
+            (trade or {}).get("confirmation_status")
+            or (trade or {}).get("confirmation")
+            or ""
+        ).upper()
+        _direction = (trade or {}).get("direction")
+
+        if "provider_health" in _blocked_by or _reason_code.startswith("PROVIDER_HEALTH_"):
+            print("  No trade yet. Provider health is blocking execution.")
+        elif _confirmation in {"NO_DIRECTION", "CONFLICT"} or not _direction:
+            print("  No trade yet. Waiting for directional confirmation.")
+        elif _reason_text:
+            _headline = _reason_text if _reason_text.endswith(".") else f"{_reason_text}."
+            print(f"  No trade yet. {_headline}")
+        else:
+            print("  No trade yet. Conditions are not fully aligned.")
 
         # ── Threshold status ─────────────────────────────────────────────
         if trade:
@@ -1738,9 +2134,19 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                 if _b_score is not None:
                     print(f"    score    : {round(float(_b_score), 2)}")
                 if _b_delta is not None:
-                    print(f"    delta    : {round(float(_b_delta), 4)}")
+                    _delta_txt = f"{round(float(_b_delta), 4)}"
+                    if _best.get("delta_is_proxy"):
+                        _delta_txt += "*"
+                    print(f"    delta    : {_delta_txt}")
+                if _best.get("delta_is_proxy"):
+                    print(f"    delta_src: {_best.get('delta_proxy_source') or 'PROXY'}")
                 if _b_iv is not None:
-                    print(f"    iv       : {round(float(_b_iv), 2)}")
+                    _iv_txt = f"{round(float(_b_iv), 2)}"
+                    if _best.get("iv_is_proxy"):
+                        _iv_txt += "*"
+                    print(f"    iv       : {_iv_txt}")
+                if _best.get("iv_is_proxy"):
+                    print(f"    iv_src   : {_best.get('iv_proxy_source') or 'PROXY'}")
                 _b_spread = _best.get("ba_spread_pct")
                 _b_spread_sc = _best.get("ba_spread_score")
                 if _b_spread is not None:
@@ -1867,6 +2273,14 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         "macro_news_status": trade.get("macro_news_status"),
         "option_efficiency": oe_display,
     }
+    if trade.get("provider_health_override_active"):
+        _override_constraints = trade.get("provider_health_override_constraints") or []
+        _override_constraints_text = ", ".join(str(item) for item in _override_constraints if item)
+        _override_mode = trade.get("provider_health_override_mode") or "DEGRADED_PROVIDER_TRADE"
+        if _override_constraints_text:
+            risk_fields["degrade_mode"] = f"ACTIVE ({_override_mode}) [{_override_constraints_text}]"
+        else:
+            risk_fields["degrade_mode"] = f"ACTIVE ({_override_mode})"
     no_trade = trade.get("no_trade_reason")
     if no_trade:
         risk_fields["no_trade_reason"] = no_trade
@@ -1972,8 +2386,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "hybrid_move_probability": trade.get("hybrid_move_probability"),
         "gamma_regime": trade.get("gamma_regime"),
         "spot_vs_flip": trade.get("spot_vs_flip"),
-        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[1],
-        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[0],
+        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True, option_chain_frame=option_chain_frame)[1],
+        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True, option_chain_frame=option_chain_frame)[0],
         "top_call_oi_strikes": _top_call_oi,
         "top_put_oi_strikes": _top_put_oi,
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
@@ -2020,6 +2434,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "macro_news_status": trade.get("macro_news_status"),
         "macro_news_reason": trade.get("macro_news_reason"),
     })
+
+    _render_directionality_diagnostics(trade, mode="standard")
 
     # Scoring breakdown
     scoring = trade.get("scoring_breakdown")
@@ -2236,8 +2652,8 @@ def _render_full_signal_summary(trade):
         "flow_signal": trade.get("final_flow_signal"),
         "gamma_regime": trade.get("gamma_regime"),
         "spot_vs_flip": trade.get("spot_vs_flip"),
-        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[1],
-        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[0],
+        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True, option_chain_frame=option_chain_frame)[1],
+        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True, option_chain_frame=option_chain_frame)[0],
         "dealer_position": trade.get("dealer_position"),
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
         "macro_event_risk_score": trade.get("macro_event_risk_score"),
@@ -2420,6 +2836,8 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         if key in display:
             print(f"{key:26}: {display[key]}")
 
+    _render_directionality_diagnostics(trade, mode="full_debug")
+
     # Dealer dashboard
     dashboard = dict(trade)
     _top_call_oi, _top_put_oi = _resolve_top_oi_strikes(trade, option_chain_frame, top_n=5, formatted=True)
@@ -2438,8 +2856,8 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         "volatility_shock_score": macro_news_state.get("volatility_shock_score"),
         "news_confidence_score": macro_news_state.get("news_confidence_score"),
         "headline_velocity": macro_news_state.get("headline_velocity"),
-        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[0],
-        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True)[1],
+        "top_support_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True, option_chain_frame=option_chain_frame)[0],
+        "top_resistance_walls": _resolve_top_liquidity_walls(trade, top_n=3, formatted=True, option_chain_frame=option_chain_frame)[1],
         "top_call_oi_strikes": _top_call_oi,
         "top_put_oi_strikes": _top_put_oi,
     })

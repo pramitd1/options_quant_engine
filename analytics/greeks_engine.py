@@ -76,11 +76,11 @@ def estimate_iv_from_price(market_price, spot, strike, t, option_type,
         if sigma <= 0:
             sigma = 0.001
         if sigma > 5.0:
-            return 500.0
+            return 0.0
         if abs(price - market_price) < tol:
             break
     if sigma > 5.0:
-        return 500.0
+        return 0.0
     return round(sigma * 100.0, 2)
 
 
@@ -147,6 +147,8 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
     now_ts = _coerce_valuation_timestamp(valuation_time)
 
     time_years = (parsed - now_ts).total_seconds() / (365.0 * 24 * 3600.0)
+    if time_years <= 0:
+        return None
     return max(float(time_years), 1.0 / (365.0 * 24.0))
 
 

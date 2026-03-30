@@ -13,6 +13,8 @@ Key Outputs:
 Downstream Usage:
     Consumed by market-state assembly, probability estimation, risk overlays, and research diagnostics.
 """
+from __future__ import annotations
+
 import math
 
 import pandas as pd

@@ -18,6 +18,27 @@ import numpy as np
 import pandas as pd
 
 
+def _infer_dealer_gamma_sign(df: pd.DataFrame, *, type_col: str, oi_col: str) -> float:
+    """
+    Infer whether positioning is more likely long-gamma (+1) or short-gamma (-1).
+    """
+    change_col = "changeinOI" if "changeinOI" in df.columns else ("CHG_IN_OI" if "CHG_IN_OI" in df.columns else None)
+
+    option_type = df[type_col].astype(str).str.upper()
+    if change_col is not None:
+        change = pd.to_numeric(df[change_col], errors="coerce").fillna(0.0)
+        call_change = float(change[option_type == "CE"].sum())
+        put_change = float(change[option_type == "PE"].sum())
+        total_change = abs(call_change) + abs(put_change)
+        if total_change > 0:
+            return 1.0 if (put_change - call_change) >= 0 else -1.0
+
+    oi = pd.to_numeric(df[oi_col], errors="coerce").fillna(0.0)
+    call_oi = float(oi[option_type == "CE"].sum())
+    put_oi = float(oi[option_type == "PE"].sum())
+    return 1.0 if put_oi >= call_oi else -1.0
+
+
 def approximate_gamma(strike, spot):
     """
     Rough gamma approximation based on distance from ATM.
@@ -69,8 +90,6 @@ def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
 
     strikes = pd.to_numeric(df[strike_col], errors="coerce")
     oi = pd.to_numeric(df[oi_col], errors="coerce").fillna(0.0)
-    option_type = df[type_col].astype(str).str.upper()
-
     if spot is None:
         spot = float(strikes.median()) if strikes.notna().any() else 0.0
 
@@ -80,9 +99,17 @@ def calculate_gamma_exposure(option_chain: pd.DataFrame, spot=None):
         distance = (strikes - float(spot)).abs() / max(float(spot), 1e-6)
         gamma = 1.0 / (1.0 + distance)
 
-    signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
-    exposure = gamma * oi * signed
-    return float(np.nansum(exposure.values))
+    raw_exposure = gamma * oi
+    finite_gamma = gamma.replace([np.inf, -np.inf], np.nan).dropna()
+    gamma_has_intrinsic_sign = bool((finite_gamma < 0).any() and (finite_gamma > 0).any())
+
+    if gamma_has_intrinsic_sign:
+        net_exposure = float(np.nansum(raw_exposure.values))
+    else:
+        dealer_gamma_sign = _infer_dealer_gamma_sign(df, type_col=type_col, oi_col=oi_col)
+        net_exposure = float(dealer_gamma_sign * np.nansum(np.abs(raw_exposure.values)))
+
+    return net_exposure
 
 
 def gamma_signal(option_chain: pd.DataFrame, spot=None):
@@ -103,8 +130,6 @@ def gamma_signal(option_chain: pd.DataFrame, spot=None):
 
     strikes = pd.to_numeric(df[strike_col], errors="coerce")
     oi = pd.to_numeric(df[oi_col], errors="coerce").fillna(0.0)
-    option_type = df[type_col].astype(str).str.upper()
-
     if spot is None:
         spot = float(strikes.median()) if strikes.notna().any() else 0.0
 
@@ -114,10 +139,16 @@ def gamma_signal(option_chain: pd.DataFrame, spot=None):
         distance = (strikes - float(spot)).abs() / max(float(spot), 1e-6)
         gamma = 1.0 / (1.0 + distance.fillna(np.inf))
 
-    signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
-    signed_exposure = gamma * oi * signed
-    net_gamma = float(np.nansum(signed_exposure.values))
-    gross_gamma = float(np.nansum(np.abs(signed_exposure.values)))
+    raw_exposure = gamma * oi
+    finite_gamma = gamma.replace([np.inf, -np.inf], np.nan).dropna()
+    gamma_has_intrinsic_sign = bool((finite_gamma < 0).any() and (finite_gamma > 0).any())
+
+    if gamma_has_intrinsic_sign:
+        net_gamma = float(np.nansum(raw_exposure.values))
+    else:
+        dealer_gamma_sign = _infer_dealer_gamma_sign(df, type_col=type_col, oi_col=oi_col)
+        net_gamma = float(dealer_gamma_sign * np.nansum(np.abs(raw_exposure.values)))
+    gross_gamma = float(np.nansum(np.abs(raw_exposure.values)))
 
     if gross_gamma <= 0 or abs(net_gamma) <= gross_gamma * 0.05:
         return "NEUTRAL_GAMMA"

@@ -516,6 +516,35 @@ def _compute_structural_imbalance_audit(*, market_state, direction):
     }
 
 
+def _nearest_trigger_walls(*, spot, support_wall, resistance_wall, liquidity_levels):
+    """Choose nearest actionable support/resistance levels around spot."""
+    spot_value = _safe_float(spot, None)
+    if spot_value is None:
+        return support_wall, resistance_wall
+
+    candidates = []
+    for level in [support_wall, resistance_wall]:
+        val = _safe_float(level, None)
+        if val is not None:
+            candidates.append(val)
+
+    if isinstance(liquidity_levels, list):
+        for level in liquidity_levels:
+            val = _safe_float(level, None)
+            if val is not None:
+                candidates.append(val)
+
+    if not candidates:
+        return support_wall, resistance_wall
+
+    support_candidates = [lvl for lvl in candidates if lvl <= spot_value]
+    resistance_candidates = [lvl for lvl in candidates if lvl >= spot_value]
+
+    nearest_support = max(support_candidates) if support_candidates else support_wall
+    nearest_resistance = min(resistance_candidates) if resistance_candidates else resistance_wall
+    return nearest_support, nearest_resistance
+
+
 def _build_decision_explainability(payload, *, trade_status, min_trade_strength):
     direction = payload.get("direction")
     flow_signal = _as_upper(payload.get("final_flow_signal") or payload.get("flow_signal"))
@@ -537,6 +566,7 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
     activation_score = 0
     acfg = get_activation_score_policy_config()
     fallback_acfg = {
+        "dead_inactive_threshold": 25,
         "confirmation_score_strong": 90,
         "confirmation_score_mixed": 55,
         "confirmation_score_conflict": 25,
@@ -665,7 +695,12 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
             missing_requirements.append("missing_directional_consensus")
             missing_confirmations.append("direction")
 
-            if activation_score < acfg.dead_inactive_threshold:
+            dead_inactive_threshold = (
+                acfg.dead_inactive_threshold
+                if acfg is not None
+                else fallback_acfg["dead_inactive_threshold"]
+            )
+            if activation_score < dead_inactive_threshold:
                 decision_classification = "DEAD_INACTIVE"
                 setup_state = "NONE"
                 no_trade_reason_code = "SIGNAL_SCORE_BELOW_THRESHOLD"
@@ -742,9 +777,9 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
                 watchlist_reason = "Provider health gates prevent trade execution"
                 blocked_by.append("provider_health")
                 no_trade_reason_code = f"PROVIDER_HEALTH_{provider_blocker}_BLOCK"
-                no_trade_reason = watchlist_message or (
-                    f"Provider health {provider_blocker} blocks trade execution"
-                )
+                no_trade_reason = f"Provider health {provider_blocker} blocks trade execution"
+                if watchlist_message and watchlist_message != no_trade_reason:
+                    reason_details.append(f"secondary_blocker: {watchlist_message}")
             elif data_quality_status in {"CAUTION", "WEAK"}:
                 decision_classification = "WATCHLIST_CONFIRMATION_PENDING"
                 setup_state = "CONFIRMATION_PENDING"
@@ -825,13 +860,18 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
     if dealer_flow_state == "PINNING_DOMINANT":
         setup_upgrade_conditions.append("pinning pressure eases and hedging acceleration emerges")
 
-    if support_wall is not None and resistance_wall is not None:
-        if flow_signal == "BEARISH_FLOW":
-            likely_next_trigger = f"break below support wall {support_wall}"
-            setup_upgrade_conditions.append(f"decisive move below support wall {support_wall}")
-        elif flow_signal == "BULLISH_FLOW":
-            likely_next_trigger = f"break above resistance wall {resistance_wall}"
-            setup_upgrade_conditions.append(f"decisive move above resistance wall {resistance_wall}")
+    nearest_support_wall, nearest_resistance_wall = _nearest_trigger_walls(
+        spot=spot,
+        support_wall=support_wall,
+        resistance_wall=resistance_wall,
+        liquidity_levels=payload.get("liquidity_levels"),
+    )
+    if flow_signal == "BEARISH_FLOW" and nearest_support_wall is not None:
+        likely_next_trigger = f"break below support wall {nearest_support_wall}"
+        setup_upgrade_conditions.append(f"decisive move below support wall {nearest_support_wall}")
+    elif flow_signal == "BULLISH_FLOW" and nearest_resistance_wall is not None:
+        likely_next_trigger = f"break above resistance wall {nearest_resistance_wall}"
+        setup_upgrade_conditions.append(f"decisive move above resistance wall {nearest_resistance_wall}")
 
     if likely_next_trigger is None and gamma_flip is not None:
         likely_next_trigger = f"clean move away from gamma flip {gamma_flip} with confirmation"
@@ -2165,8 +2205,129 @@ def generate_trade(
     provider_health_blocking_status = _as_upper(provider_health.get("trade_blocking_status"))
     provider_health_blocking_reasons = provider_health.get("trade_blocking_reasons") if isinstance(provider_health.get("trade_blocking_reasons"), list) else []
 
+    def _evaluate_provider_health_override(*, blocked: bool):
+        enable_override = bool(int(_safe_float(runtime_thresholds.get("enable_provider_health_degraded_override"), 0.0)))
+        if not enable_override:
+            return False, {"reason": "override_disabled"}
+
+        details = {
+            "eligible": False,
+            "fail_reasons": [],
+        }
+
+        dte_max = _safe_float(runtime_thresholds.get("provider_health_override_dte_max"), 1.0)
+        dte_value = _safe_float(days_to_expiry, None)
+        if dte_value is not None and dte_value > dte_max:
+            details["fail_reasons"].append(f"dte_above_max:{dte_value}")
+
+        require_strong_confirmation = bool(int(_safe_float(runtime_thresholds.get("provider_health_override_require_strong_confirmation"), 1.0)))
+        if require_strong_confirmation and _as_upper(confirmation.get("status")) not in {"STRONG_CONFIRMATION", "CONFIRMED"}:
+            details["fail_reasons"].append("confirmation_not_strong")
+
+        strength_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_strength_buffer"), 12.0))
+        composite_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_composite_buffer"), 8.0))
+        if adjusted_trade_strength < (min_trade_strength + strength_buffer):
+            details["fail_reasons"].append("trade_strength_buffer_not_met")
+        if runtime_composite_score < (min_composite_score + composite_buffer):
+            details["fail_reasons"].append("runtime_composite_buffer_not_met")
+
+        effective_priced_ratio = _safe_float(option_chain_validation.get("effective_priced_ratio"), _safe_float(option_chain_validation.get("priced_ratio"), 0.0))
+        min_effective_priced_ratio = _safe_float(runtime_thresholds.get("provider_health_override_min_effective_priced_ratio"), 0.45)
+        if effective_priced_ratio < min_effective_priced_ratio:
+            details["fail_reasons"].append("effective_priced_ratio_below_floor")
+
+        core_one_sided_ratio = _safe_float(provider_health.get("core_one_sided_quote_ratio"), None)
+        if core_one_sided_ratio is None:
+            row_count = max(int(_safe_float(option_chain_validation.get("row_count"), 0.0)), 1)
+            core_one_sided_ratio = _safe_float(option_chain_validation.get("one_sided_quote_rows"), 0.0) / row_count
+        max_one_sided_ratio = _safe_float(runtime_thresholds.get("provider_health_override_one_sided_quote_ratio_max"), 1.0)
+        if core_one_sided_ratio > max_one_sided_ratio:
+            details["fail_reasons"].append("one_sided_quote_ratio_above_cap")
+
+        ranked_candidates = ranked_strikes or []
+        if ranked_candidates:
+            proxy_count = sum(
+                1
+                for candidate in ranked_candidates
+                if bool(candidate.get("iv_is_proxy")) or bool(candidate.get("delta_is_proxy"))
+            )
+            proxy_ratio = proxy_count / max(len(ranked_candidates), 1)
+        else:
+            proxy_ratio = 1.0
+        max_proxy_ratio = _safe_float(runtime_thresholds.get("provider_health_override_max_proxy_ratio"), 0.90)
+        if proxy_ratio > max_proxy_ratio:
+            details["fail_reasons"].append("proxy_ratio_above_cap")
+
+        allowed_reasons_raw = runtime_thresholds.get("provider_health_override_allowed_block_reasons", ["core_iv_weak"])
+        if isinstance(allowed_reasons_raw, str):
+            allowed_reasons = {allowed_reasons_raw.strip()} if allowed_reasons_raw.strip() else set()
+        elif isinstance(allowed_reasons_raw, (list, tuple, set)):
+            allowed_reasons = {str(reason).strip() for reason in allowed_reasons_raw if str(reason).strip()}
+        else:
+            allowed_reasons = {"core_iv_weak"}
+
+        if blocked:
+            blocking_reasons_upper = {str(reason).strip().lower() for reason in provider_health_blocking_reasons if str(reason).strip()}
+            if not blocking_reasons_upper:
+                details["fail_reasons"].append("missing_block_reasons")
+            elif not blocking_reasons_upper.issubset({reason.lower() for reason in allowed_reasons}):
+                details["fail_reasons"].append("block_reasons_not_allowlisted")
+        elif provider_health_summary not in {"CAUTION", "WEAK"}:
+            details["fail_reasons"].append("provider_summary_not_caution_or_weak")
+
+        details["proxy_ratio"] = round(proxy_ratio, 4)
+        details["effective_priced_ratio"] = round(effective_priced_ratio, 4)
+        details["one_sided_quote_ratio"] = round(core_one_sided_ratio, 4)
+        details["dte"] = dte_value
+        details["eligible"] = not details["fail_reasons"]
+        return details["eligible"], details
+
+    def _apply_provider_health_override(*, reason_label: str):
+        override_size_cap = _clip(_safe_float(runtime_thresholds.get("provider_health_override_size_cap"), 0.35), 0.0, 1.0)
+        current_size_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        new_size_cap = min(current_size_cap, override_size_cap)
+        base_payload["effective_size_cap"] = round(new_size_cap, 2)
+
+        original_lots = max(int(_safe_float(base_payload.get("number_of_lots"), requested_lots)), 0)
+        constrained_lots = max(int(original_lots * new_size_cap), 0)
+        if original_lots > 0 and constrained_lots == 0 and new_size_cap > 0:
+            constrained_lots = 1
+        base_payload["number_of_lots"] = constrained_lots
+        base_payload["optimized_lots"] = constrained_lots
+
+        if "entry_price" in base_payload:
+            base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
+            base_payload["capital_required"] = round(entry_price * lot_size * constrained_lots, 2)
+
+        override_hold_cap = max(int(_safe_float(runtime_thresholds.get("provider_health_override_hold_cap_minutes"), 35.0)), 5)
+        base_payload["recommended_hold_minutes"] = min(int(_safe_float(base_payload.get("recommended_hold_minutes"), override_hold_cap)), override_hold_cap)
+        base_payload["max_hold_minutes"] = min(int(_safe_float(base_payload.get("max_hold_minutes"), override_hold_cap)), override_hold_cap)
+        base_payload["overnight_hold_allowed"] = False
+        base_payload["overnight_trade_block"] = True
+        base_payload["overnight_hold_reason"] = "provider_health_degraded_override_no_overnight"
+
+        base_payload["provider_health_override_active"] = True
+        base_payload["provider_health_override_mode"] = "DEGRADED_PROVIDER_TRADE"
+        base_payload["provider_health_override_reason"] = reason_label
+        base_payload["provider_health_override_constraints"] = [
+            f"size_cap:{round(new_size_cap, 2)}",
+            f"max_hold_minutes:{override_hold_cap}",
+            "no_overnight",
+        ]
+
+        return _finalize(
+            base_payload,
+            "TRADE",
+            "Tradable signal generated in degraded provider-health override mode",
+        )
+
     if provider_health_blocking_status == "BLOCK":
+        override_allowed, override_details = _evaluate_provider_health_override(blocked=True)
+        if override_allowed:
+            base_payload["provider_health_override_diagnostics"] = override_details
+            return _apply_provider_health_override(reason_label="provider_health_block_override")
         reason_suffix = f" ({', '.join(str(r) for r in provider_health_blocking_reasons)})" if provider_health_blocking_reasons else ""
+        base_payload["provider_health_override_diagnostics"] = override_details
         return _finalize(
             base_payload,
             "WATCHLIST",
@@ -2175,6 +2336,11 @@ def generate_trade(
 
     caution_blocks_trade = bool(int(_safe_float(runtime_thresholds.get("provider_health_caution_blocks_trade"), 1.0)))
     if caution_blocks_trade and not provider_health_blocking_status and provider_health_summary in {"CAUTION", "WEAK"}:
+        override_allowed, override_details = _evaluate_provider_health_override(blocked=False)
+        if override_allowed:
+            base_payload["provider_health_override_diagnostics"] = override_details
+            return _apply_provider_health_override(reason_label="provider_health_caution_override")
+        base_payload["provider_health_override_diagnostics"] = override_details
         return _finalize(
             base_payload,
             "WATCHLIST",

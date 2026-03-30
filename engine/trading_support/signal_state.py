@@ -78,12 +78,18 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
     if not isinstance(provider_health, dict):
         provider_health = {}
     provider_summary = str(provider_health.get("summary_status") or "").upper().strip()
+    provider_blocking_status = str(provider_health.get("trade_blocking_status") or "").upper().strip()
     if provider_summary == "WEAK":
         score -= cfg.provider_health_weak_penalty
         reasons.append("weak_provider_health")
     elif provider_summary == "CAUTION":
         score -= cfg.provider_health_caution_penalty
         reasons.append("provider_health_caution")
+
+    # If provider health is explicitly blocking trade execution, add an
+    # explicit reason and cap optimistic statuses during display/risk scoring.
+    if provider_blocking_status == "BLOCK":
+        reasons.append("provider_health_trade_block")
 
     critical_analytics = {
         "flip": analytics_state.get("flip"),
@@ -124,6 +130,9 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
         status = "CAUTION"
     else:
         status = "WEAK"
+
+    if provider_blocking_status == "BLOCK" and status in {"STRONG", "GOOD"}:
+        status = "CAUTION"
 
     return {
         "score": score,

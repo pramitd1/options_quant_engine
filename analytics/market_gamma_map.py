@@ -34,6 +34,15 @@ def calculate_market_gamma(option_chain):
 
     gamma = pd.to_numeric(df.get("GAMMA"), errors="coerce").fillna(0.0)
     oi = pd.to_numeric(df.get(oi_col), errors="coerce").fillna(0.0)
+    strikes = pd.to_numeric(df.get(strike_col), errors="coerce")
+    spot_proxy = float(strikes.median()) if strikes.notna().any() else None
+
+    # Provider feeds can miss GAMMA intraday. Use an ATM-distance proxy so
+    # gamma-flip and structure maps remain usable instead of collapsing to zero.
+    if bool((gamma.abs() <= 0).all()) and spot_proxy is not None and spot_proxy > 0:
+        distance = (strikes - spot_proxy).abs() / max(spot_proxy, 1e-6)
+        gamma = (1.0 / (1.0 + distance.fillna(float("inf")))).astype(float)
+
     option_type = df.get("OPTION_TYP", pd.Series(index=df.index, dtype=object)).astype(str).str.upper()
     signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
 

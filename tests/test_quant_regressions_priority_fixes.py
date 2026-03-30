@@ -64,7 +64,7 @@ def test_approximate_gamma_uses_moneyness_scaled_distance():
     assert near_small == pytest.approx(near_large, rel=1e-12)
 
 
-def test_gamma_signal_returns_neutral_when_call_put_exposure_balances():
+def test_gamma_signal_uses_dealer_side_proxy_not_call_put_cancellation():
     chain = pd.DataFrame(
         {
             "strikePrice": [100.0, 100.0],
@@ -74,7 +74,7 @@ def test_gamma_signal_returns_neutral_when_call_put_exposure_balances():
         }
     )
 
-    assert gamma_signal(chain, spot=100.0) == "NEUTRAL_GAMMA"
+    assert gamma_signal(chain, spot=100.0) == "LONG_GAMMA"
 
 
 def test_calculate_gamma_exposure_fallback_is_scale_invariant():

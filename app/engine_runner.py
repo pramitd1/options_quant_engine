@@ -744,7 +744,7 @@ def _build_result_payload(
     # Guard: mark ok=False only if data quality is explicitly weak
     final_data_quality = (trade or {}).get("data_quality_status", None) if trade else None
     # Default to ok=True for backward compat; only fail if explicitly weak
-    ok_status = final_data_quality not in ["WEAK", "CAUTION"]
+    ok_status = final_data_quality != "WEAK"
     
     return {
         "ok": ok_status,
@@ -1474,8 +1474,12 @@ def run_engine_snapshot(
                     spot_snapshot.get("spot"),
                     spot_snapshot.get("timestamp"),
                 )
-            except Exception:
-                pass  # best-effort; never block engine on history logging
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "append_spot_observation failed for %s: %s",
+                    symbol,
+                    exc,
+                )
 
         # Resolve actual exchange expiry candidates from the provider so
         # downstream display (e.g. overnight assessment) can identify the real

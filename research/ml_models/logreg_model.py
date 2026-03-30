@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _cached_model = None
 _cached_meta = None
+_UNAVAILABLE = object()
 _WARN_ONCE_KEYS: set[str] = set()
 
 
@@ -43,11 +44,15 @@ def _load_model():
     """Load LogReg model and metadata from registry. Cached after first call."""
     global _cached_model, _cached_meta
 
+    if _cached_model is _UNAVAILABLE:
+        return None, None
+
     if _cached_model is not None:
         return _cached_model, _cached_meta
 
     if not LOGREG_MODEL_PATH.exists():
         logger.warning("LogReg model not found at %s", LOGREG_MODEL_PATH)
+        _cached_model = _UNAVAILABLE
         return None, None
 
     try:
@@ -61,6 +66,19 @@ def _load_model():
                 "— rebuild with `python scripts/build_model_registry.py`: %s",
                 _cw.message,
             )
+        mismatch_warnings = [
+            str(_cw.message)
+            for _cw in _caught
+            if "Trying to unpickle estimator" in str(_cw.message)
+        ]
+        if mismatch_warnings:
+            _cached_model = _UNAVAILABLE
+            _cached_meta = None
+            _warn_once(
+                "logreg_model_version_incompatible",
+                "LogReg model artifact is version-incompatible; disabling LogReg inference until rebuilt.",
+            )
+            return None, None
         if LOGREG_META_PATH.exists():
             with open(LOGREG_META_PATH) as f:
                 _cached_meta = json.load(f)
@@ -68,6 +86,8 @@ def _load_model():
         return _cached_model, _cached_meta
     except Exception:
         logger.exception("Failed to load LogReg model from %s", LOGREG_MODEL_PATH)
+        _cached_model = _UNAVAILABLE
+        _cached_meta = None
         return None, None
 
 

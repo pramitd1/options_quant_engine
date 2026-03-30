@@ -14,6 +14,7 @@ Downstream Usage:
     Consumed by the signal engine during contract selection and by research tooling for diagnostics.
 """
 
+import math
 import numpy as np
 import pandas as pd
 import logging
@@ -882,6 +883,36 @@ def rank_strike_candidates(
     if option_chain is None or len(option_chain) == 0:
         return []
 
+    def _resolve_candidate_tte(_row_get):
+        expiry_value = (
+            _row_get("EXPIRY_DT")
+            or _row_get("selected_expiry")
+            or _row_get("expiry")
+            or _row_get("expiry_date")
+        )
+        tte_value = _parse_expiry_years(expiry_value) if expiry_value is not None else None
+        if tte_value is None:
+            # Same-day expiries are often date-only strings. They can parse as
+            # midnight and look expired intraday; keep a small positive TTE so
+            # IV/Greeks fallback can still run for live contracts.
+            dte = _safe_float(days_to_expiry, None)
+            if dte is not None:
+                if dte > 0:
+                    tte_value = max(dte / 365.0, 1.0 / (365.0 * 24.0))
+                else:
+                    tte_value = 1.0 / (365.0 * 24.0)
+        if tte_value is None and expiry_value is not None:
+            try:
+                expiry_ts = pd.to_datetime(expiry_value, errors="coerce")
+                if not pd.isna(expiry_ts):
+                    now_ist = pd.Timestamp.now(tz="Asia/Kolkata")
+                    expiry_date = expiry_ts.date()
+                    if expiry_date >= now_ist.date():
+                        tte_value = 1.0 / (365.0 * 24.0)
+            except Exception:
+                pass
+        return tte_value
+
     option_type = "CE" if direction == "CALL" else "PE"
 
     rows = option_chain[option_chain["OPTION_TYP"] == option_type].copy()
@@ -960,6 +991,180 @@ def rank_strike_candidates(
         pre_limit = max(int(top_n) * 6, 25)
         rows = pre_rank.head(pre_limit).drop(columns=["_spot_distance", "_price_tiebreak"], errors="ignore")
 
+    # Build a same-side delta anchor curve for second-tier fallback.
+    delta_anchor_points = []
+    if "DELTA" in rows.columns and "_normalized_strike" in rows.columns:
+        anchor_df = pd.DataFrame(
+            {
+                "strike": pd.to_numeric(rows["_normalized_strike"], errors="coerce"),
+                "delta": pd.to_numeric(rows["DELTA"], errors="coerce"),
+            }
+        ).dropna()
+        if not anchor_df.empty:
+            anchor_df = anchor_df[np.isfinite(anchor_df["strike"]) & np.isfinite(anchor_df["delta"])]
+            if not anchor_df.empty:
+                anchor_df = anchor_df.groupby("strike", as_index=False)["delta"].mean().sort_values("strike")
+                delta_anchor_points = [
+                    (float(row["strike"]), float(row["delta"]))
+                    for _, row in anchor_df.iterrows()
+                ]
+
+    iv_anchor_points = []
+    if "_normalized_iv" in rows.columns and "_normalized_strike" in rows.columns:
+        iv_anchor_df = pd.DataFrame(
+            {
+                "strike": pd.to_numeric(rows["_normalized_strike"], errors="coerce"),
+                "iv": pd.to_numeric(rows["_normalized_iv"], errors="coerce"),
+            }
+        ).dropna()
+        if not iv_anchor_df.empty:
+            iv_anchor_df = iv_anchor_df[np.isfinite(iv_anchor_df["strike"]) & np.isfinite(iv_anchor_df["iv"])]
+            iv_anchor_df = iv_anchor_df[iv_anchor_df["iv"] > 0]
+            if not iv_anchor_df.empty:
+                iv_anchor_df = iv_anchor_df.groupby("strike", as_index=False)["iv"].mean().sort_values("strike")
+                iv_anchor_points = [
+                    (float(row["strike"]), float(row["iv"]))
+                    for _, row in iv_anchor_df.iterrows()
+                ]
+
+    strike_step = _infer_strike_step(rows) or 50.0
+    max_neighbor_distance = max(float(strike_step) * 4.0, 120.0)
+    spot_safe = _safe_float(spot, None)
+
+    def _delta_from_neighbors(target_strike: float):
+        if not delta_anchor_points:
+            return None
+
+        strikes = [pt[0] for pt in delta_anchor_points]
+        deltas = [pt[1] for pt in delta_anchor_points]
+
+        # Exact strike match if available.
+        for idx, strike_value in enumerate(strikes):
+            if abs(strike_value - target_strike) <= 1e-9:
+                return deltas[idx]
+
+        left_idx = None
+        right_idx = None
+        for idx, strike_value in enumerate(strikes):
+            if strike_value < target_strike:
+                left_idx = idx
+            elif strike_value > target_strike:
+                right_idx = idx
+                break
+
+        if left_idx is not None and right_idx is not None:
+            left_strike, left_delta = strikes[left_idx], deltas[left_idx]
+            right_strike, right_delta = strikes[right_idx], deltas[right_idx]
+            span = right_strike - left_strike
+            if span > 1e-9:
+                weight = (target_strike - left_strike) / span
+                return left_delta + weight * (right_delta - left_delta)
+
+        nearest = None
+        nearest_dist = None
+        if left_idx is not None:
+            dist = abs(target_strike - strikes[left_idx])
+            nearest = deltas[left_idx]
+            nearest_dist = dist
+        if right_idx is not None:
+            dist = abs(strikes[right_idx] - target_strike)
+            if nearest is None or dist < nearest_dist:
+                nearest = deltas[right_idx]
+                nearest_dist = dist
+
+        if nearest is not None and nearest_dist is not None and nearest_dist <= max_neighbor_distance:
+            return nearest
+        return None
+
+    def _iv_from_neighbors(target_strike: float):
+        if not iv_anchor_points:
+            return None
+
+        strikes = [pt[0] for pt in iv_anchor_points]
+        ivs = [pt[1] for pt in iv_anchor_points]
+
+        for idx, strike_value in enumerate(strikes):
+            if abs(strike_value - target_strike) <= 1e-9:
+                return ivs[idx]
+
+        left_idx = None
+        right_idx = None
+        for idx, strike_value in enumerate(strikes):
+            if strike_value < target_strike:
+                left_idx = idx
+            elif strike_value > target_strike:
+                right_idx = idx
+                break
+
+        if left_idx is not None and right_idx is not None:
+            left_strike, left_iv = strikes[left_idx], ivs[left_idx]
+            right_strike, right_iv = strikes[right_idx], ivs[right_idx]
+            span = right_strike - left_strike
+            if span > 1e-9:
+                weight = (target_strike - left_strike) / span
+                return left_iv + weight * (right_iv - left_iv)
+
+        nearest = None
+        nearest_dist = None
+        if left_idx is not None:
+            dist = abs(target_strike - strikes[left_idx])
+            nearest = ivs[left_idx]
+            nearest_dist = dist
+        if right_idx is not None:
+            dist = abs(strikes[right_idx] - target_strike)
+            if nearest is None or dist < nearest_dist:
+                nearest = ivs[right_idx]
+                nearest_dist = dist
+
+        if nearest is not None and nearest_dist is not None and nearest_dist <= max_neighbor_distance:
+            return nearest
+        return None
+
+    def _normalize_iv_pct(raw_iv):
+        iv_value = _safe_float(raw_iv, None)
+        if iv_value is None or iv_value <= 0:
+            return None
+        if iv_value <= 1.5:
+            return iv_value * 100.0
+        return iv_value
+
+    def _iv_from_moneyness_proxy(target_strike: float):
+        if spot_safe is None or spot_safe <= 0:
+            return None
+
+        atm_iv_pct = _normalize_iv_pct(atm_iv)
+        if atm_iv_pct is None and iv_anchor_points:
+            atm_iv_pct = float(np.median([pt[1] for pt in iv_anchor_points]))
+        if atm_iv_pct is None:
+            atm_iv_pct = 80.0
+
+        distance_ratio = abs(float(target_strike) - float(spot_safe)) / max(float(spot_safe), 1e-6)
+        smile_mult = 1.0 + min(distance_ratio * 8.0, 0.35)
+        skew_mult = 1.0
+        if option_type == "PE" and target_strike < spot_safe:
+            skew_mult = 1.05
+        elif option_type == "CE" and target_strike > spot_safe:
+            skew_mult = 1.05
+
+        proxy_iv = atm_iv_pct * smile_mult * skew_mult
+        return max(5.0, min(300.0, proxy_iv))
+
+    def _delta_from_moneyness_proxy(target_strike: float):
+        if spot_safe is None or spot_safe <= 0:
+            return None
+
+        scale = max(float(spot_safe) * 0.01, float(strike_step))
+        x = (float(target_strike) - float(spot_safe)) / max(scale, 1e-6)
+        x = max(min(x, 20.0), -20.0)
+        call_delta = 1.0 / (1.0 + math.exp(x))
+        call_delta = max(0.05, min(0.95, call_delta))
+
+        if option_type == "CE":
+            return call_delta
+
+        put_delta = call_delta - 1.0
+        return max(-0.95, min(-0.05, put_delta))
+
     # Convert the scored dataframe into plain records because the final engine
     # payload and downstream reporting stack work with JSON-friendly structures.
     candidates = []
@@ -980,14 +1185,30 @@ def rank_strike_candidates(
         volume = _safe_float(_row_get("_normalized_volume"), _safe_float(_row_get("totalTradedVolume"), _row_get("VOLUME", 0.0)))
         oi = _safe_float(_row_get("_normalized_open_interest"), _safe_float(_row_get("openInterest"), _row_get("OPEN_INT", 0.0)))
         iv = _safe_float(_row_get("_normalized_iv"), _safe_float(_row_get("impliedVolatility"), _row_get("IV", 0.0)))
+        iv_proxy_source = None
         tte = None
 
         # Fallback: estimate IV from market price when upstream enrichment missed this row
         if (iv is None or iv <= 0) and premium > 0 and strike and spot:
-            tte = _parse_expiry_years(_row_get("EXPIRY_DT"))
+            tte = _resolve_candidate_tte(_row_get)
             estimated_iv = estimate_iv_from_price(premium, spot, strike, tte, option_type)
             if estimated_iv and estimated_iv > 0:
                 iv = estimated_iv
+
+        if iv is None or iv <= 0:
+            neighbor_iv = _iv_from_neighbors(float(strike))
+            if neighbor_iv is not None and neighbor_iv > 0:
+                iv = neighbor_iv
+                iv_proxy_source = "NEIGHBOR_INTERPOLATION"
+
+        if iv is None or iv <= 0:
+            proxy_iv = _iv_from_moneyness_proxy(float(strike))
+            if proxy_iv is not None and proxy_iv > 0:
+                iv = proxy_iv
+                if _normalize_iv_pct(atm_iv) is not None:
+                    iv_proxy_source = "ATM_MONEYNESS_PROXY"
+                else:
+                    iv_proxy_source = "MONEYNESS_PROXY"
 
         score_breakdown = {
             "moneyness_score": round(_safe_float(_row_get("_moneyness_score", 0.0), 0.0), 2),
@@ -1011,7 +1232,7 @@ def rank_strike_candidates(
                         "last_price": round(premium, 2),
                         "volume": int(volume),
                         "open_interest": int(oi),
-                        "iv": round(iv, 2) if iv else 0,
+                        "iv": round(iv, 2) if iv and iv > 0 else None,
                     },
                 ) or {}
             except Exception as exc:
@@ -1030,12 +1251,13 @@ def rank_strike_candidates(
 
         total_score = round(_safe_float(_row_get("_base_score", 0.0), 0.0) + efficiency_score_adjustment, 2)
         delta_raw = _safe_float(_row_get("DELTA"), None)
+        delta_proxy_source = None
         ba_spread_ratio = _safe_float(_row_get("_normalized_ba_spread_ratio"), None)
 
         # Fallback: compute delta from estimated IV when upstream enrichment missed
         if (delta_raw is None or (isinstance(delta_raw, float) and not (delta_raw == delta_raw))) and iv and iv > 0 and strike and spot:
             if tte is None:
-                tte = _parse_expiry_years(_row_get("EXPIRY_DT"))
+                tte = _resolve_candidate_tte(_row_get)
             if tte is not None:
                 greeks = compute_option_greeks(
                     spot=spot, strike=strike, time_to_expiry_years=tte,
@@ -1043,6 +1265,22 @@ def rank_strike_candidates(
                 )
                 if greeks is not None:
                     delta_raw = greeks["DELTA"]
+                    if iv_proxy_source:
+                        delta_proxy_source = "GREEKS_FROM_IV_PROXY"
+                    else:
+                        delta_proxy_source = "GREEKS_FROM_IV"
+
+        if delta_raw is None or (isinstance(delta_raw, float) and not (delta_raw == delta_raw)):
+            neighbor_delta = _delta_from_neighbors(float(strike))
+            if neighbor_delta is not None:
+                delta_raw = neighbor_delta
+                delta_proxy_source = "NEIGHBOR_INTERPOLATION"
+
+        if delta_raw is None or (isinstance(delta_raw, float) and not (delta_raw == delta_raw)):
+            proxy_delta = _delta_from_moneyness_proxy(float(strike))
+            if proxy_delta is not None:
+                delta_raw = proxy_delta
+                delta_proxy_source = "MONEYNESS_PROXY"
 
         record = {
             "option_type": option_type,
@@ -1050,12 +1288,18 @@ def rank_strike_candidates(
             "last_price": round(premium, 2),
             "volume": int(volume),
             "open_interest": int(oi),
-            "iv": round(iv, 2) if iv else 0,
+            "iv": round(iv, 2) if iv and iv > 0 else None,
+            "iv_is_proxy": bool(iv_proxy_source),
             "delta": round(delta_raw, 4) if delta_raw is not None else None,
+            "delta_is_proxy": bool(delta_proxy_source),
             "capital_per_lot": round(premium * lot_size, 2) if lot_size is not None else None,
             "score": total_score,
             "score_breakdown": score_breakdown,
         }
+        if iv_proxy_source:
+            record["iv_proxy_source"] = iv_proxy_source
+        if delta_proxy_source:
+            record["delta_proxy_source"] = delta_proxy_source
         if ba_spread_ratio is not None:
             record["ba_spread_ratio"] = round(float(ba_spread_ratio), 4)
             record["ba_spread_pct"] = round(float(ba_spread_ratio) * 100.0, 2)

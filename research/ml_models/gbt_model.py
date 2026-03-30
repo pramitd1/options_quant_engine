@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _cached_model = None
 _cached_meta = None
+_UNAVAILABLE = object()
 _WARN_ONCE_KEYS: set[str] = set()
 
 
@@ -43,11 +44,15 @@ def _load_model():
     """Load GBT model and metadata from registry. Cached after first call."""
     global _cached_model, _cached_meta
 
+    if _cached_model is _UNAVAILABLE:
+        return None, None
+
     if _cached_model is not None:
         return _cached_model, _cached_meta
 
     if not GBT_MODEL_PATH.exists():
         logger.warning("GBT model not found at %s", GBT_MODEL_PATH)
+        _cached_model = _UNAVAILABLE
         return None, None
 
     try:
@@ -61,6 +66,19 @@ def _load_model():
                 "— rebuild with `python scripts/build_model_registry.py`: %s",
                 _cw.message,
             )
+        mismatch_warnings = [
+            str(_cw.message)
+            for _cw in _caught
+            if "Trying to unpickle estimator" in str(_cw.message)
+        ]
+        if mismatch_warnings:
+            _cached_model = _UNAVAILABLE
+            _cached_meta = None
+            _warn_once(
+                "gbt_model_version_incompatible",
+                "GBT model artifact is version-incompatible; disabling GBT inference until rebuilt.",
+            )
+            return None, None
         if GBT_META_PATH.exists():
             with open(GBT_META_PATH) as f:
                 _cached_meta = json.load(f)
@@ -68,6 +86,8 @@ def _load_model():
         return _cached_model, _cached_meta
     except Exception:
         logger.exception("Failed to load GBT model from %s", GBT_MODEL_PATH)
+        _cached_model = _UNAVAILABLE
+        _cached_meta = None
         return None, None
 
 

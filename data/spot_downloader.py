@@ -17,6 +17,7 @@ import json
 import random
 import time
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import yfinance as yf
@@ -161,7 +162,7 @@ def _compute_lookback_avg_range_pct(daily_hist: pd.DataFrame, completed_days: in
     return round(float(tail["range_pct"].mean()), 4)
 
 
-def _safe_history_fetch(ticker_obj, *, period: str, interval: str) -> pd.DataFrame | None:
+def _safe_history_fetch(ticker_obj, *, period: str, interval: str) -> Optional[pd.DataFrame]:
     """Best-effort wrapper around yfinance history fetch."""
     try:
         frame = ticker_obj.history(period=period, interval=interval, auto_adjust=False)
@@ -172,7 +173,7 @@ def _safe_history_fetch(ticker_obj, *, period: str, interval: str) -> pd.DataFra
     return None
 
 
-def _extract_quote_fallback(ticker_obj) -> dict | None:
+def _extract_quote_fallback(ticker_obj) -> Optional[dict]:
     """Extract a minimal spot snapshot from fast-info/info when candles are unavailable."""
     values = {}
 
