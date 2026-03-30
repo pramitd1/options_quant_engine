@@ -16,7 +16,15 @@ data_store/icici_cache/
 data_store/historical/
 data_store/spot_history/
 data_store/decision_journal.sqlite3
+data_store/decision_journal*.sqlite3-shm
+data_store/decision_journal*.sqlite3-wal
 debug_samples/
+
+# Local one-off analysis scratchpads
+analyze_tuning_results.py
+
+# Generated research artifact bundle (reports/logs/json outputs)
+research/artifacts/
 
 # Documents, reports, audits, and planning artifacts (keep out of git)
 documentation/
@@ -119,3 +127,7 @@ models_store/registry/
 research/runtime_validation/backtest_runs/backtest_comparison_results_*.json
 scripts/backtest/backtest_comparison_results_*.json
 scripts/backtest/reports/
+
+# Final explicit keep-out overrides (must appear after whitelists)
+research/artifacts/
+research/artifacts/**
