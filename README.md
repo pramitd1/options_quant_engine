@@ -835,6 +835,27 @@ ZERODHA_API_SECRET=
 ZERODHA_ACCESS_TOKEN=
 ```
 
+Generate/update Zerodha access token in one command (auto-writes `.env`):
+
+1. Open login URL and complete consent:
+
+```text
+https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
+```
+
+2. Copy the `request_token` from the redirect URL.
+
+3. Run:
+
+```bash
+.venv/bin/python config/generate_token.py \
+  --api-key "YOUR_API_KEY" \
+  --api-secret "YOUR_API_SECRET" \
+  --request-token "FRESH_REQUEST_TOKEN"
+```
+
+On success the script prints the access token and updates `ZERODHA_ACCESS_TOKEN` in project `.env` automatically. Request tokens expire quickly, so run this immediately after login.
+
 ICICI Breeze:
 
 ```bash
