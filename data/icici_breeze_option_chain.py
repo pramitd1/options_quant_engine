@@ -106,6 +106,7 @@ class ICICIBreezeOptionChain:
         """
         self.debug = ICICI_DEBUG if debug is None else debug
         self.breeze = None
+        self._provider_blocking_error = None
         self._market_metadata_resolver = ICICIMarketMetadataResolver(
             load_security_master=self._load_security_master,
             normalize_master_columns=self._normalize_master_columns,
@@ -1001,6 +1002,27 @@ class ICICIBreezeOptionChain:
             if isinstance(response.get("success"), list):
                 return response.get("success")
 
+            status_val = response.get("Status", response.get("status"))
+            error_text = str(
+                response.get("Error")
+                or response.get("error")
+                or response.get("Message")
+                or response.get("message")
+                or ""
+            )
+
+            # ICICI often returns Status=5 + "Limit exceed" when the daily quota is hit.
+            # Surface it clearly and stop wasting attempts across expiry candidates.
+            lowered_error = error_text.lower()
+            if (
+                str(status_val).strip() == "5"
+                and any(token in lowered_error for token in ("limit exceed", "api call per day", "quota"))
+            ):
+                self._provider_blocking_error = (
+                    "ICICI API daily limit exceeded. "
+                    "Wait for quota reset or use another data source."
+                )
+
             for key in ["Error", "error", "Status", "status", "message", "Message"]:
                 val = response.get(key)
                 if val is not None:
@@ -1008,6 +1030,10 @@ class ICICIBreezeOptionChain:
                     # Detect session/auth errors early so the user gets an actionable hint.
                     val_str = str(val).lower()
                     if any(kw in val_str for kw in ("session", "token", "auth", "unauthori", "invalid session", "login")):
+                        self._provider_blocking_error = (
+                            "ICICI auth/session error. "
+                            "Refresh ICICI_BREEZE_SESSION_TOKEN and retry."
+                        )
                         print(
                             f"Option chain auth error [{label}]: ICICI session may have expired — "
                             "please refresh your ICICI_BREEZE_SESSION_TOKEN and restart."
@@ -1260,6 +1286,7 @@ class ICICIBreezeOptionChain:
             The helper keeps the surrounding module readable without changing runtime behavior.
         """
         symbol = self._normalize_symbol(symbol)
+        self._provider_blocking_error = None
         expiry_candidates = self._resolve_expiry_candidates(symbol)
         self._last_expiry_candidates = list(expiry_candidates)
         request_symbols = self._resolve_request_symbols(symbol)
@@ -1277,9 +1304,18 @@ class ICICIBreezeOptionChain:
                     self._log("selected_expiry", expiry_date, f"rows={len(df)}")
                     return df
                 last_errors.append(f"{expiry_date}:no_data")
+                if self._provider_blocking_error:
+                    break
             except Exception as e:
                 self._log("expiry_fetch_exception", expiry_date, str(e))
                 last_errors.append(f"{expiry_date}:{e}")
+                if self._provider_blocking_error:
+                    break
+
+        if self._provider_blocking_error:
+            self._log("provider_blocking_error", self._provider_blocking_error)
+            print(f"Option chain provider error: {self._provider_blocking_error}")
+            return pd.DataFrame()
 
         self._log("all_expiry_attempts_failed", last_errors)
         print("Option chain download error: ICICI returned no option chain rows for any attempted expiry")
