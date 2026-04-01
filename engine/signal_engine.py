@@ -28,6 +28,7 @@ from config.settings import (
 )
 from config.event_window_policy import get_event_window_policy_config
 from config.signal_policy import get_activation_score_policy_config, get_trade_runtime_thresholds
+from engine.pre_market_engine import apply_pre_market_adjustments_to_signal
 from engine.runtime_metadata import attach_trade_views
 from engine.trading_support import (
     _clip,
@@ -1014,6 +1015,7 @@ def generate_trade(
     macro_event_state=None,
     macro_news_state=None,
     global_risk_state=None,
+    pre_market_context=None,
     holding_profile="AUTO",
     valuation_time=None,
     target_profit_percent=TARGET_PROFIT_PERCENT,
@@ -1396,6 +1398,36 @@ def generate_trade(
             min_trade_strength = int(_clip(min_trade_strength + _surcharge, 0, 100))
 
     provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
+
+    # Apply pre-market adjustments if in pre-market session
+    if pre_market_context is not None:
+        pre_market_adj = apply_pre_market_adjustments_to_signal(
+            base_trade_strength=adjusted_trade_strength,
+            pre_market_context=pre_market_context,
+        )
+        if not pre_market_adj.get("signal_eligible", True):
+            # Pre-market signals disabled or quality gates failed
+            direction = None
+            confirmation["reasons"].append("pre_market_signal_eligibility_gate_failed")
+            scoring_breakdown["pre_market_eligibility"] = False
+        else:
+            # Apply quality multiplier if in pre-market
+            if pre_market_adj.get("quality_multiplier", 1.0) != 1.0:
+                adjusted_trade_strength = int(
+                    _clip(
+                        adjusted_trade_strength * pre_market_adj.get("quality_multiplier", 1.0),
+                        0,
+                        100,
+                    )
+                )
+                min_trade_strength = pre_market_adj.get("min_trade_strength_threshold", min_trade_strength)
+                confirmation["reasons"].append("pre_market_quality_multiplier_applied")
+                scoring_breakdown["pre_market_quality_multiplier"] = pre_market_adj.get("quality_multiplier", 1.0)
+                scoring_breakdown["pre_market_eligibility"] = True
+        scoring_breakdown["pre_market_context_available"] = True
+    else:
+        scoring_breakdown["pre_market_context_available"] = False
+
     provider_health = provider_health if isinstance(provider_health, dict) else {}
     provider_health_summary = _as_upper(provider_health.get("summary_status"))
 

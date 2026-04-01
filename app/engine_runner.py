@@ -46,6 +46,7 @@ from macro.scheduled_event_risk import evaluate_scheduled_event_risk
 from macro.macro_news_aggregator import build_macro_news_state
 from news.service import build_default_headline_service
 from engine.signal_engine import generate_trade
+from engine.pre_market_engine import initialize_pre_market_context
 from engine.runtime_metadata import TRADER_VIEW_KEYS, split_trade_payload
 from risk import build_global_risk_state
 from research.signal_evaluation import (
@@ -976,6 +977,7 @@ def _evaluate_snapshot_for_pack(
     holding_profile: str,
     spot_timestamp,
     backtest_mode: bool = False,
+    pre_market_context: Optional[dict] = None,
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
 ):
@@ -1087,6 +1089,7 @@ def _evaluate_snapshot_for_pack(
                 macro_event_state=macro_event_state,
                 macro_news_state=macro_news_state,
                 global_risk_state=global_risk_state,
+                pre_market_context=pre_market_context,
                 holding_profile=holding_profile,
                 valuation_time=spot_timestamp,
                 target_profit_percent=target_profit_percent,
@@ -1217,6 +1220,31 @@ def run_preloaded_engine_snapshot(
             global_market_snapshot=global_market_snapshot,
         )
 
+        # Initialize pre-market context for pre-market sessions
+        pre_market_context = None
+        try:
+            from engine.trading_support.pre_market_state import is_pre_market_session
+            if is_pre_market_session(snapshot_context.get("spot_timestamp")):
+                pre_market_context = initialize_pre_market_context(
+                    option_chain=option_chain,
+                    spot=snapshot_context.get("spot", 0.0),
+                    global_market_snapshot=global_market_snapshot,
+                    previous_session_state=None,  # Could be loaded from state store
+                    as_of=snapshot_context.get("spot_timestamp"),
+                )
+                logging.getLogger(__name__).debug(
+                    "Pre-market context initialized for %s at %s",
+                    symbol,
+                    snapshot_context.get("spot_timestamp"),
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Pre-market context initialization failed for %s: %s",
+                symbol,
+                exc,
+            )
+
+
         authoritative_eval = _evaluate_snapshot_for_pack(
             parameter_pack_name=authoritative_pack_name,
             symbol=symbol,
@@ -1240,6 +1268,7 @@ def run_preloaded_engine_snapshot(
             holding_profile=holding_profile,
             spot_timestamp=snapshot_context["spot_timestamp"],
             backtest_mode=backtest_mode,
+            pre_market_context=pre_market_context,
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
         )
