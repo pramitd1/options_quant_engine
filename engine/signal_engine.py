@@ -16,6 +16,8 @@ Downstream Usage:
 
 from __future__ import annotations
 
+import logging
+
 from config.settings import (
     BACKTEST_MIN_TRADE_STRENGTH,
     LOT_SIZE,
@@ -62,6 +64,11 @@ from strategy.score_calibration import initialize_calibrator, apply_score_calibr
 from strategy.time_decay_model import initialize_time_decay, apply_time_decay
 from strategy.path_aware_filtering import PathAwareFilter, PathPatternLibrary
 from strategy.regime_conditional_thresholds import initialize_regime_thresholds, compute_regime_thresholds
+
+
+_LOG = logging.getLogger(__name__)
+_TIMESTAMP_ERRORS = (TypeError, ValueError, OverflowError)
+_SIGNAL_STATE_ERRORS = (AttributeError, TypeError, ValueError, OverflowError)
 
 
 def _as_upper(value):
@@ -116,7 +123,8 @@ def _coerce_timestamp(value):
     try:
         import pandas as _pd
         return _pd.Timestamp(value)
-    except Exception:
+    except _TIMESTAMP_ERRORS as exc:
+        _LOG.debug("signal_engine: unable to coerce valuation_time=%r into timestamp: %s", value, exc)
         return None
 
 
@@ -141,7 +149,14 @@ def _compute_signal_elapsed_minutes(*, symbol, selected_expiry, valuation_time, 
     elapsed_minutes = 0.0
     try:
         elapsed_minutes = max(0.0, float((ts - start_ts).total_seconds() / 60.0))
-    except Exception:
+    except _SIGNAL_STATE_ERRORS as exc:
+        _LOG.warning(
+            "signal_engine: resetting elapsed-time state for %s after invalid timestamp arithmetic (valuation_time=%r, start_ts=%r): %s",
+            key,
+            valuation_time,
+            start_ts,
+            exc,
+        )
         elapsed_minutes = 0.0
         start_ts = ts
 
@@ -158,7 +173,13 @@ def _compute_signal_elapsed_minutes(*, symbol, selected_expiry, valuation_time, 
             last_ts = v.get("last_ts")
             try:
                 age_m = (ts - last_ts).total_seconds() / 60.0
-            except Exception:
+            except _SIGNAL_STATE_ERRORS as exc:
+                _LOG.debug(
+                    "signal_engine: unable to compute decay-state age for %s with last_ts=%r: %s",
+                    k,
+                    last_ts,
+                    exc,
+                )
                 age_m = 0.0
             if age_m > 24 * 60:
                 stale_keys.append(k)
@@ -206,7 +227,13 @@ def _compute_path_observation_bps(*, symbol, selected_expiry, valuation_time, sp
             _lts = v.get("last_ts")
             try:
                 age_m = (ts - _lts).total_seconds() / 60.0
-            except Exception:
+            except _SIGNAL_STATE_ERRORS as exc:
+                _LOG.debug(
+                    "signal_engine: unable to compute path-state age for %s with last_ts=%r: %s",
+                    k,
+                    _lts,
+                    exc,
+                )
                 age_m = 0.0
             if age_m > 24 * 60:
                 stale_keys.append(k)
@@ -1471,6 +1498,7 @@ def generate_trade(
         "liquidity_vacuum_zones": market_state["vacuum_zones"],
         "liquidity_vacuum_state": market_state["vacuum_state"],
         "dealer_liquidity_map": market_state["dealer_liquidity_map"],
+        "market_state_timings": market_state.get("market_state_timings"),
         "rule_move_probability": probability_state["rule_move_probability"],
         "ml_move_probability": probability_state["ml_move_probability"],
         "hybrid_move_probability": probability_state["hybrid_move_probability"],

@@ -843,7 +843,7 @@ Generate/update Zerodha access token in one command (auto-writes `.env`):
 https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 ```
 
-2. Copy the `request_token` from the redirect URL.
+2. Either copy the `request_token` from the redirect URL, or keep the full redirect URL.
 
 3. Run:
 
@@ -852,6 +852,15 @@ https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
   --api-key "YOUR_API_KEY" \
   --api-secret "YOUR_API_SECRET" \
   --request-token "FRESH_REQUEST_TOKEN"
+```
+
+Or pass the full callback URL directly:
+
+```bash
+.venv/bin/python config/generate_token.py \
+  --api-key "YOUR_API_KEY" \
+  --api-secret "YOUR_API_SECRET" \
+  --redirect-url "http://127.0.0.1:8000/?action=login&type=login&status=success&request_token=FRESH_REQUEST_TOKEN"
 ```
 
 On success the script prints the access token and updates `ZERODHA_ACCESS_TOKEN` in project `.env` automatically. Request tokens expire quickly, so run this immediately after login.

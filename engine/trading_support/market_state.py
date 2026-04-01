@@ -15,6 +15,9 @@ Downstream Usage:
 """
 from __future__ import annotations
 
+import logging
+import time
+
 import pandas as pd
 
 from analytics import dealer_gamma_path as dealer_gamma_path_mod
@@ -41,6 +44,17 @@ from analytics import oi_velocity as oi_velocity_mod
 from analytics import volume_pcr as volume_pcr_mod
 from .common import _call_first, _clean_zone_list, _safe_float, _to_python_number
 from .signal_state import classify_spot_vs_flip_for_symbol, normalize_flow_signal
+
+
+_LOG = logging.getLogger(__name__)
+
+
+def _top_timing_steps(step_timings: dict[str, float], limit: int = 5) -> list[dict[str, float | str]]:
+    ranked = sorted(step_timings.items(), key=lambda item: item[1], reverse=True)
+    return [
+        {"step": name, "elapsed_ms": elapsed_ms}
+        for name, elapsed_ms in ranked[:limit]
+    ]
 
 
 def _summarize_market_gamma(market_gex):
@@ -136,16 +150,29 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         Each `_call_first` invocation preserves compatibility with legacy module
         names so analytics can evolve without breaking the engine contract.
     """
+    fanout_started_at = time.perf_counter()
+    step_timings: dict[str, float] = {}
+
+    def _timed_step(name, callback, *args, **kwargs):
+        started_at = time.perf_counter()
+        value = callback(*args, **kwargs)
+        step_timings[name] = round((time.perf_counter() - started_at) * 1000.0, 3)
+        return value
+
     # The first block captures the market's structural gamma regime: net gamma,
     # the flip level, and dealer positioning.
-    gamma = _call_first(
+    gamma = _timed_step(
+        "gamma_exposure",
+        _call_first,
         gamma_exposure_mod,
         ["calculate_gamma_exposure", "calculate_gex"],
         df,
         spot,
         default=0,
     )
-    flip = _call_first(
+    flip = _timed_step(
+        "gamma_flip",
+        _call_first,
         gamma_flip_mod,
         ["gamma_flip_level", "find_gamma_flip"],
         df,
@@ -153,27 +180,37 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         default=None,
     )
 
-    dealer_metrics = _call_first(
+    dealer_metrics = _timed_step(
+        "dealer_inventory_metrics",
+        _call_first,
         dealer_inventory_mod,
         ["dealer_inventory_metrics"],
         df,
         default={},
     ) or {}
-    dealer_pos = dealer_metrics.get("position") or _call_first(
-        dealer_inventory_mod,
-        ["dealer_inventory_position", "dealer_inventory"],
-        df,
-        default="Unknown",
-    )
+    dealer_pos = dealer_metrics.get("position")
+    if not dealer_pos:
+        dealer_pos = _timed_step(
+            "dealer_inventory_position",
+            _call_first,
+            dealer_inventory_mod,
+            ["dealer_inventory_position", "dealer_inventory"],
+            df,
+            default="Unknown",
+        )
 
-    vol_regime = _call_first(
+    vol_regime = _timed_step(
+        "volatility_regime",
+        _call_first,
         volatility_regime_mod,
         ["detect_volatility_regime", "volatility_regime"],
         df,
         default="UNKNOWN",
     )
 
-    gamma_path_result = _call_first(
+    gamma_path_result = _timed_step(
+        "dealer_gamma_path",
+        _call_first,
         dealer_gamma_path_mod,
         ["simulate_gamma_path"],
         df,
@@ -185,7 +222,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     else:
         prices, gamma_curve = [], []
 
-    gamma_event = _call_first(
+    gamma_event = _timed_step(
+        "gamma_event",
+        _call_first,
         dealer_gamma_path_mod,
         ["detect_gamma_squeeze"],
         prices,
@@ -195,14 +234,18 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
 
     # Flow combines transaction imbalance and "smart money" activity so the
     # engine can separate broad flow from more selective institutional flow.
-    flow_signal_value = _call_first(
+    flow_signal_value = _timed_step(
+        "options_flow_signal",
+        _call_first,
         options_flow_imbalance_mod,
         ["flow_signal", "calculate_flow_signal"],
         df,
         spot=spot,
         default="NEUTRAL_FLOW",
     )
-    smart_money_signal_value = _call_first(
+    smart_money_signal_value = _timed_step(
+        "smart_money_flow",
+        _call_first,
         smart_money_flow_mod,
         ["smart_money_signal", "classify_flow"],
         df,
@@ -213,7 +256,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
 
     # Liquidity maps are reused later by the strike selector and by trade
     # strength scoring to understand where dealer pinning or air pockets exist.
-    liquidity_levels = _call_first(
+    liquidity_levels = _timed_step(
+        "liquidity_heatmap",
+        _call_first,
         liquidity_heatmap_mod,
         ["strongest_liquidity_levels", "build_liquidity_heatmap"],
         df,
@@ -227,13 +272,17 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         liquidity_levels = []
     liquidity_levels = [_to_python_number(x) for x in liquidity_levels]
 
-    voids = _call_first(
+    voids = _timed_step(
+        "liquidity_voids",
+        _call_first,
         liquidity_void_mod,
         ["detect_liquidity_voids", "detect_liquidity_void"],
         df,
         default=[],
     )
-    void_signal = _call_first(
+    void_signal = _timed_step(
+        "liquidity_void_signal",
+        _call_first,
         liquidity_void_mod,
         ["liquidity_void_signal"],
         spot,
@@ -241,14 +290,18 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         default=None,
     )
 
-    vacuum_zones = _call_first(
+    vacuum_zones = _timed_step(
+        "liquidity_vacuum",
+        _call_first,
         liquidity_vacuum_mod,
         ["detect_liquidity_vacuum"],
         df,
         default=[],
     )
     vacuum_zones = _clean_zone_list(vacuum_zones)
-    vacuum_state = _call_first(
+    vacuum_state = _timed_step(
+        "liquidity_vacuum_direction",
+        _call_first,
         liquidity_vacuum_mod,
         ["vacuum_direction"],
         spot,
@@ -256,24 +309,37 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         default="NORMAL",
     )
 
-    walls = _call_first(gamma_walls_mod, ["classify_walls"], df, default={}) or {}
+    walls = _timed_step(
+        "gamma_walls",
+        _call_first,
+        gamma_walls_mod,
+        ["classify_walls"],
+        df,
+        default={},
+    ) or {}
     support_wall = _to_python_number(walls.get("support_wall") if isinstance(walls, dict) else None)
     resistance_wall = _to_python_number(walls.get("resistance_wall") if isinstance(walls, dict) else None)
 
-    market_gex = _call_first(
+    market_gex = _timed_step(
+        "market_gamma_map",
+        _call_first,
         market_gamma_map_mod,
         ["calculate_market_gamma"],
         df,
         default=None,
     )
     market_gamma_summary = _summarize_market_gamma(market_gex)
-    gamma_regime = _call_first(
+    gamma_regime = _timed_step(
+        "market_gamma_regime",
+        _call_first,
         market_gamma_map_mod,
         ["market_gamma_regime"],
         market_gex,
         default=None,
     )
-    gamma_clusters = _call_first(
+    gamma_clusters = _timed_step(
+        "gamma_clusters",
+        _call_first,
         market_gamma_map_mod,
         ["largest_gamma_strikes"],
         market_gex,
@@ -284,7 +350,7 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
 
     # Greek exposures provide second-order context beyond plain gamma so the
     # direction engine can reason about vanna/charm support and decay dynamics.
-    greek_exposures = summarize_greek_exposures(df)
+    greek_exposures = _timed_step("greek_exposures", summarize_greek_exposures, df)
     if gamma_regime is None:
         if flip is None:
             gamma_regime = "UNKNOWN"
@@ -293,19 +359,25 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         else:
             gamma_regime = "SHORT_GAMMA_ZONE"
 
-    hedging_flow = _call_first(
+    hedging_flow = _timed_step(
+        "dealer_hedging_flow",
+        _call_first,
         dealer_hedging_flow_mod,
         ["dealer_hedging_flow"],
         df,
         default=None,
     )
-    hedging_sim = _call_first(
+    hedging_sim = _timed_step(
+        "dealer_hedging_simulation",
+        _call_first,
         dealer_hedging_simulator_mod,
         ["simulate_dealer_hedging"],
         df,
         default={},
     )
-    hedging_bias = _call_first(
+    hedging_bias = _timed_step(
+        "dealer_hedging_bias",
+        _call_first,
         dealer_hedging_simulator_mod,
         ["hedging_bias"],
         hedging_sim,
@@ -314,7 +386,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
 
     intraday_gamma_state = None
     if prev_df is not None:
-        intraday_gamma_state = _call_first(
+        intraday_gamma_state = _timed_step(
+            "intraday_gamma_shift",
+            _call_first,
             intraday_gamma_shift_mod,
             ["gamma_shift_signal", "detect_gamma_shift"],
             prev_df,
@@ -323,7 +397,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
             default=None,
         )
 
-    atm_iv = _call_first(
+    atm_iv = _timed_step(
+        "atm_vol",
+        _call_first,
         volatility_surface_mod,
         ["atm_vol"],
         df,
@@ -332,7 +408,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     )
     surface_regime = None
     if atm_iv is not None:
-        surface_regime = _call_first(
+        surface_regime = _timed_step(
+            "vol_surface_regime",
+            _call_first,
             volatility_surface_mod,
             ["vol_regime"],
             atm_iv,
@@ -340,7 +418,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         )
 
     # ATM straddle price and market-implied expected move in index points.
-    straddle_data = _call_first(
+    straddle_data = _timed_step(
+        "atm_straddle",
+        _call_first,
         volatility_surface_mod,
         ["compute_atm_straddle_price"],
         df,
@@ -349,7 +429,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     ) or {}
 
     # Max pain — expiry-gravity strike computed from full option-chain holder payout.
-    max_pain_data = _call_first(
+    max_pain_data = _timed_step(
+        "max_pain",
+        _call_first,
         max_pain_mod,
         ["compute_max_pain"],
         df,
@@ -358,7 +440,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     ) or {}
 
     # Volume PCR — real-time put/call sentiment ratio (full chain + near-ATM).
-    volume_pcr_data = _call_first(
+    volume_pcr_data = _timed_step(
+        "volume_pcr",
+        _call_first,
         volume_pcr_mod,
         ["compute_volume_pcr"],
         df,
@@ -367,7 +451,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     ) or {}
 
     # Risk-reversal skew and momentum (front expiry), informative for direction.
-    rr_data = _call_first(
+    rr_data = _timed_step(
+        "risk_reversal",
+        _call_first,
         volatility_surface_mod,
         ["compute_risk_reversal"],
         df,
@@ -376,14 +462,18 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     ) or {}
     rr_momentum_data = {}
     if prev_df is not None:
-        prev_rr_data = _call_first(
+        prev_rr_data = _timed_step(
+            "risk_reversal_previous",
+            _call_first,
             volatility_surface_mod,
             ["compute_risk_reversal"],
             prev_df,
             spot,
             default={},
         ) or {}
-        rr_momentum_data = _call_first(
+        rr_momentum_data = _timed_step(
+            "risk_reversal_velocity",
+            _call_first,
             volatility_surface_mod,
             ["risk_reversal_velocity"],
             rr_data.get("rr_value"),
@@ -395,14 +485,18 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     oi_velocity_data = {}
     oi_velocity_regime = "BALANCED"
     if prev_df is not None:
-        oi_velocity_data = _call_first(
+        oi_velocity_data = _timed_step(
+            "oi_velocity",
+            _call_first,
             oi_velocity_mod,
             ["compute_oi_velocity"],
             [prev_df, df],
             spot=spot,
             default={},
         ) or {}
-        oi_velocity_regime = _call_first(
+        oi_velocity_regime = _timed_step(
+            "oi_velocity_regime",
+            _call_first,
             oi_velocity_mod,
             ["oi_velocity_regime"],
             oi_velocity_data.get("velocity_score", 0.0),
@@ -413,7 +507,9 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
     # Requires two snapshots; gracefully absent when prev_df is None.
     gamma_flip_drift: dict = {}
     if prev_df is not None:
-        prev_flip = _call_first(
+        prev_flip = _timed_step(
+            "gamma_flip_previous",
+            _call_first,
             gamma_flip_mod,
             ["gamma_flip_level", "find_gamma_flip"],
             prev_df,
@@ -445,6 +541,19 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         resistance_wall=resistance_wall,
         gamma_clusters=gamma_clusters,
         vacuum_zones=vacuum_zones,
+    )
+
+    total_elapsed_ms = round((time.perf_counter() - fanout_started_at) * 1000.0, 3)
+    market_state_timings = {
+        "total_ms": total_elapsed_ms,
+        "slowest_steps": _top_timing_steps(step_timings),
+        "step_ms": step_timings,
+    }
+    _LOG.debug(
+        "market_state fan-out completed for %s in %.3f ms; slowest=%s",
+        symbol or "UNKNOWN",
+        total_elapsed_ms,
+        market_state_timings["slowest_steps"],
     )
 
     # The returned state is intentionally denormalized: downstream modules favor
@@ -495,4 +604,5 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         "oi_velocity_regime": oi_velocity_regime,
         "gamma_flip_drift": gamma_flip_drift,
         "days_to_expiry": _safe_float(days_to_expiry, None),
+        "market_state_timings": market_state_timings,
     }

@@ -30,7 +30,7 @@ from app.runtime_sinks import (
     SignalCaptureSink,
 )
 from config.settings import STOP_LOSS_PERCENT, TARGET_PROFIT_PERCENT
-from data.spot_downloader import get_spot_snapshot, save_spot_snapshot, validate_spot_snapshot
+from data import spot_downloader
 from data.spot_history import append_spot_observation
 from data.data_source_router import DataSourceRouter
 from data.replay_loader import (
@@ -58,6 +58,19 @@ from tuning.runtime import get_active_parameter_pack, temporary_parameter_pack
 from tuning.promotion import get_promotion_runtime_context
 
 _cumulative_sync_done = False
+_NON_FATAL_SPOT_OBSERVATION_ERRORS = (OSError, TypeError, ValueError)
+
+
+def get_spot_snapshot(*args, **kwargs):
+    return spot_downloader.get_spot_snapshot(*args, **kwargs)
+
+
+def save_spot_snapshot(*args, **kwargs):
+    return spot_downloader.save_spot_snapshot(*args, **kwargs)
+
+
+def validate_spot_snapshot(*args, **kwargs):
+    return spot_downloader.validate_spot_snapshot(*args, **kwargs)
 
 
 def _ensure_cumulative_sync() -> None:
@@ -1480,11 +1493,28 @@ def run_engine_snapshot(
                     spot_snapshot.get("spot"),
                     spot_snapshot.get("timestamp"),
                 )
+            except _NON_FATAL_SPOT_OBSERVATION_ERRORS as exc:
+                logging.getLogger(__name__).warning(
+                    "append_spot_observation non-fatal failure for %s/%s (spot=%r, timestamp=%r): %s",
+                    symbol,
+                    source,
+                    spot_snapshot.get("spot"),
+                    spot_snapshot.get("timestamp"),
+                    exc,
+                )
             except Exception as exc:
                 logging.getLogger(__name__).warning(
-                    "append_spot_observation failed for %s: %s",
+                    "append_spot_observation unexpected non-fatal failure for %s/%s (spot=%r, timestamp=%r)",
                     symbol,
-                    exc,
+                    source,
+                    spot_snapshot.get("spot"),
+                    spot_snapshot.get("timestamp"),
+                    exc_info=exc,
+                )
+                logging.getLogger(__name__).warning(
+                    "Continuing live snapshot evaluation after unexpected append_spot_observation failure for %s/%s",
+                    symbol,
+                    source,
                 )
 
         # Resolve actual exchange expiry candidates from the provider so

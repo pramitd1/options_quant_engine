@@ -455,46 +455,37 @@ def summarize_greek_exposures(option_chain: pd.DataFrame):
             "charm_regime": None,
         }
 
-    df = option_chain.copy()
-    oi = pd.to_numeric(df.get("OPEN_INT", df.get("openInterest")), errors="coerce").fillna(0.0)
+    df = option_chain
+    oi_raw = df.get("OPEN_INT", df.get("openInterest"))
+    if isinstance(oi_raw, pd.Series):
+        oi = pd.to_numeric(oi_raw, errors="coerce").fillna(0.0)
+    else:
+        oi = pd.Series(0.0, index=df.index, dtype=float)
 
-    def _series(name):
-        """
-        Purpose:
-            Return a numeric series for the requested Greek or sensitivity column.
-
-        Context:
-            Internal helper inside the exposure-aggregation path. It keeps the
-            Greeks rollup compact while ensuring every requested column is
-            coerced into the same numeric representation before weighted sums
-            are computed.
-
-        Inputs:
-            name (Any): Column name for the requested Greek or derived sensitivity.
-
-        Returns:
-            pd.Series: Numeric series aligned with the option-chain rows and
-            defaulted to zero where the provider omitted values.
-
-        Notes:
-            Missing or malformed provider values are treated as zero so the
-            aggregate exposure calculation stays robust across data sources.
-        """
+    greek_names = ["DELTA", "GAMMA", "THETA", "VEGA", "RHO", "VANNA", "CHARM"]
+    greek_columns = {}
+    for name in greek_names:
         raw = df.get(name)
-        if not isinstance(raw, pd.Series):
-            return pd.Series(0.0, index=df.index)
-        return pd.to_numeric(raw, errors="coerce").fillna(0.0)
+        if isinstance(raw, pd.Series):
+            greek_columns[name] = pd.to_numeric(raw, errors="coerce").fillna(0.0)
+        else:
+            greek_columns[name] = pd.Series(0.0, index=df.index, dtype=float)
 
-    delta_exposure = float((_series("DELTA") * oi).sum())
-    gamma_exposure = float((_series("GAMMA") * oi).sum())
-    theta_exposure = float((_series("THETA") * oi).sum())
-    vega_exposure = float((_series("VEGA") * oi).sum())
-    rho_exposure = float((_series("RHO") * oi).sum())
-    vanna_exposure = float((_series("VANNA") * oi).sum())
-    charm_exposure = float((_series("CHARM") * oi).sum())
+    weighted_exposures = {
+        name: float((series * oi).sum())
+        for name, series in greek_columns.items()
+    }
 
-    gross_vanna = float((_series("VANNA").abs() * oi).sum())
-    gross_charm = float((_series("CHARM").abs() * oi).sum())
+    delta_exposure = weighted_exposures["DELTA"]
+    gamma_exposure = weighted_exposures["GAMMA"]
+    theta_exposure = weighted_exposures["THETA"]
+    vega_exposure = weighted_exposures["VEGA"]
+    rho_exposure = weighted_exposures["RHO"]
+    vanna_exposure = weighted_exposures["VANNA"]
+    charm_exposure = weighted_exposures["CHARM"]
+
+    gross_vanna = float((greek_columns["VANNA"].abs() * oi).sum())
+    gross_charm = float((greek_columns["CHARM"].abs() * oi).sum())
 
     return {
         "delta_exposure": round(delta_exposure, 2),

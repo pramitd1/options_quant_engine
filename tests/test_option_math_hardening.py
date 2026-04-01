@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from analytics.greeks_engine import summarize_greek_exposures
 from analytics.gamma_walls import classify_walls, detect_gamma_walls
 from analytics.volatility_surface import compute_risk_reversal
 
@@ -63,3 +64,30 @@ def test_risk_reversal_prefers_delta_target_over_fixed_moneyness():
     assert rr["call_iv_25d"] <= 18.0
     assert rr["rr_value"] >= 4.0
     assert rr["rr_regime"] == "PUT_SKEW"
+
+
+def test_summarize_greek_exposures_handles_string_inputs_and_regimes():
+    chain = pd.DataFrame(
+        {
+            "OPEN_INT": ["100", "200"],
+            "DELTA": ["0.5", "-0.2"],
+            "GAMMA": ["0.01", "0.015"],
+            "THETA": ["-1.5", "-0.5"],
+            "VEGA": ["2.0", "1.0"],
+            "RHO": ["0.4", "-0.1"],
+            "VANNA": ["0.04", "-0.01"],
+            "CHARM": ["0.03", "-0.005"],
+        }
+    )
+
+    summary = summarize_greek_exposures(chain)
+
+    assert summary["delta_exposure"] == 10.0
+    assert summary["gamma_exposure_greeks"] == 4.0
+    assert summary["theta_exposure"] == -250.0
+    assert summary["vega_exposure"] == 400.0
+    assert summary["rho_exposure"] == 20.0
+    assert summary["vanna_exposure"] == 2.0
+    assert summary["charm_exposure"] == 2.0
+    assert summary["vanna_regime"] == "POSITIVE_VANNA"
+    assert summary["charm_regime"] == "POSITIVE_CHARM"

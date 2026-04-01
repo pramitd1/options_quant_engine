@@ -16,6 +16,7 @@ Downstream Usage:
 import argparse
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from kiteconnect import KiteConnect
 
@@ -27,6 +28,19 @@ def _resolve_value(cli_value: str | None, env_key: str, default: str) -> str:
     if env_val:
         return env_val
     return default
+
+
+def _extract_request_token(redirect_url: str | None) -> str | None:
+    if not redirect_url:
+        return None
+
+    parsed = urlparse(redirect_url.strip())
+    request_tokens = parse_qs(parsed.query).get("request_token")
+    if not request_tokens:
+        return None
+
+    request_token = request_tokens[0].strip()
+    return request_token or None
 
 
 def _upsert_env_key(env_path: Path, key: str, value: str) -> None:
@@ -59,6 +73,12 @@ def main() -> int:
     parser.add_argument("--api-secret", dest="api_secret", default=None)
     parser.add_argument("--request-token", dest="request_token", default=None)
     parser.add_argument(
+        "--redirect-url",
+        dest="redirect_url",
+        default=None,
+        help="Full Zerodha login redirect URL containing request_token",
+    )
+    parser.add_argument(
         "--env-file",
         dest="env_file",
         default=None,
@@ -68,7 +88,14 @@ def main() -> int:
 
     api_key = _resolve_value(args.api_key, "ZERODHA_API_KEY", "YOUR_API_KEY")
     api_secret = _resolve_value(args.api_secret, "ZERODHA_API_SECRET", "YOUR_API_SECRET")
-    request_token = _resolve_value(args.request_token, "ZERODHA_REQUEST_TOKEN", "PASTE_REQUEST_TOKEN")
+    request_token = args.request_token.strip() if args.request_token else None
+    if not request_token and args.redirect_url:
+        request_token = _extract_request_token(args.redirect_url)
+        if not request_token:
+            print("Redirect URL does not contain a valid request_token query parameter.")
+            return 1
+
+    request_token = _resolve_value(request_token, "ZERODHA_REQUEST_TOKEN", "PASTE_REQUEST_TOKEN")
 
     if api_key.startswith("YOUR_") or not api_key:
         print("Missing API key. Set ZERODHA_API_KEY or pass --api-key.")
@@ -77,7 +104,7 @@ def main() -> int:
         print("Missing API secret. Set ZERODHA_API_SECRET or pass --api-secret.")
         return 1
     if request_token in {"PASTE_REQUEST_TOKEN", ""}:
-        print("Missing request token. Set ZERODHA_REQUEST_TOKEN or pass --request-token.")
+        print("Missing request token. Set ZERODHA_REQUEST_TOKEN or pass --request-token or --redirect-url.")
         return 1
 
     try:

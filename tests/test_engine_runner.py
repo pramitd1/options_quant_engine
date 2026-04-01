@@ -312,3 +312,60 @@ def test_run_engine_snapshot_returns_error_when_live_option_chain_is_empty(monke
     assert result["reason"] == "DATA_UNAVAILABLE_OPTION_CHAIN"
     assert "Option chain empty/invalid" in result["error"]
     assert router.closed is True
+
+
+def test_run_engine_snapshot_continues_when_spot_history_append_raises_value_error(monkeypatch):
+    class _Router:
+        def __init__(self):
+            self.closed = False
+
+        def get_option_chain(self, symbol):
+            return _option_chain_frame()
+
+        def close(self):
+            self.closed = True
+
+    router = _Router()
+
+    monkeypatch.setattr(engine_runner, "DataSourceRouter", lambda source: router)
+    monkeypatch.setattr(engine_runner, "get_spot_snapshot", lambda symbol, **kwargs: _spot_snapshot())
+    monkeypatch.setattr(engine_runner, "append_spot_observation", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad spot history")))
+    monkeypatch.setattr(engine_runner, "evaluate_scheduled_event_risk", lambda symbol, as_of: {"macro_event_risk_score": 0})
+    monkeypatch.setattr(engine_runner, "build_global_market_snapshot", lambda symbol, as_of: {"vix": 13.0})
+    monkeypatch.setattr(engine_runner, "resolve_selected_expiry", lambda option_chain: "2026-03-26")
+    monkeypatch.setattr(engine_runner, "filter_option_chain_by_expiry", lambda option_chain, expiry: option_chain)
+    monkeypatch.setattr(
+        engine_runner,
+        "validate_option_chain",
+        lambda option_chain: {
+            "is_valid": True,
+            "is_stale": False,
+            "selected_expiry": "2026-03-26",
+            "provider_health": {"summary_status": "GOOD"},
+        },
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "_evaluate_snapshot_for_pack",
+        lambda *, parameter_pack_name, **kwargs: {
+            "parameter_pack_name": parameter_pack_name or "default_pack",
+            "macro_news_state": {"macro_bias": "NEUTRAL"},
+            "global_risk_state": {"global_risk_state": "GLOBAL_NEUTRAL"},
+            "trade": None,
+        },
+    )
+
+    result = engine_runner.run_engine_snapshot(
+        symbol="NIFTY",
+        mode="LIVE",
+        source="NSE",
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        capture_signal_evaluation=False,
+        headline_service=_HeadlineService(),
+    )
+
+    assert result["ok"] is True
+    assert router.closed is True
