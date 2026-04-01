@@ -422,7 +422,7 @@ def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False, option_chai
         # 1) Fill from top OI strikes when option-chain frame is available.
         if len(top_supports) < top_n or len(top_resistances) < top_n:
             oi_calls, oi_puts = _resolve_top_oi_levels(trade, option_chain_frame, top_n=max(2 * top_n, 6))
-            for level, _oi, _chg_oi, _inf in (oi_calls + oi_puts):
+            for level, _oi, _chg_oi, _inf, _uses_snapshot_proxy in (oi_calls + oi_puts):
                 if level <= spot_f:
                     _append_unique(top_supports, level, side="support")
                 if level >= spot_f:
@@ -530,7 +530,7 @@ def _format_open_interest_value(value):
     return f"{oi:.0f}"
 
 
-def _format_oi_change_value(value):
+def _format_oi_change_value(value, *, uses_snapshot_proxy: bool = False):
     """Format change-in-OI values with sign and compact units."""
     try:
         oi_change = float(value)
@@ -540,10 +540,68 @@ def _format_oi_change_value(value):
     sign = "+" if oi_change > 0 else ("-" if oi_change < 0 else "")
     magnitude = abs(oi_change)
     if magnitude >= 1_000_000:
-        return f"{sign}{magnitude / 1_000_000:.2f}M"
+        rendered = f"{sign}{magnitude / 1_000_000:.2f}M"
+        return f"{rendered}*" if uses_snapshot_proxy else rendered
     if magnitude >= 1_000:
-        return f"{sign}{magnitude / 1_000:.1f}K"
-    return f"{sign}{magnitude:.0f}"
+        rendered = f"{sign}{magnitude / 1_000:.1f}K"
+        return f"{rendered}*" if uses_snapshot_proxy else rendered
+    rendered = f"{sign}{magnitude:.0f}"
+    return f"{rendered}*" if uses_snapshot_proxy else rendered
+
+
+def _format_expected_move_display(*, spot, straddle_points, straddle_pct, expected_move_up, expected_move_down, model_pct):
+    """Render expected move using internally consistent straddle/model figures."""
+    parts = []
+
+    try:
+        spot_f = float(spot) if spot is not None else None
+    except (TypeError, ValueError):
+        spot_f = None
+
+    try:
+        straddle_points_f = float(straddle_points) if straddle_points is not None else None
+    except (TypeError, ValueError):
+        straddle_points_f = None
+
+    try:
+        straddle_pct_f = float(straddle_pct) if straddle_pct is not None else None
+    except (TypeError, ValueError):
+        straddle_pct_f = None
+
+    try:
+        model_pct_f = float(model_pct) if model_pct is not None else None
+    except (TypeError, ValueError):
+        model_pct_f = None
+
+    if straddle_points_f is not None:
+        straddle_part = f"straddle ±{straddle_points_f:.0f} pts"
+        if expected_move_down is not None and expected_move_up is not None:
+            try:
+                straddle_part += f"  [{float(expected_move_down):.0f} - {float(expected_move_up):.0f}]"
+            except (TypeError, ValueError):
+                pass
+        if straddle_pct_f is not None:
+            straddle_part += f"  ({straddle_pct_f:.2f}%)"
+        parts.append(straddle_part)
+
+    if model_pct_f is not None:
+        if spot_f is not None:
+            model_points = spot_f * model_pct_f / 100.0
+            model_down = spot_f - model_points
+            model_up = spot_f + model_points
+            model_part = f"model ±{model_points:.0f} pts  [{model_down:.0f} - {model_up:.0f}]  ({model_pct_f:.2f}%)"
+        else:
+            model_part = f"model {model_pct_f:.2f}%"
+        parts.append(model_part)
+
+    if not parts:
+        return None
+
+    if len(parts) == 2 and straddle_pct_f is not None and model_pct_f is not None:
+        if abs(straddle_pct_f - model_pct_f) < 0.30:
+            return parts[0]
+
+    return " | ".join(parts)
 
 
 def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
@@ -600,10 +658,108 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
     if slim.empty:
         return [], []
 
+    source_name = ""
+    if "source" in df.columns:
+        try:
+            source_name = str(df["source"].dropna().iloc[0]).upper().strip()
+        except Exception:
+            source_name = ""
+
+    previous_oi_by_key = None
+    native_oi_change_missing = False
+    if source_name == "ZERODHA":
+        if oi_change_col:
+            try:
+                native_oi_change = pd.to_numeric(slim[oi_change_col], errors="coerce").fillna(0.0)
+                native_oi_change_missing = bool(native_oi_change.empty or (native_oi_change.abs() <= 1e-9).all())
+            except Exception:
+                native_oi_change_missing = True
+        else:
+            native_oi_change_missing = True
+
+    if source_name == "ZERODHA" and native_oi_change_missing:
+        previous_chain = trade.get("zerodha_oi_baseline_chain_frame") if isinstance(trade, dict) else None
+        if previous_chain is None and isinstance(trade, dict):
+            previous_chain = trade.get("previous_chain_frame")
+        if previous_chain is None and isinstance(option_chain_frame, pd.DataFrame):
+            previous_chain = option_chain_frame.attrs.get("zerodha_oi_baseline_chain_frame")
+        if previous_chain is None and isinstance(option_chain_frame, pd.DataFrame):
+            previous_chain = option_chain_frame.attrs.get("previous_chain_frame")
+
+        if previous_chain is not None and hasattr(previous_chain, "copy"):
+            prev_df = previous_chain.copy()
+
+            def _pick_prev_col(candidates):
+                for col in candidates:
+                    if col in prev_df.columns:
+                        return col
+                return None
+
+            prev_strike_col = _pick_prev_col(["strike", "STRIKE_PR", "strikePrice", "strike_price"])
+            prev_oi_col = _pick_prev_col(["open_interest", "OPEN_INT", "openInterest", "oi"])
+            prev_type_col = _pick_prev_col(["option_type", "OPTION_TYP", "type", "instrument_type"])
+            prev_expiry_col = _pick_prev_col(["selected_expiry", "EXPIRY_DT", "expiry", "expiry_date"])
+
+            if prev_strike_col and prev_oi_col and prev_type_col:
+                prev_selected_cols = [prev_strike_col, prev_oi_col, prev_type_col]
+                if prev_expiry_col:
+                    prev_selected_cols.append(prev_expiry_col)
+                prev_slim = prev_df[prev_selected_cols].copy()
+                prev_slim[prev_strike_col] = pd.to_numeric(prev_slim[prev_strike_col], errors="coerce")
+                prev_slim[prev_oi_col] = pd.to_numeric(prev_slim[prev_oi_col], errors="coerce")
+                prev_slim[prev_type_col] = prev_slim[prev_type_col].astype(str).str.upper().str.strip()
+                prev_slim = prev_slim.dropna(subset=[prev_strike_col, prev_oi_col])
+
+                if not prev_slim.empty:
+                    prev_group_cols = [prev_strike_col, prev_type_col]
+                    if prev_expiry_col:
+                        prev_group_cols.append(prev_expiry_col)
+                    prev_slim = prev_slim.groupby(prev_group_cols, as_index=False).agg({prev_oi_col: "max"})
+                    if prev_expiry_col:
+                        previous_oi_by_key = {
+                            (float(r[prev_strike_col]), str(r[prev_type_col]), str(r[prev_expiry_col])): float(r[prev_oi_col])
+                            for _idx, r in prev_slim.iterrows()
+                        }
+                    else:
+                        previous_oi_by_key = {
+                            (float(r[prev_strike_col]), str(r[prev_type_col]), None): float(r[prev_oi_col])
+                            for _idx, r in prev_slim.iterrows()
+                        }
+
     agg_map = {oi_col: "max"}
     if oi_change_col:
         agg_map[oi_change_col] = "sum"
     slim = slim.groupby([strike_col, type_col], as_index=False).agg(agg_map)
+
+    if previous_oi_by_key is not None:
+        expiry_key_value = None
+        if selected_expiry is not None:
+            try:
+                expiry_key_value = str(pd.Timestamp(selected_expiry).date())
+            except Exception:
+                expiry_key_value = str(selected_expiry)
+
+        def _derive_snapshot_oi_change(row):
+            lookup_key = (float(row[strike_col]), str(row[type_col]), expiry_key_value)
+            fallback_key = (float(row[strike_col]), str(row[type_col]), None)
+            prev_oi = previous_oi_by_key.get(lookup_key)
+            if prev_oi is None:
+                prev_oi = previous_oi_by_key.get(fallback_key)
+            if prev_oi is None:
+                return None, False
+            return float(row[oi_col]) - float(prev_oi), True
+
+        derived_change = slim.apply(_derive_snapshot_oi_change, axis=1)
+        derived_change_values = derived_change.apply(lambda item: item[0])
+        derived_change_flags = derived_change.apply(lambda item: item[1])
+        if oi_change_col:
+            slim[oi_change_col] = derived_change_values
+        else:
+            oi_change_col = "_derived_changeinOI"
+            slim[oi_change_col] = derived_change_values
+        slim["_uses_snapshot_oi_proxy"] = derived_change_flags
+    elif source_name == "ZERODHA":
+        slim["_uses_snapshot_oi_proxy"] = False
 
     spot = trade.get("spot") if isinstance(trade, dict) else None
     try:
@@ -619,7 +775,7 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
 
     def _infer_side(option_type, oi_change):
         try:
-            oi_chg_f = float(oi_change)
+            oi_chg_f = float(oi_change) if oi_change is not None else None
         except (TypeError, ValueError):
             oi_chg_f = None
 
@@ -666,8 +822,9 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
             (
                 float(r[strike_col]),
                 float(r[oi_col]),
-                float(r.get(oi_change_col, 0.0)) if oi_change_col else 0.0,
-                _infer_side(r[type_col], r.get(oi_change_col, 0.0) if oi_change_col else 0.0),
+                float(r[oi_change_col]) if oi_change_col and pd.notna(r.get(oi_change_col)) else None,
+                _infer_side(r[type_col], r.get(oi_change_col) if oi_change_col else None),
+                bool(r.get("_uses_snapshot_oi_proxy", False)),
             )
             for _idx, r in side.iterrows()
         ]
@@ -691,7 +848,7 @@ def _resolve_top_oi_strikes(trade, option_chain_frame, *, top_n=5, formatted=Tru
 
     def _format(rows):
         out = []
-        for lvl, oi, _chg_oi, inf in rows:
+        for lvl, oi, _chg_oi, inf, _uses_snapshot_proxy in rows:
             oi_str = _format_open_interest_value(oi)
             prox = _format_proximity(lvl, spot_f if spot_f is not None else spot)
             out.append(f"{prox}  (OI {oi_str}; {inf})")
@@ -723,7 +880,7 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
         d_pts, d_pct = _dist(lvl)
         structural_rows.append(("support", idx, f"{lvl:.0f}", d_pts, d_pct, "-", 0.0))
 
-    for idx, (lvl, oi, chg_oi, inference) in enumerate(call_oi, start=1):
+    for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy) in enumerate(call_oi, start=1):
         d_pts, d_pct = _dist(lvl)
         oi_rows.append(
             (
@@ -733,13 +890,14 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 d_pts,
                 d_pct,
                 _format_open_interest_value(oi),
-                _format_oi_change_value(chg_oi),
+                _format_oi_change_value(chg_oi, uses_snapshot_proxy=uses_snapshot_proxy),
                 str(inference),
+                bool(uses_snapshot_proxy),
                 float(oi),
             )
         )
 
-    for idx, (lvl, oi, chg_oi, inference) in enumerate(put_oi, start=1):
+    for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy) in enumerate(put_oi, start=1):
         d_pts, d_pct = _dist(lvl)
         oi_rows.append(
             (
@@ -749,8 +907,9 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 d_pts,
                 d_pct,
                 _format_open_interest_value(oi),
-                _format_oi_change_value(chg_oi),
+                _format_oi_change_value(chg_oi, uses_snapshot_proxy=uses_snapshot_proxy),
                 str(inference),
+                bool(uses_snapshot_proxy),
                 float(oi),
             )
         )
@@ -773,7 +932,7 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 oi_rows,
                 key=lambda row: (
                     abs(float(row[2]) - spot_f),
-                    -float(row[7]),
+                    -float(row[8]),
                 ),
             )
 
@@ -787,12 +946,16 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
         print("\n  HIGHEST OI STRIKES")
         chg_oi_width = max(len("chg_oi"), *(len(str(row[6])) for row in oi_rows))
         print(f"  kind       rank strike   dist_pts dist_%    oi {'chg_oi':>{chg_oi_width}} inference")
-        for kind, rank, strike, dist_pts, dist_pct, oi_str, chg_oi_str, inference, _oi_num in oi_rows:
+        used_snapshot_proxy = any(bool(row[8]) for row in oi_rows)
+        for kind, rank, strike, dist_pts, dist_pct, oi_str, chg_oi_str, inference, _uses_snapshot_proxy, _oi_num in oi_rows:
             print(
                 f"  {kind:<10} {rank:>4} {strike:>7} {dist_pts:>9} {dist_pct:>8} "
                 f"{oi_str:>7} {chg_oi_str:>{chg_oi_width}} {inference}"
             )
-        print("  note: inference is a proxy based on OI change plus underlying move vs prev_close")
+        if used_snapshot_proxy:
+            print("  note: * indicates Zerodha snapshot OI delta proxy (5m rolling baseline when available, prior snapshot otherwise); inference uses proxy delta plus underlying move vs prev_close")
+        else:
+            print("  note: inference is a proxy based on OI change plus underlying move vs prev_close")
 
 
 def _first_present(mapping, keys, default=None):
@@ -1863,17 +2026,14 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
     _exp_pct_model = trade.get("expected_move_pct_model") if trade else None
     _exp_up = trade.get("expected_move_up") if trade else None
     _exp_down = trade.get("expected_move_down") if trade else None
-    _expected_move_str = None
-    if _straddle is not None:
-        _expected_move_str = f"±{_straddle:.0f} pts"
-        if _exp_down is not None and _exp_up is not None:
-            _expected_move_str += f"  [{_exp_down:.0f} - {_exp_up:.0f}]"
-        if _exp_pct is not None:
-            _expected_move_str += f"  ({_exp_pct:.2f}%)"
-            if _exp_pct_model is not None and abs(float(_exp_pct) - float(_exp_pct_model)) >= 0.30:
-                _expected_move_str += f" | model {float(_exp_pct_model):.2f}%"
-    elif _exp_pct_model is not None:
-        _expected_move_str = f"model {float(_exp_pct_model):.2f}%"
+    _expected_move_str = _format_expected_move_display(
+        spot=spot,
+        straddle_points=_straddle,
+        straddle_pct=_exp_pct,
+        expected_move_up=_exp_up,
+        expected_move_down=_exp_down,
+        model_pct=_exp_pct_model,
+    )
     # Max pain display with proximity zone annotation.
     _max_pain = trade.get("max_pain") if trade else None
     _max_pain_zone = trade.get("max_pain_zone") if trade else None
@@ -1894,6 +2054,9 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
     _trade_with_prev_close = dict(trade) if trade else None
     if _trade_with_prev_close is not None:
         _trade_with_prev_close["prev_close"] = spot_summary.get("prev_close")
+        if isinstance(result, dict):
+            _trade_with_prev_close["previous_chain_frame"] = result.get("previous_chain_frame")
+            _trade_with_prev_close["zerodha_oi_baseline_chain_frame"] = result.get("zerodha_oi_baseline_chain_frame")
 
     _top_support_levels, _top_resistance_levels = _resolve_top_liquidity_walls(
         trade,
@@ -2342,6 +2505,11 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
 
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
+
+    if isinstance(trade, dict) and isinstance(result, dict) and "previous_chain_frame" in result:
+        trade.setdefault("previous_chain_frame", result.get("previous_chain_frame"))
+    if isinstance(trade, dict) and isinstance(result, dict) and "zerodha_oi_baseline_chain_frame" in result:
+        trade.setdefault("zerodha_oi_baseline_chain_frame", result.get("zerodha_oi_baseline_chain_frame"))
 
     if trade:
         _print_section("RUNTIME CONTEXT", {

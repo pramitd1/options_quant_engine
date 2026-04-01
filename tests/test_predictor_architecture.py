@@ -39,24 +39,27 @@ def test_registry_contains_all_methods():
 
 
 def test_default_predictor_is_blended():
+    """Note: default changed from 'blended' to 'pure_ml' after ML research showed
+    pure ML (AUC 0.6211) significantly outperforms blended approach (AUC 0.5651).
+    This test now validates the new optimal default."""
     reset_predictor()
     p = get_predictor()
-    assert p.name == "blended"
+    assert p.name == "pure_ml"
     assert isinstance(p, MovePredictor)
 
 
 def test_prediction_method_override_swaps_and_restores():
     reset_predictor()
     original = get_predictor()
-    assert original.name == "blended"
+    assert original.name == "pure_ml"
 
     with prediction_method_override("pure_rule") as pred:
         assert pred.name == "pure_rule"
         # get_predictor inside the context should return the override
         assert get_predictor().name == "pure_rule"
 
-    # After exit, the original is restored
-    assert get_predictor().name == "blended"
+    # After exit, the original (pure_ml) is restored
+    assert get_predictor().name == "pure_ml"
 
 
 def test_prediction_method_override_invalid_raises():

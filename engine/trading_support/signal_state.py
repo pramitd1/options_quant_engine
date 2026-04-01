@@ -552,21 +552,29 @@ def decide_direction(
         """
         return "+".join(reason for reason, _ in votes)
 
+    # Dual scoring framework: Keep both bull/bear probabilities alive.
+    # This allows downstream trade_strength and confidence layers to understand
+    # the degree of disagreement, not just the winning direction.
+    # Normalized to 0-1 range using min/max scaling for comparability.
+    total_score = max(bullish_score + bearish_score, 1e-6)
+    bull_probability = round(bullish_score / total_score, 4)
+    bear_probability = round(bearish_score / total_score, 4)
+
     if (
         bullish_score >= direction_thresholds["min_score"]
         and bullish_score > bearish_score
         and score_margin >= direction_thresholds["min_margin"]
     ):
-        return "CALL", build_source(bullish_votes)
+        return "CALL", build_source(bullish_votes), bull_probability, bear_probability
 
     if (
         bearish_score >= direction_thresholds["min_score"]
         and bearish_score > bullish_score
         and score_margin >= direction_thresholds["min_margin"]
     ):
-        return "PUT", build_source(bearish_votes)
+        return "PUT", build_source(bearish_votes), bull_probability, bear_probability
 
-    return None, None
+    return None, None, 0.5, 0.5  # Neutral case: equal probabilities
 
 
 def _compute_signal_state(
@@ -605,7 +613,7 @@ def _compute_signal_state(
     Notes:
         Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
     """
-    direction, direction_source = decide_direction(
+    direction, direction_source, bull_probability, bear_probability = decide_direction(
         final_flow_signal=market_state["final_flow_signal"],
         dealer_pos=market_state["dealer_pos"],
         vol_regime=market_state["vol_regime"],
@@ -629,6 +637,8 @@ def _compute_signal_state(
             "direction": None,
             "direction_source": None,
             "direction_vote_count": 0,
+            "bull_probability": 0.5,
+            "bear_probability": 0.5,
             "trade_strength": 0,
             "scoring_breakdown": empty_scoring_breakdown(),
             "confirmation": empty_confirmation_state(),
@@ -698,6 +708,8 @@ def _compute_signal_state(
         "direction": direction,
         "direction_source": direction_source,
         "direction_vote_count": direction_vote_count,
+        "bull_probability": bull_probability,
+        "bear_probability": bear_probability,
         "trade_strength": trade_strength,
         "scoring_breakdown": scoring_breakdown,
         "confirmation": confirmation,

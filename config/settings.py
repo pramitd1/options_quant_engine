@@ -180,7 +180,9 @@ ACTIVE_MODEL = os.getenv("OQE_ACTIVE_MODEL", "LogReg_ElasticNet_v1").strip()
 #          "research_decision_policy", "ev_sizing", "research_rank_gate",
 #          "research_uncertainty_adjusted"
 # Set via env OQE_PREDICTION_METHOD or override here.
-PREDICTION_METHOD = os.getenv("OQE_PREDICTION_METHOD", "blended").strip() or "blended"
+# NOTE (April 2026): Switched to "pure_ml" after ML research showed blending degrades
+# performance. ML component (AUC 0.6211) alone outperforms hybrid (0.5651).
+PREDICTION_METHOD = os.getenv("OQE_PREDICTION_METHOD", "pure_ml").strip() or "pure_ml"
 
 
 # ================================

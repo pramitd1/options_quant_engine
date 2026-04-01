@@ -21,6 +21,8 @@ import warnings
 from getpass import getpass
 from pathlib import Path
 
+import pandas as pd
+
 from urllib3.exceptions import NotOpenSSLWarning
 
 
@@ -83,6 +85,52 @@ def _refresh_interval_for_source(source: str) -> int:
     if source == "ICICI":
         return ICICI_REFRESH_INTERVAL
     return REFRESH_INTERVAL
+
+
+def _coerce_runtime_timestamp(value):
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    return ts
+
+
+def _select_zerodha_oi_baseline(chain_history, current_ts, *, target_window_seconds: int = 300):
+    """Choose a Zerodha OI baseline snapshot, preferring roughly 5 minutes back."""
+    if not chain_history:
+        return None, None
+
+    if current_ts is None:
+        ts_candidates = [frame_ts for frame_ts, _frame in chain_history if frame_ts is not None]
+        current_ts = ts_candidates[-1] if ts_candidates else None
+    if current_ts is None:
+        return chain_history[-1][1].copy(), "prior snapshot"
+
+    target_ts = current_ts - pd.Timedelta(seconds=target_window_seconds)
+    candidate = None
+    for frame_ts, frame in chain_history:
+        if frame_ts is None:
+            continue
+        if frame_ts <= target_ts:
+            candidate = (frame_ts, frame)
+
+    if candidate is not None:
+        return candidate[1].copy(), "5m rolling"
+
+    latest_prior = None
+    for frame_ts, frame in reversed(chain_history):
+        if frame_ts is None:
+            continue
+        if frame_ts < current_ts:
+            latest_prior = (frame_ts, frame)
+            break
+
+    if latest_prior is not None:
+        return latest_prior[1].copy(), "prior snapshot"
+
+    return None, None
 
 
 def _append_regime_switch_log(record: dict, relative_path: str) -> None:
@@ -933,6 +981,7 @@ def main():
             return
 
     previous_chain = None
+    zerodha_chain_history: list[tuple[pd.Timestamp | None, pd.DataFrame]] = []
     saved_one_spot_snapshot = False
     saved_one_option_chain_snapshot = False
     replay_paths_printed = False
@@ -1040,6 +1089,16 @@ def main():
                 elif signal_capture_status.startswith("SKIPPED_POLICY:"):
                     print(f"\n{'signal_capture':26}: {signal_capture_status}")
 
+            if source == "ZERODHA" and option_chain_frame is not None and not option_chain_frame.empty:
+                current_chain_ts = _coerce_runtime_timestamp(spot_summary.get("timestamp"))
+                baseline_chain, baseline_label = _select_zerodha_oi_baseline(
+                    zerodha_chain_history,
+                    current_chain_ts,
+                )
+                if baseline_chain is not None:
+                    result["zerodha_oi_baseline_chain_frame"] = baseline_chain
+                    result["zerodha_oi_baseline_label"] = baseline_label
+
             render_snapshot(
                 output_mode,
                 result=result,
@@ -1057,6 +1116,18 @@ def main():
             )
 
             previous_chain = option_chain_frame.copy()
+            if source == "ZERODHA" and option_chain_frame is not None and not option_chain_frame.empty:
+                current_chain_ts = _coerce_runtime_timestamp(spot_summary.get("timestamp"))
+                zerodha_chain_history.append((current_chain_ts, option_chain_frame.copy()))
+                cutoff_ts = current_chain_ts - pd.Timedelta(minutes=15) if current_chain_ts is not None else None
+                if cutoff_ts is not None:
+                    zerodha_chain_history = [
+                        (frame_ts, frame)
+                        for frame_ts, frame in zerodha_chain_history
+                        if frame_ts is None or frame_ts >= cutoff_ts
+                    ]
+                elif len(zerodha_chain_history) > 90:
+                    zerodha_chain_history = zerodha_chain_history[-90:]
 
             # Telegram push alert on meaningful state transitions.
             if trade_for_display and isinstance(trade_for_display, dict):
