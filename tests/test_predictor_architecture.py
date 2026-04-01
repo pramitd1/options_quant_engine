@@ -32,6 +32,7 @@ def test_registry_contains_all_methods():
     assert "pure_ml" in registry
     assert "pure_rule" in registry
     assert "research_dual_model" in registry
+    assert "decision_policy" in registry
     assert "research_decision_policy" in registry
     assert "ev_sizing" in registry
     assert "research_rank_gate" in registry
@@ -39,27 +40,25 @@ def test_registry_contains_all_methods():
 
 
 def test_default_predictor_is_blended():
-    """Note: default changed from 'blended' to 'pure_ml' after ML research showed
-    pure ML (AUC 0.6211) significantly outperforms blended approach (AUC 0.5651).
-    This test now validates the new optimal default."""
+    """Default production method is decision policy, backed by strict leaderboard cuts."""
     reset_predictor()
     p = get_predictor()
-    assert p.name == "pure_ml"
+    assert p.name == "research_decision_policy"
     assert isinstance(p, MovePredictor)
 
 
 def test_prediction_method_override_swaps_and_restores():
     reset_predictor()
     original = get_predictor()
-    assert original.name == "pure_ml"
+    assert original.name == "research_decision_policy"
 
     with prediction_method_override("pure_rule") as pred:
         assert pred.name == "pure_rule"
         # get_predictor inside the context should return the override
         assert get_predictor().name == "pure_rule"
 
-    # After exit, the original (pure_ml) is restored
-    assert get_predictor().name == "pure_ml"
+    # After exit, the original (decision policy) is restored
+    assert get_predictor().name == "research_decision_policy"
 
 
 def test_prediction_method_override_invalid_raises():

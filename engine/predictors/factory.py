@@ -42,6 +42,9 @@ def _ensure_registry() -> dict[str, type]:
     _REGISTRY["pure_ml"] = PureMLPredictor
     _REGISTRY["pure_rule"] = PureRulePredictor
     _REGISTRY["research_dual_model"] = ResearchDualModelPredictor
+    # Keep both keys: `decision_policy` is the production-facing name,
+    # `research_decision_policy` remains for backward compatibility.
+    _REGISTRY["decision_policy"] = ResearchDecisionPolicyPredictor
     _REGISTRY["research_decision_policy"] = ResearchDecisionPolicyPredictor
     _REGISTRY["ev_sizing"] = EVSizingPredictor
     _REGISTRY["research_rank_gate"] = ResearchRankGatePredictor

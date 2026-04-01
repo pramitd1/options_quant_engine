@@ -280,6 +280,55 @@ def test_run_engine_snapshot_replay_uses_source_aware_selection_and_emits_diagno
     assert result["replay_selection"]["skipped_chain_files"][0]["reason"] == "empty_file"
 
 
+def test_run_preloaded_engine_snapshot_fail_closed_when_overlay_construction_fails(monkeypatch):
+    monkeypatch.setenv("RUNTIME_FAIL_CLOSED_ON_OVERLAY_FAILURE", "1")
+
+    def _failing_macro_news_state(**kwargs):
+        raise RuntimeError("macro failure")
+
+    monkeypatch.setattr(engine_runner, "build_macro_news_state", _failing_macro_news_state)
+    monkeypatch.setattr(
+        engine_runner,
+        "_prepare_snapshot_context",
+        lambda **kwargs: {
+            "spot_snapshot": _spot_snapshot(),
+            "spot_validation": {"is_valid": True, "is_stale": False},
+            "spot": 22050.0,
+            "day_open": 22010.0,
+            "day_high": 22100.0,
+            "day_low": 21980.0,
+            "prev_close": 22020.0,
+            "spot_timestamp": "2026-03-15T09:20:00+05:30",
+            "lookback_avg_range_pct": 0.9,
+            "macro_event_state": {"macro_event_risk_score": 0, "event_lockdown_flag": False},
+            "headline_state": _HeadlineService().fetch(symbol="NIFTY", as_of="2026-03-15T09:20:00+05:30", replay_mode=False),
+            "global_market_snapshot": {"data_available": True, "warnings": [], "issues": []},
+            "option_chain_validation": {"is_valid": True, "is_stale": False, "selected_expiry": "2026-03-26"},
+            "option_chain": _option_chain_frame(),
+            "option_chain_frame": _option_chain_frame(),
+        },
+    )
+
+    result = engine_runner.run_preloaded_engine_snapshot(
+        symbol="NIFTY",
+        mode="LIVE",
+        source="NSE",
+        spot_snapshot=_spot_snapshot(),
+        option_chain=_option_chain_frame(),
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        capture_signal_evaluation=False,
+        headline_service=_HeadlineService(),
+    )
+
+    assert result["ok"] is False
+    assert result["trade"] is None
+    assert result["global_risk_state"].get("overlay_fail_closed_blocked") is True
+    assert "macro_news_state_construction_failed" in (result["global_risk_state"].get("overlay_failure_reasons") or [])
+
+
 def test_run_engine_snapshot_returns_error_when_live_option_chain_is_empty(monkeypatch):
     class _Router:
         def __init__(self):

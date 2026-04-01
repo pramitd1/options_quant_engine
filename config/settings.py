@@ -176,13 +176,13 @@ VOL_EXPANSION_THRESHOLD = 1.3
 ACTIVE_MODEL = os.getenv("OQE_ACTIVE_MODEL", "LogReg_ElasticNet_v1").strip()
 
 # Prediction method — controls the pluggable predictor architecture.
-# Options: "blended" (default), "pure_ml", "pure_rule", "research_dual_model",
-#          "research_decision_policy", "ev_sizing", "research_rank_gate",
-#          "research_uncertainty_adjusted"
+# Options: "blended", "pure_ml", "pure_rule", "research_dual_model",
+#          "decision_policy" (preferred), "research_decision_policy" (legacy alias),
+#          "ev_sizing", "research_rank_gate", "research_uncertainty_adjusted"
 # Set via env OQE_PREDICTION_METHOD or override here.
-# NOTE (April 2026): Switched to "pure_ml" after ML research showed blending degrades
-# performance. ML component (AUC 0.6211) alone outperforms hybrid (0.5651).
-PREDICTION_METHOD = os.getenv("OQE_PREDICTION_METHOD", "pure_ml").strip() or "pure_ml"
+# NOTE (April 2026): Default switched to decision-policy predictor based on
+# strict leaderboard robustness across historical + cumulative datasets.
+PREDICTION_METHOD = os.getenv("OQE_PREDICTION_METHOD", "decision_policy").strip() or "decision_policy"
 
 
 # ================================

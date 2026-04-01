@@ -89,6 +89,11 @@ TRADE_RUNTIME_THRESHOLDS = {
     "min_composite_score": 58,
     # Temporary guardrail while probability calibration is improved.
     "move_probability_score_cap": 75,
+    "composite_weight_trade_strength": 0.50,
+    "composite_weight_move_probability": 0.20,
+    "composite_weight_confirmation": 0.15,
+    "composite_weight_data_quality": 0.10,
+    "composite_weight_gamma_stability": 0.05,
     "strong_signal_threshold": 75,
     "medium_signal_threshold": 60,
     "weak_signal_threshold": 40,

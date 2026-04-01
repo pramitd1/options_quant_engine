@@ -1,18 +1,15 @@
 """
-ResearchDecisionPolicyPredictor
-================================
-Extends the research_dual_model pathway with an overlay of the
-Decision Policy Layer.  This predictor:
+ResearchDecisionPolicyPredictor — CORRECTED VERSION
+=====================================================
+Fixes the probability replacement bug. Now properly overlays policy
+decisions on the ENGINE's probability, rather than replacing it with
+ML model scores.
 
-  1. Runs the full engine pipeline (rule + ML blend)
-  2. Overlays GBT ranking + LogReg calibration (research dual-model)
-  3. Evaluates the **dual_threshold** policy to produce an ALLOW / BLOCK /
-     DOWNGRADE decision
-  4. Adjusts hybrid_move_probability and components accordingly
-
-When the policy BLOCKs a signal the ``hybrid_move_probability`` is clamped
-to 0.0; DOWNGRADEd signals are halved.  Components carry full diagnostic
-detail (policy_decision, policy_reason, size_multiplier, etc.).
+Key Changes:
+  1. Use engine's hybrid_move_probability as THE base probability
+  2. ML models provide decision-policy context (ALLOW/DOWNGRADE/BLOCK)
+  3. Policy modifies the engine probability via multipliers, not replacement
+  4. Add validation to keep probability in [0, 1]
 
 RESEARCH ONLY — set PREDICTION_METHOD=research_decision_policy to activate.
 """
@@ -29,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 class ResearchDecisionPolicyPredictor:
     """
-    Decision-policy-aware predictor built on top of the dual-model layer.
+    Decision-policy-aware predictor built on top of the dual-model layer
+    (CORRECTED: uses engine probability as base, not ML replacement).
     """
 
     @property
@@ -52,7 +50,7 @@ class ResearchDecisionPolicyPredictor:
         # ★ CRITICAL FIX: Keep engine probability as the base
         engine_hybrid_prob = raw.get("hybrid_move_probability")
 
-        # 2. Research dual-model overlay (for policy context only, NOT replacement)
+        # 2. Research dual-model overlay (for policy context only)
         rank_score = None
         confidence_score = None
         try:
@@ -91,17 +89,17 @@ class ResearchDecisionPolicyPredictor:
             logger.debug("Decision policy evaluation failed — defaulting to ALLOW", exc_info=True)
 
         # 4. ★ CORRECTED: Apply policy as OVERLAY on engine probability
-        # Use engine probability as base, modify via policy decision and size multiplier
+        # Use engine probability as base, modify via policy decision
         effective_prob = engine_hybrid_prob
         
         if policy_decision == "BLOCK":
             effective_prob = 0.0
         elif policy_decision == "DOWNGRADE" and effective_prob is not None:
-            # Use size_multiplier from policy, not hardcoded 0.5
+            # Policy applies sizing penalty, not ML re-penalization
             effective_prob = effective_prob * size_multiplier
         # ALLOW: leave engine probability unchanged
 
-        # 5. Validate effective_prob stays in valid range [0, 1]
+        # 5. Validate effective_prob stays in valid range
         if effective_prob is not None:
             effective_prob = max(0.0, min(1.0, effective_prob))
 

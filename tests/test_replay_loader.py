@@ -7,6 +7,7 @@ import pytest
 from data.replay_loader import (
     list_replay_chain_snapshots,
     load_option_chain_snapshot,
+    validate_snapshot_consistency,
     resolve_replay_snapshot_paths,
 )
 
@@ -67,3 +68,18 @@ def test_load_option_chain_snapshot_raises_clear_error_for_empty_csv(tmp_path):
 
     with pytest.raises(ValueError, match="empty or malformed"):
         load_option_chain_snapshot(str(empty_file))
+
+
+def test_validate_snapshot_consistency_ignores_expiry_columns_for_timestamp_checks():
+    spot_snapshot = {"timestamp": "2026-03-20T09:20:00+05:30"}
+    chain = __import__("pandas").DataFrame(
+        {
+            "EXPIRY_DT": ["2026-03-27"],
+            "strikePrice": [23000],
+            "OPTION_TYP": ["CE"],
+        }
+    )
+
+    result = validate_snapshot_consistency(spot_snapshot, chain)
+    assert result["is_consistent"] is True
+    assert result["warnings"] == []

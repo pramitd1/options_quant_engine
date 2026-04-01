@@ -59,6 +59,7 @@ from tuning.runtime import get_active_parameter_pack, temporary_parameter_pack
 from tuning.promotion import get_promotion_runtime_context
 
 _cumulative_sync_done = False
+_cumulative_sync_attempts = 0
 _NON_FATAL_SPOT_OBSERVATION_ERRORS = (OSError, TypeError, ValueError)
 
 
@@ -76,18 +77,35 @@ def validate_spot_snapshot(*args, **kwargs):
 
 def _ensure_cumulative_sync() -> None:
     """Run ``sync_live_to_cumulative`` at most once per process."""
-    global _cumulative_sync_done
+    global _cumulative_sync_done, _cumulative_sync_attempts
     if _cumulative_sync_done:
         return
-    _cumulative_sync_done = True
+    # Retry a small number of times so transient startup faults do not
+    # permanently disable archival for the lifetime of the process.
+    if _cumulative_sync_attempts >= 3:
+        return
+    _cumulative_sync_attempts += 1
     try:
         synced = sync_live_to_cumulative()
+        _cumulative_sync_done = True
         if synced:
             logging.getLogger(__name__).info(
                 "Startup archival: synced %d live signal(s) to cumulative dataset", synced
             )
     except Exception as exc:
         logging.getLogger(__name__).warning("Startup cumulative sync failed: %s", exc)
+
+
+def _strict_overlay_fail_closed_enabled(*, mode: str | None, backtest_mode: bool) -> bool:
+    """Return whether runtime should block trading when overlay construction fails."""
+    if backtest_mode:
+        return False
+    mode_upper = str(mode or "").upper().strip()
+    if mode_upper in {"REPLAY"}:
+        return False
+
+    raw = os.getenv("RUNTIME_FAIL_CLOSED_ON_OVERLAY_FAILURE", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _set_runtime_credentials(source: str, credentials: Optional[Dict[str, str]] = None) -> None:
@@ -716,6 +734,7 @@ def _build_result_payload(
     trade: dict | None,
     authoritative_pack_name: str,
     signal_capture_policy: str,
+    fatal_runtime_block: bool = False,
 ) -> Dict[str, object]:
     """
     Purpose:
@@ -763,7 +782,7 @@ def _build_result_payload(
     # Guard: mark ok=False only if data quality is explicitly weak
     final_data_quality = (trade or {}).get("data_quality_status", None) if trade else None
     # Default to ok=True for backward compat; only fail if explicitly weak
-    ok_status = final_data_quality != "WEAK"
+    ok_status = (final_data_quality != "WEAK") and (not fatal_runtime_block)
     
     return {
         "ok": ok_status,
@@ -979,6 +998,7 @@ def _evaluate_snapshot_for_pack(
     holding_profile: str,
     spot_timestamp,
     backtest_mode: bool = False,
+    mode: Optional[str] = None,
     pre_market_context: Optional[dict] = None,
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
@@ -1026,6 +1046,9 @@ def _evaluate_snapshot_for_pack(
     with context_manager:
         active_pack_name = get_active_parameter_pack()["name"]
         
+        macro_news_build_failed = False
+        global_risk_build_failed = False
+
         # Build macro_news_state with fallback to neutral on error
         try:
             macro_news_state = build_macro_news_state(
@@ -1035,6 +1058,7 @@ def _evaluate_snapshot_for_pack(
                 symbol=symbol,
             ).to_dict()
         except Exception as exc:
+            macro_news_build_failed = True
             logging.getLogger(__name__).warning(
                 "build_macro_news_state failed for %s: %s, using neutral fallback",
                 symbol, exc
@@ -1055,6 +1079,7 @@ def _evaluate_snapshot_for_pack(
                 as_of=spot_timestamp,
             )
         except Exception as exc:
+            global_risk_build_failed = True
             logging.getLogger(__name__).warning(
                 "build_global_risk_state failed for %s: %s, using neutral fallback",
                 symbol, exc
@@ -1068,6 +1093,34 @@ def _evaluate_snapshot_for_pack(
                 active_event_name=macro_event_state.get("active_event_name") if macro_event_state else None,
                 holding_profile=holding_profile,
             )
+
+        strict_fail_closed = _strict_overlay_fail_closed_enabled(mode=mode, backtest_mode=backtest_mode)
+        overlay_failure_reasons = []
+        if macro_news_build_failed:
+            overlay_failure_reasons.append("macro_news_state_construction_failed")
+        if global_risk_build_failed:
+            overlay_failure_reasons.append("global_risk_state_construction_failed")
+
+        overlay_fail_closed_blocked = bool(strict_fail_closed and overlay_failure_reasons)
+        if overlay_fail_closed_blocked:
+            spot_validation = dict(spot_validation or {})
+            spot_validation["is_valid"] = False
+            issues = spot_validation.get("issues") if isinstance(spot_validation.get("issues"), list) else []
+            issues.extend(overlay_failure_reasons)
+            spot_validation["issues"] = issues
+            logging.getLogger(__name__).error(
+                "Fail-closed runtime block for %s due to overlay construction failure(s): %s",
+                symbol,
+                ",".join(overlay_failure_reasons),
+            )
+
+        if isinstance(macro_news_state, dict):
+            macro_news_state["construction_failed"] = macro_news_build_failed
+        if isinstance(global_risk_state, dict):
+            global_risk_state["construction_failed"] = global_risk_build_failed
+            global_risk_state["overlay_fail_closed_blocked"] = overlay_fail_closed_blocked
+            if overlay_failure_reasons:
+                global_risk_state["overlay_failure_reasons"] = overlay_failure_reasons
 
         trade = None
         if spot_validation.get("is_valid", False) and option_chain_validation.get("is_valid", False):
@@ -1106,6 +1159,7 @@ def _evaluate_snapshot_for_pack(
             "macro_news_state": macro_news_state,
             "global_risk_state": global_risk_state,
             "trade": trade,
+            "overlay_fail_closed_blocked": overlay_fail_closed_blocked,
         }
 
 
@@ -1270,6 +1324,7 @@ def run_preloaded_engine_snapshot(
             holding_profile=holding_profile,
             spot_timestamp=snapshot_context["spot_timestamp"],
             backtest_mode=backtest_mode,
+            mode=mode,
             pre_market_context=pre_market_context,
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
@@ -1305,6 +1360,7 @@ def run_preloaded_engine_snapshot(
             trade=trade,
             authoritative_pack_name=authoritative_eval["parameter_pack_name"],
             signal_capture_policy=signal_capture_policy,
+            fatal_runtime_block=bool(authoritative_eval.get("overlay_fail_closed_blocked")),
         )
 
         _maybe_attach_shadow_evaluation(

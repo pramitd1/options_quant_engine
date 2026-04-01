@@ -5,6 +5,9 @@ import pytest
 import pandas as pd
 from pathlib import Path
 
+from backtest.holistic_backtest_runner import evaluate_eod_outcomes
+from config.signal_evaluation_policy import SIGNAL_EVALUATION_HORIZON_MINUTES
+
 
 def test_backtest_missing_parameter_pack():
     """Backtest with missing parameter pack returns clear error."""
@@ -214,3 +217,84 @@ def test_backtest_incomplete_strike_pairing():
     # 23200 has only PE, 23300 has only CE
     assert 23200 in unpaired
     assert 23300 in unpaired
+
+
+def test_eod_outcomes_disable_intraday_scoring_for_synthetic_path(monkeypatch):
+    row = {
+        "signal_timestamp": "2026-03-20T09:15:00+05:30",
+        "spot_at_signal": 100.0,
+        "direction": "CALL",
+        "selected_expiry": "2026-03-27",
+        "entry_price": 100.0,
+        "target": 105.0,
+        "stop_loss": 95.0,
+    }
+    realized = pd.DataFrame(
+        {
+            "timestamp": [
+                pd.Timestamp("2026-03-20T09:15:00+05:30"),
+                pd.Timestamp("2026-03-20T15:30:00+05:30"),
+            ],
+            "spot": [100.0, 101.0],
+        }
+    )
+    realized.attrs["synthetic_intraday"] = True
+
+    spot_daily = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-03-20", "2026-03-21"]),
+            "open": [100.0, 101.0],
+            "high": [102.0, 103.0],
+            "low": [99.0, 100.0],
+            "close": [101.0, 102.0],
+        }
+    )
+    monkeypatch.setattr("backtest.holistic_backtest_runner._load_spot_daily", lambda: spot_daily)
+
+    out = evaluate_eod_outcomes(row, realized, [pd.Timestamp("2026-03-20").date(), pd.Timestamp("2026-03-21").date()])
+    for horizon in SIGNAL_EVALUATION_HORIZON_MINUTES:
+        assert pd.isna(out[f"spot_{horizon}m"])
+        assert pd.isna(out[f"correct_{horizon}m"])
+    assert out["intraday_eval_disabled_reason"] == "synthetic_intraday_path"
+
+
+def test_eod_outcomes_marks_same_bar_target_stop_as_ambiguous(monkeypatch):
+    row = {
+        "signal_timestamp": "2026-03-20T09:15:00+05:30",
+        "spot_at_signal": 100.0,
+        "direction": "CALL",
+        "selected_expiry": "2026-03-22",
+        "entry_price": 100.0,
+        "target": 104.0,
+        "stop_loss": 96.0,
+    }
+    realized = pd.DataFrame(
+        {
+            "timestamp": [
+                pd.Timestamp("2026-03-20T09:15:00+05:30"),
+                pd.Timestamp("2026-03-20T15:30:00+05:30"),
+            ],
+            "spot": [100.0, 100.0],
+        }
+    )
+    realized.attrs["synthetic_intraday"] = True
+
+    spot_daily = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-03-20", "2026-03-21", "2026-03-22"]),
+            "open": [100.0, 100.0, 100.0],
+            "high": [101.0, 140.0, 100.0],
+            "low": [99.0, 60.0, 99.0],
+            "close": [100.0, 100.0, 100.0],
+        }
+    )
+    monkeypatch.setattr("backtest.holistic_backtest_runner._load_spot_daily", lambda: spot_daily)
+
+    out = evaluate_eod_outcomes(
+        row,
+        realized,
+        [pd.Timestamp("2026-03-20").date(), pd.Timestamp("2026-03-21").date(), pd.Timestamp("2026-03-22").date()],
+    )
+
+    assert out.get("target_stop_same_bar_ambiguous") is True
+    assert out.get("stop_loss_hit") is True

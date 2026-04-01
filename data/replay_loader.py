@@ -117,12 +117,14 @@ def validate_snapshot_consistency(
             warnings.append("spot_snapshot_timestamp_unparseable")
             spot_dt = None
     
-    # Check option chain for any timestamp column
+    # Compare against true snapshot timestamps only. Expiry metadata is not a
+    # chain-capture timestamp and must not be used for temporal alignment checks.
     chain_ts_candidates = [
-        option_chain.get("EXPIRY_DT"),
-        option_chain.get("expiry_dt"),
         option_chain.get("TIMESTAMP"),
         option_chain.get("timestamp"),
+        option_chain.get("snapshot_timestamp"),
+        option_chain.get("as_of"),
+        option_chain.get("trade_timestamp"),
     ]
     chain_ts = next((ts for ts in chain_ts_candidates if ts is not None and not ts.empty), None)
     

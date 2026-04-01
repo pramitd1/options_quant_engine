@@ -111,6 +111,9 @@ def _fallback_global_risk_state(
     Notes:
         The fallback intentionally biases toward caution so event-driven risk is still surfaced even if cross-asset feeds are delayed or unavailable.
     """
+    holding_profile_norm = str(holding_profile or "AUTO").upper().strip() or "AUTO"
+    overnight_relevant = holding_profile_norm in {"AUTO", "OVERNIGHT", "SWING", "POSITIONAL"}
+
     state = "EVENT_LOCKDOWN" if event_lockdown_flag else "GLOBAL_NEUTRAL"
     score = 100 if event_lockdown_flag else int(_clip(_safe_float(macro_event_risk_score, 0.0) * 0.5, 0.0, 100.0))
     reasons = ["event_lockdown"] if event_lockdown_flag else ["global_risk_neutral_fallback"]
@@ -128,8 +131,8 @@ def _fallback_global_risk_state(
         "global_risk_position_size_multiplier": 0.0 if event_lockdown_flag else 1.0,
         "neutral_fallback": True,
         "holding_context": {
-            "holding_profile": str(holding_profile or "AUTO").upper().strip() or "AUTO",
-            "overnight_relevant": False,
+            "holding_profile": holding_profile_norm,
+            "overnight_relevant": overnight_relevant,
             "market_session": "UNKNOWN",
             "minutes_to_close": None,
         },

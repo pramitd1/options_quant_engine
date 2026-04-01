@@ -19,8 +19,12 @@ Downstream Usage:
 from __future__ import annotations
 
 import math
+import json
+import logging
+import os
 import re
 from datetime import date
+from pathlib import Path
 
 from analytics.greeks_engine import compute_option_greeks, _parse_expiry_years
 from analytics.signal_confidence import compute_signal_confidence
@@ -328,7 +332,41 @@ def _print_section(title, fields):
         print(f"{key:26}: {_fmt(value)}")
 
 
-def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False, option_chain_frame=None):
+def _build_trade_for_oi_inference(*, trade, result, spot_summary):
+    """Build a trade context enriched with baseline frames for OI inference."""
+    if not isinstance(trade, dict):
+        return None
+
+    enriched = dict(trade)
+    if isinstance(spot_summary, dict):
+        enriched["prev_close"] = spot_summary.get("prev_close")
+
+    if isinstance(result, dict):
+        enriched["previous_chain_frame"] = result.get("previous_chain_frame")
+        enriched["premium_baseline_chain_frames"] = result.get("premium_baseline_chain_frames")
+        enriched["premium_baseline_labels"] = result.get("premium_baseline_labels")
+        enriched["premium_baseline_chain_frame"] = result.get("premium_baseline_chain_frame")
+        enriched["zerodha_oi_baseline_chain_frame"] = result.get("zerodha_oi_baseline_chain_frame")
+
+    return enriched
+
+
+def _get_top_oi_levels_cached(*, result, trade_for_oi, option_chain_frame, top_n=5):
+    """Resolve top OI levels once per snapshot and reuse across renderer sections."""
+    if not isinstance(result, dict):
+        return _resolve_top_oi_levels(trade_for_oi, option_chain_frame, top_n=top_n)
+
+    cache = result.setdefault("_top_oi_levels_cache", {})
+    cache_key = str(top_n)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    levels = _resolve_top_oi_levels(trade_for_oi, option_chain_frame, top_n=top_n)
+    cache[cache_key] = levels
+    return levels
+
+
+def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False, option_chain_frame=None, precomputed_oi_levels=None):
     """Resolve strongest top-N resistance/support walls from trade payload."""
     if not isinstance(trade, dict):
         return [], []
@@ -421,8 +459,11 @@ def _resolve_top_liquidity_walls(trade, *, top_n=3, formatted=False, option_chai
 
         # 1) Fill from top OI strikes when option-chain frame is available.
         if len(top_supports) < top_n or len(top_resistances) < top_n:
-            oi_calls, oi_puts = _resolve_top_oi_levels(trade, option_chain_frame, top_n=max(2 * top_n, 6))
-            for level, _oi, _chg_oi, _inf, _uses_snapshot_proxy in (oi_calls + oi_puts):
+            if precomputed_oi_levels is not None:
+                oi_calls, oi_puts = precomputed_oi_levels
+            else:
+                oi_calls, oi_puts = _resolve_top_oi_levels(trade, option_chain_frame, top_n=max(2 * top_n, 6))
+            for level, _oi, _chg_oi, _inf, _uses_snapshot_proxy, _confidence, _reason_code, _horizon_signature, _debug_payload in (oi_calls + oi_puts):
                 if level <= spot_f:
                     _append_unique(top_supports, level, side="support")
                 if level >= spot_f:
@@ -605,7 +646,13 @@ def _format_expected_move_display(*, spot, straddle_points, straddle_pct, expect
 
 
 def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
-    """Resolve top-N CE/PE strikes with raw OI and OI-change values."""
+    """Resolve top-N CE/PE strikes with OI, OI change, and side inference.
+
+    Inference priority:
+    1) Use option premium delta against rolling 5m / 3m / 1m baselines.
+    2) Fallback to previous snapshot premium delta when rolling baselines are unavailable.
+    3) Fallback to underlying move vs prev_close when premium history is unavailable.
+    """
     if option_chain_frame is None or not hasattr(option_chain_frame, "copy"):
         return [], []
 
@@ -629,6 +676,7 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
     oi_col = _pick_col(["open_interest", "OPEN_INT", "openInterest", "oi"])
     type_col = _pick_col(["option_type", "OPTION_TYP", "type", "instrument_type"])
     oi_change_col = _pick_col(["CHG_IN_OI", "changeinOI", "change_in_oi"])
+    ltp_col = _pick_col(["last_price", "lastPrice", "ltp", "LAST_PRICE", "close", "close_price"])
     expiry_col = _pick_col(["selected_expiry", "EXPIRY_DT", "expiry", "expiry_date"])
 
     if not strike_col or not oi_col or not type_col:
@@ -648,11 +696,15 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
     selected_cols = [strike_col, oi_col, type_col]
     if oi_change_col:
         selected_cols.append(oi_change_col)
+    if ltp_col:
+        selected_cols.append(ltp_col)
     slim = df[selected_cols].copy()
     slim[strike_col] = pd.to_numeric(slim[strike_col], errors="coerce")
     slim[oi_col] = pd.to_numeric(slim[oi_col], errors="coerce")
     if oi_change_col:
         slim[oi_change_col] = pd.to_numeric(slim[oi_change_col], errors="coerce").fillna(0.0)
+    if ltp_col:
+        slim[ltp_col] = pd.to_numeric(slim[ltp_col], errors="coerce")
     slim[type_col] = slim[type_col].astype(str).str.upper().str.strip()
     slim = slim.dropna(subset=[strike_col, oi_col])
     if slim.empty:
@@ -665,7 +717,99 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
         except Exception:
             source_name = ""
 
+    def _build_chain_lookup_maps(chain_frame):
+        if chain_frame is None or not hasattr(chain_frame, "copy"):
+            return None, None
+
+        prev_df = chain_frame.copy()
+
+        def _pick_prev_col(candidates):
+            for col in candidates:
+                if col in prev_df.columns:
+                    return col
+            return None
+
+        prev_strike_col = _pick_prev_col(["strike", "STRIKE_PR", "strikePrice", "strike_price"])
+        prev_oi_col = _pick_prev_col(["open_interest", "OPEN_INT", "openInterest", "oi"])
+        prev_type_col = _pick_prev_col(["option_type", "OPTION_TYP", "type", "instrument_type"])
+        prev_ltp_col = _pick_prev_col(["last_price", "lastPrice", "ltp", "LAST_PRICE", "close", "close_price"])
+        prev_expiry_col = _pick_prev_col(["selected_expiry", "EXPIRY_DT", "expiry", "expiry_date"])
+
+        if not prev_strike_col or not prev_oi_col or not prev_type_col:
+            return None, None
+
+        prev_selected_cols = [prev_strike_col, prev_oi_col, prev_type_col]
+        if prev_ltp_col:
+            prev_selected_cols.append(prev_ltp_col)
+        if prev_expiry_col:
+            prev_selected_cols.append(prev_expiry_col)
+
+        prev_slim = prev_df[prev_selected_cols].copy()
+        prev_slim[prev_strike_col] = pd.to_numeric(prev_slim[prev_strike_col], errors="coerce")
+        prev_slim[prev_oi_col] = pd.to_numeric(prev_slim[prev_oi_col], errors="coerce")
+        if prev_ltp_col:
+            prev_slim[prev_ltp_col] = pd.to_numeric(prev_slim[prev_ltp_col], errors="coerce")
+        prev_slim[prev_type_col] = prev_slim[prev_type_col].astype(str).str.upper().str.strip()
+        prev_slim = prev_slim.dropna(subset=[prev_strike_col, prev_oi_col])
+        if prev_slim.empty:
+            return None, None
+
+        prev_group_cols = [prev_strike_col, prev_type_col]
+        if prev_expiry_col:
+            prev_group_cols.append(prev_expiry_col)
+        prev_agg_map = {prev_oi_col: "max"}
+        if prev_ltp_col:
+            prev_agg_map[prev_ltp_col] = "max"
+        prev_slim = prev_slim.groupby(prev_group_cols, as_index=False).agg(prev_agg_map)
+
+        if prev_expiry_col:
+            prev_oi_map = {
+                (float(r[prev_strike_col]), str(r[prev_type_col]), str(r[prev_expiry_col])): float(r[prev_oi_col])
+                for _idx, r in prev_slim.iterrows()
+            }
+            prev_premium_map = {
+                (float(r[prev_strike_col]), str(r[prev_type_col]), str(r[prev_expiry_col])): float(r[prev_ltp_col])
+                for _idx, r in prev_slim.iterrows()
+            } if prev_ltp_col else None
+        else:
+            prev_oi_map = {
+                (float(r[prev_strike_col]), str(r[prev_type_col]), None): float(r[prev_oi_col])
+                for _idx, r in prev_slim.iterrows()
+            }
+            prev_premium_map = {
+                (float(r[prev_strike_col]), str(r[prev_type_col]), None): float(r[prev_ltp_col])
+                for _idx, r in prev_slim.iterrows()
+            } if prev_ltp_col else None
+
+        return prev_oi_map, prev_premium_map
+
+    premium_baseline_frames = {}
+    if isinstance(trade, dict):
+        raw_frames = trade.get("premium_baseline_chain_frames") or {}
+        if isinstance(raw_frames, dict):
+            for horizon_name, frame in raw_frames.items():
+                if frame is not None:
+                    premium_baseline_frames[str(horizon_name)] = frame
+        legacy_premium_frame = trade.get("premium_baseline_chain_frame")
+        if legacy_premium_frame is not None and "5m" not in premium_baseline_frames:
+            premium_baseline_frames["5m"] = legacy_premium_frame
+
+    if isinstance(option_chain_frame, pd.DataFrame):
+        raw_frames = option_chain_frame.attrs.get("premium_baseline_chain_frames") or {}
+        if isinstance(raw_frames, dict):
+            for horizon_name, frame in raw_frames.items():
+                if frame is not None and str(horizon_name) not in premium_baseline_frames:
+                    premium_baseline_frames[str(horizon_name)] = frame
+        legacy_premium_frame = option_chain_frame.attrs.get("premium_baseline_chain_frame")
+        if legacy_premium_frame is not None and "5m" not in premium_baseline_frames:
+            premium_baseline_frames["5m"] = legacy_premium_frame
+
+    fallback_previous_chain = trade.get("previous_chain_frame") if isinstance(trade, dict) else None
+    if fallback_previous_chain is None and isinstance(option_chain_frame, pd.DataFrame):
+        fallback_previous_chain = option_chain_frame.attrs.get("previous_chain_frame")
+
     previous_oi_by_key = None
+
     native_oi_change_missing = False
     if source_name == "ZERODHA":
         if oi_change_col:
@@ -678,73 +822,76 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
             native_oi_change_missing = True
 
     if source_name == "ZERODHA" and native_oi_change_missing:
-        previous_chain = trade.get("zerodha_oi_baseline_chain_frame") if isinstance(trade, dict) else None
-        if previous_chain is None and isinstance(trade, dict):
-            previous_chain = trade.get("previous_chain_frame")
-        if previous_chain is None and isinstance(option_chain_frame, pd.DataFrame):
-            previous_chain = option_chain_frame.attrs.get("zerodha_oi_baseline_chain_frame")
-        if previous_chain is None and isinstance(option_chain_frame, pd.DataFrame):
-            previous_chain = option_chain_frame.attrs.get("previous_chain_frame")
+        zerodha_baseline = trade.get("zerodha_oi_baseline_chain_frame") if isinstance(trade, dict) else None
+        if zerodha_baseline is None and isinstance(option_chain_frame, pd.DataFrame):
+            zerodha_baseline = option_chain_frame.attrs.get("zerodha_oi_baseline_chain_frame")
+        if zerodha_baseline is not None:
+            previous_oi_by_key, _unused = _build_chain_lookup_maps(zerodha_baseline)
+        elif fallback_previous_chain is not None:
+            previous_oi_by_key, _unused = _build_chain_lookup_maps(fallback_previous_chain)
 
-        if previous_chain is not None and hasattr(previous_chain, "copy"):
-            prev_df = previous_chain.copy()
+    premium_lookup_maps = {}
+    for horizon_name in ("1m", "3m", "5m"):
+        premium_frame = premium_baseline_frames.get(horizon_name)
+        _unused_oi_map, premium_lookup_map = _build_chain_lookup_maps(premium_frame)
+        if premium_lookup_map:
+            premium_lookup_maps[horizon_name] = premium_lookup_map
 
-            def _pick_prev_col(candidates):
-                for col in candidates:
-                    if col in prev_df.columns:
-                        return col
-                return None
-
-            prev_strike_col = _pick_prev_col(["strike", "STRIKE_PR", "strikePrice", "strike_price"])
-            prev_oi_col = _pick_prev_col(["open_interest", "OPEN_INT", "openInterest", "oi"])
-            prev_type_col = _pick_prev_col(["option_type", "OPTION_TYP", "type", "instrument_type"])
-            prev_expiry_col = _pick_prev_col(["selected_expiry", "EXPIRY_DT", "expiry", "expiry_date"])
-
-            if prev_strike_col and prev_oi_col and prev_type_col:
-                prev_selected_cols = [prev_strike_col, prev_oi_col, prev_type_col]
-                if prev_expiry_col:
-                    prev_selected_cols.append(prev_expiry_col)
-                prev_slim = prev_df[prev_selected_cols].copy()
-                prev_slim[prev_strike_col] = pd.to_numeric(prev_slim[prev_strike_col], errors="coerce")
-                prev_slim[prev_oi_col] = pd.to_numeric(prev_slim[prev_oi_col], errors="coerce")
-                prev_slim[prev_type_col] = prev_slim[prev_type_col].astype(str).str.upper().str.strip()
-                prev_slim = prev_slim.dropna(subset=[prev_strike_col, prev_oi_col])
-
-                if not prev_slim.empty:
-                    prev_group_cols = [prev_strike_col, prev_type_col]
-                    if prev_expiry_col:
-                        prev_group_cols.append(prev_expiry_col)
-                    prev_slim = prev_slim.groupby(prev_group_cols, as_index=False).agg({prev_oi_col: "max"})
-                    if prev_expiry_col:
-                        previous_oi_by_key = {
-                            (float(r[prev_strike_col]), str(r[prev_type_col]), str(r[prev_expiry_col])): float(r[prev_oi_col])
-                            for _idx, r in prev_slim.iterrows()
-                        }
-                    else:
-                        previous_oi_by_key = {
-                            (float(r[prev_strike_col]), str(r[prev_type_col]), None): float(r[prev_oi_col])
-                            for _idx, r in prev_slim.iterrows()
-                        }
+    fallback_previous_premium_map = None
+    if fallback_previous_chain is not None:
+        _unused_oi_map, fallback_previous_premium_map = _build_chain_lookup_maps(fallback_previous_chain)
 
     agg_map = {oi_col: "max"}
     if oi_change_col:
         agg_map[oi_change_col] = "sum"
+    if ltp_col:
+        agg_map[ltp_col] = "max"
     slim = slim.groupby([strike_col, type_col], as_index=False).agg(agg_map)
 
-    if previous_oi_by_key is not None:
-        expiry_key_value = None
-        if selected_expiry is not None:
-            try:
-                expiry_key_value = str(pd.Timestamp(selected_expiry).date())
-            except Exception:
-                expiry_key_value = str(selected_expiry)
+    expiry_key_value = None
+    if selected_expiry is not None:
+        try:
+            expiry_key_value = str(pd.Timestamp(selected_expiry).date())
+        except Exception:
+            expiry_key_value = str(selected_expiry)
 
+    def _lookup_baseline_value(lookup_map, strike_value, option_value):
+        if lookup_map is None:
+            return None
+        lookup_key = (float(strike_value), str(option_value), expiry_key_value)
+        fallback_key = (float(strike_value), str(option_value), None)
+        value = lookup_map.get(lookup_key)
+        if value is None:
+            value = lookup_map.get(fallback_key)
+        return value
+
+    def _derive_premium_change(row, lookup_map):
+        if ltp_col is None or lookup_map is None:
+            return None
+        prev_premium = _lookup_baseline_value(lookup_map, row[strike_col], row[type_col])
+        curr_premium = row.get(ltp_col)
+        try:
+            if prev_premium is None or curr_premium is None or pd.isna(curr_premium):
+                return None
+            return float(curr_premium) - float(prev_premium)
+        except Exception:
+            return None
+
+    for horizon_name in ("1m", "3m", "5m"):
+        slim[f"_premium_change_{horizon_name}"] = slim.apply(
+            lambda row, lookup_map=premium_lookup_maps.get(horizon_name): _derive_premium_change(row, lookup_map),
+            axis=1,
+        )
+    slim["_premium_change_prev"] = slim.apply(
+        lambda row: _derive_premium_change(row, fallback_previous_premium_map),
+        axis=1,
+    )
+
+    use_snapshot_oi_change = source_name == "ZERODHA" and native_oi_change_missing and previous_oi_by_key is not None
+
+    if use_snapshot_oi_change:
         def _derive_snapshot_oi_change(row):
-            lookup_key = (float(row[strike_col]), str(row[type_col]), expiry_key_value)
-            fallback_key = (float(row[strike_col]), str(row[type_col]), None)
-            prev_oi = previous_oi_by_key.get(lookup_key)
-            if prev_oi is None:
-                prev_oi = previous_oi_by_key.get(fallback_key)
+            prev_oi = _lookup_baseline_value(previous_oi_by_key, row[strike_col], row[type_col])
             if prev_oi is None:
                 return None, False
             return float(row[oi_col]) - float(prev_oi), True
@@ -773,25 +920,51 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
     except (TypeError, ValueError):
         prev_close_f = None
 
-    def _infer_side(option_type, oi_change):
+    def _underlying_premium_proxy(option_type):
+        if prev_close_f is None or spot_f is None:
+            return False, False
+        price_bias_up = spot_f > prev_close_f
+        price_bias_down = spot_f < prev_close_f
+        opt = str(option_type or "").upper()
+        if opt in {"CE", "CALL", "C"}:
+            return price_bias_up, price_bias_down
+        return price_bias_down, price_bias_up
+
+    def _primary_premium_change(row):
+        for horizon_name in ("5m", "3m", "1m"):
+            value = row.get(f"_premium_change_{horizon_name}")
+            if value is not None and pd.notna(value):
+                return value
+        value = row.get("_premium_change_prev")
+        if value is not None and pd.notna(value):
+            return value
+        return None
+
+    def _infer_side(option_type, oi_change, premium_change):
         try:
             oi_chg_f = float(oi_change) if oi_change is not None else None
         except (TypeError, ValueError):
             oi_chg_f = None
 
-        if oi_chg_f is None or prev_close_f is None or spot_f is None:
+        try:
+            premium_chg_f = float(premium_change) if premium_change is not None else None
+        except (TypeError, ValueError):
+            premium_chg_f = None
+
+        if oi_chg_f is None:
             return "OI_ONLY"
 
-        price_bias_up = spot_f > prev_close_f
-        price_bias_down = spot_f < prev_close_f
+        premium_up_proxy = False
+        premium_down_proxy = False
 
-        opt = str(option_type or "").upper()
-        if opt in {"CE", "CALL", "C"}:
-            premium_up_proxy = price_bias_up
-            premium_down_proxy = price_bias_down
+        if premium_chg_f is not None:
+            eps = 1e-9
+            premium_up_proxy = premium_chg_f > eps
+            premium_down_proxy = premium_chg_f < -eps
         else:
-            premium_up_proxy = price_bias_down
-            premium_down_proxy = price_bias_up
+            premium_up_proxy, premium_down_proxy = _underlying_premium_proxy(option_type)
+            if not premium_up_proxy and not premium_down_proxy:
+                return "OI_ONLY"
 
         if oi_chg_f > 0:
             if premium_up_proxy:
@@ -809,6 +982,99 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
 
         return "OI_FLAT"
 
+    def _premium_sign(raw_value):
+        try:
+            value = float(raw_value) if raw_value is not None else None
+        except (TypeError, ValueError):
+            value = None
+        if value is None:
+            return "0"
+        if value > 1e-9:
+            return "+"
+        if value < -1e-9:
+            return "-"
+        return "0"
+
+    def _inference_confidence(*, option_type, oi_value, oi_change, premium_changes, current_premium, uses_snapshot_oi_proxy):
+        try:
+            oi_f = float(oi_value) if oi_value is not None else None
+        except (TypeError, ValueError):
+            oi_f = None
+
+        try:
+            oi_chg_f = float(oi_change) if oi_change is not None else None
+        except (TypeError, ValueError):
+            oi_chg_f = None
+
+        if oi_chg_f is None:
+            return 0.0, "OI_ONLY"
+
+        try:
+            current_premium_f = float(current_premium) if current_premium is not None else None
+        except (TypeError, ValueError):
+            current_premium_f = None
+
+        weights = {"1m": 0.22, "3m": 0.33, "5m": 0.45}
+        horizon_components = {}
+        weighted_direction = 0.0
+        total_horizon_weight = 0.0
+        available_horizons = 0
+
+        premium_scale_den = max(abs(current_premium_f or 0.0), 10.0)
+        for horizon_name, weight in weights.items():
+            raw_value = premium_changes.get(horizon_name)
+            try:
+                premium_chg_f = float(raw_value) if raw_value is not None else None
+            except (TypeError, ValueError):
+                premium_chg_f = None
+            if premium_chg_f is None:
+                horizon_components[horizon_name] = 0.0
+                continue
+
+            available_horizons += 1
+            total_horizon_weight += weight
+            normalized_strength = min(abs(premium_chg_f) / premium_scale_den, 1.0)
+            signed_component = weight * normalized_strength * (1.0 if premium_chg_f > 0 else -1.0 if premium_chg_f < 0 else 0.0)
+            horizon_components[horizon_name] = signed_component
+            weighted_direction += signed_component
+
+        fallback_prev_component = 0.0
+        try:
+            fallback_prev_change = float(premium_changes.get("prev")) if premium_changes.get("prev") is not None else None
+        except (TypeError, ValueError):
+            fallback_prev_change = None
+        if available_horizons == 0 and fallback_prev_change is not None:
+            fallback_prev_component = 0.28 * min(abs(fallback_prev_change) / premium_scale_den, 1.0)
+            weighted_direction = fallback_prev_component * (1.0 if fallback_prev_change > 0 else -1.0 if fallback_prev_change < 0 else 0.0)
+
+        oi_scale_den = max((abs(oi_f) * 0.08) if oi_f is not None else 0.0, 1000.0)
+        oi_strength = min(abs(oi_chg_f) / oi_scale_den, 1.0)
+
+        underlying_up, underlying_down = _underlying_premium_proxy(option_type)
+        dominant_premium_up = weighted_direction > 1e-9
+        dominant_premium_down = weighted_direction < -1e-9
+        has_premium_signal = available_horizons > 0 or fallback_prev_change is not None
+
+        agreement_boost = 0.0
+        if has_premium_signal and ((dominant_premium_up and underlying_up) or (dominant_premium_down and underlying_down)):
+            agreement_boost = 0.08
+        elif has_premium_signal and ((dominant_premium_up and underlying_down) or (dominant_premium_down and underlying_up)):
+            agreement_boost = -0.08
+
+        premium_strength_score = min(abs(weighted_direction), 1.0)
+        if available_horizons >= 2 and abs(weighted_direction) >= 0.25:
+            reason_code = "PREMIUM_STRONG_AGREE" if agreement_boost > 0 else "PREMIUM_STRONG_CONFLICT" if agreement_boost < 0 else "PREMIUM_STRONG"
+        elif has_premium_signal:
+            reason_code = "PREMIUM_WEAK_AGREE" if agreement_boost > 0 else "PREMIUM_WEAK_CONFLICT" if agreement_boost < 0 else "PREMIUM_WEAK"
+        else:
+            reason_code = "PROXY_ONLY"
+
+        snapshot_penalty = -0.05 if uses_snapshot_oi_proxy else 0.0
+        base = 0.58 if available_horizons > 0 else 0.50 if fallback_prev_change is not None else 0.40
+        confidence = base + (0.22 * oi_strength) + (0.24 * premium_strength_score) + agreement_boost + snapshot_penalty
+        confidence = max(0.0, min(0.99, confidence))
+        return round(confidence, 2), reason_code
+
     def _top_for(opt_labels):
         side = slim[slim[type_col].isin(opt_labels)].copy()
         if side.empty:
@@ -818,16 +1084,53 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
         else:
             side["_dist"] = 0.0
         side = side.sort_values(by=[oi_col, "_dist", strike_col], ascending=[False, True, True]).head(top_n)
-        return [
-            (
-                float(r[strike_col]),
-                float(r[oi_col]),
-                float(r[oi_change_col]) if oi_change_col and pd.notna(r.get(oi_change_col)) else None,
-                _infer_side(r[type_col], r.get(oi_change_col) if oi_change_col else None),
-                bool(r.get("_uses_snapshot_oi_proxy", False)),
+        resolved_rows = []
+        for _idx, r in side.iterrows():
+            premium_changes = {
+                "1m": r.get("_premium_change_1m"),
+                "3m": r.get("_premium_change_3m"),
+                "5m": r.get("_premium_change_5m"),
+                "prev": r.get("_premium_change_prev"),
+            }
+            horizon_signature = (
+                f"1m:{_premium_sign(premium_changes.get('1m'))} "
+                f"3m:{_premium_sign(premium_changes.get('3m'))} "
+                f"5m:{_premium_sign(premium_changes.get('5m'))}"
             )
-            for _idx, r in side.iterrows()
-        ]
+            primary_premium_change = _primary_premium_change(r)
+            inference = _infer_side(
+                r[type_col],
+                r.get(oi_change_col) if oi_change_col else None,
+                primary_premium_change,
+            )
+            confidence_score, reason_code = _inference_confidence(
+                option_type=r[type_col],
+                oi_value=r.get(oi_col),
+                oi_change=r.get(oi_change_col) if oi_change_col else None,
+                premium_changes=premium_changes,
+                current_premium=r.get(ltp_col) if ltp_col else None,
+                uses_snapshot_oi_proxy=bool(r.get("_uses_snapshot_oi_proxy", False)),
+            )
+            resolved_rows.append(
+                (
+                    float(r[strike_col]),
+                    float(r[oi_col]),
+                    float(r[oi_change_col]) if oi_change_col and pd.notna(r.get(oi_change_col)) else None,
+                    inference,
+                    bool(r.get("_uses_snapshot_oi_proxy", False)),
+                    confidence_score,
+                    reason_code,
+                    horizon_signature,
+                    {
+                        "premium_change_1m": premium_changes.get("1m"),
+                        "premium_change_3m": premium_changes.get("3m"),
+                        "premium_change_5m": premium_changes.get("5m"),
+                        "premium_change_prev": premium_changes.get("prev"),
+                        "primary_premium_change": primary_premium_change,
+                    },
+                )
+            )
+        return resolved_rows
 
     top_calls = _top_for({"CE", "CALL", "C"})
     top_puts = _top_for({"PE", "PUT", "P"})
@@ -838,7 +1141,7 @@ def _resolve_top_oi_strikes(trade, option_chain_frame, *, top_n=5, formatted=Tru
     """Resolve top-N CE/PE strikes by raw open interest, preference nearest on ties."""
     top_calls, top_puts = _resolve_top_oi_levels(trade, option_chain_frame, top_n=top_n)
     if not formatted:
-        return [lvl for lvl, _oi, _inf in top_calls], [lvl for lvl, _oi, _inf in top_puts]
+        return [lvl for lvl, _oi, _chg, _inf, _proxy, _conf, _reason, _sig, _payload in top_calls], [lvl for lvl, _oi, _chg, _inf, _proxy, _conf, _reason, _sig, _payload in top_puts]
 
     spot = trade.get("spot") if isinstance(trade, dict) else None
     try:
@@ -848,10 +1151,10 @@ def _resolve_top_oi_strikes(trade, option_chain_frame, *, top_n=5, formatted=Tru
 
     def _format(rows):
         out = []
-        for lvl, oi, _chg_oi, inf, _uses_snapshot_proxy in rows:
+        for lvl, oi, _chg_oi, inf, _uses_snapshot_proxy, confidence, reason_code, horizon_signature, _payload in rows:
             oi_str = _format_open_interest_value(oi)
             prox = _format_proximity(lvl, spot_f if spot_f is not None else spot)
-            out.append(f"{prox}  (OI {oi_str}; {inf})")
+            out.append(f"{prox}  (OI {oi_str}; {inf}; conf {confidence:.2f}; {reason_code}; {horizon_signature})")
         return out
 
     return _format(top_calls), _format(top_puts)
@@ -880,7 +1183,7 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
         d_pts, d_pct = _dist(lvl)
         structural_rows.append(("support", idx, f"{lvl:.0f}", d_pts, d_pct, "-", 0.0))
 
-    for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy) in enumerate(call_oi, start=1):
+    for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy, confidence_score, reason_code, horizon_signature, _payload) in enumerate(call_oi, start=1):
         d_pts, d_pct = _dist(lvl)
         oi_rows.append(
             (
@@ -892,12 +1195,15 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 _format_open_interest_value(oi),
                 _format_oi_change_value(chg_oi, uses_snapshot_proxy=uses_snapshot_proxy),
                 str(inference),
+                float(confidence_score),
+                str(reason_code),
+                str(horizon_signature),
                 bool(uses_snapshot_proxy),
                 float(oi),
             )
         )
 
-    for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy) in enumerate(put_oi, start=1):
+    for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy, confidence_score, reason_code, horizon_signature, _payload) in enumerate(put_oi, start=1):
         d_pts, d_pct = _dist(lvl)
         oi_rows.append(
             (
@@ -909,6 +1215,9 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 _format_open_interest_value(oi),
                 _format_oi_change_value(chg_oi, uses_snapshot_proxy=uses_snapshot_proxy),
                 str(inference),
+                float(confidence_score),
+                str(reason_code),
+                str(horizon_signature),
                 bool(uses_snapshot_proxy),
                 float(oi),
             )
@@ -932,7 +1241,7 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 oi_rows,
                 key=lambda row: (
                     abs(float(row[2]) - spot_f),
-                    -float(row[8]),
+                    -float(row[11]),
                 ),
             )
 
@@ -945,17 +1254,97 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
     if oi_rows:
         print("\n  HIGHEST OI STRIKES")
         chg_oi_width = max(len("chg_oi"), *(len(str(row[6])) for row in oi_rows))
-        print(f"  kind       rank strike   dist_pts dist_%    oi {'chg_oi':>{chg_oi_width}} inference")
-        used_snapshot_proxy = any(bool(row[8]) for row in oi_rows)
-        for kind, rank, strike, dist_pts, dist_pct, oi_str, chg_oi_str, inference, _uses_snapshot_proxy, _oi_num in oi_rows:
+        reason_width = max(len("reason"), *(len(str(row[9])) for row in oi_rows))
+        hz_width = max(len("horizons"), *(len(str(row[10])) for row in oi_rows))
+        print(f"  kind       rank strike   dist_pts dist_%    oi {'chg_oi':>{chg_oi_width}} inference      conf {'reason':<{reason_width}} {'horizons':<{hz_width}}")
+        used_snapshot_proxy = any(bool(row[11]) for row in oi_rows)
+        for kind, rank, strike, dist_pts, dist_pct, oi_str, chg_oi_str, inference, confidence_score, reason_code, horizon_signature, _uses_snapshot_proxy, _oi_num in oi_rows:
             print(
                 f"  {kind:<10} {rank:>4} {strike:>7} {dist_pts:>9} {dist_pct:>8} "
-                f"{oi_str:>7} {chg_oi_str:>{chg_oi_width}} {inference}"
+                f"{oi_str:>7} {chg_oi_str:>{chg_oi_width}} {inference:<13} {confidence_score:>5.2f} {reason_code:<{reason_width}} {horizon_signature:<{hz_width}}"
             )
         if used_snapshot_proxy:
-            print("  note: * indicates Zerodha snapshot OI delta proxy (5m rolling baseline when available, prior snapshot otherwise); inference uses proxy delta plus underlying move vs prev_close")
+            print("  note: * indicates Zerodha snapshot OI delta proxy (5m rolling baseline when available, prior snapshot otherwise); inference confidence decomposes 1m/3m/5m premium baselines with previous-snapshot and underlying-proxy fallback")
         else:
-            print("  note: inference is a proxy based on OI change plus underlying move vs prev_close")
+            print("  note: inference confidence decomposes 1m/3m/5m premium baselines, then falls back to previous-snapshot premium delta and underlying move vs prev_close proxy")
+
+
+def _persist_oi_inference_artifact(*, result, trade, spot_summary, call_oi, put_oi, signal_capture_policy=None, capture_enabled=True):
+    """Append multi-horizon OI inference rows to research artifacts for calibration backtests."""
+    if not isinstance(result, dict) or not capture_enabled:
+        return
+
+    try:
+        from research.signal_evaluation import should_capture_signal
+    except Exception:
+        should_capture_signal = None
+
+    if callable(should_capture_signal) and not should_capture_signal(trade, signal_capture_policy):
+        return
+
+    if not call_oi and not put_oi:
+        return
+
+    symbol = str(result.get("symbol") or "")
+    source = str(result.get("source") or "")
+    mode = str(result.get("mode") or "")
+    timestamp = spot_summary.get("timestamp") if isinstance(spot_summary, dict) else None
+    spot = spot_summary.get("spot") if isinstance(spot_summary, dict) else None
+    prev_close = spot_summary.get("prev_close") if isinstance(spot_summary, dict) else None
+
+    as_of_date = None
+    if timestamp is not None:
+        try:
+            import pandas as _pd
+            as_of_date = _pd.Timestamp(timestamp).date()
+        except Exception:
+            as_of_date = None
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    artifact_dir = Path("research/artifacts/oi_inference") / str(as_of_date)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    file_name = f"multi_horizon_inference_pid{os.getpid()}.jsonl"
+    artifact_path = artifact_dir / file_name
+
+    rows = []
+    for kind, rows_data in (("CALL", call_oi), ("PUT", put_oi)):
+        for rank, payload in enumerate(rows_data, start=1):
+            lvl, oi, chg_oi, inference, uses_snapshot_proxy, confidence_score, reason_code, horizon_signature, debug_payload = payload
+            rows.append(
+                {
+                    "kind": kind,
+                    "rank": rank,
+                    "strike": lvl,
+                    "oi": oi,
+                    "chg_oi": chg_oi,
+                    "inference": inference,
+                    "confidence_score": confidence_score,
+                    "reason_code": reason_code,
+                    "horizon_signature": horizon_signature,
+                    "uses_snapshot_oi_proxy": bool(uses_snapshot_proxy),
+                    "debug": debug_payload,
+                }
+            )
+
+    record = {
+        "schema_version": 2,
+        "timestamp": timestamp,
+        "signal_capture_policy": signal_capture_policy,
+        "symbol": symbol,
+        "source": source,
+        "mode": mode,
+        "spot": spot,
+        "prev_close": prev_close,
+        "rows": rows,
+    }
+
+    try:
+        with artifact_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str) + "\n")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("OI inference artifact persistence failed: %s", exc)
+        return
 
 
 def _first_present(mapping, keys, default=None):
@@ -2051,23 +2440,24 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                 _dist_str = f"  ({abs(_max_pain_dist):.0f} pts {_zone_label})" if _max_pain_dist is not None else f"  ({_zone_label})"
                 _max_pain_str += _dist_str
 
-    _trade_with_prev_close = dict(trade) if trade else None
-    if _trade_with_prev_close is not None:
-        _trade_with_prev_close["prev_close"] = spot_summary.get("prev_close")
-        if isinstance(result, dict):
-            _trade_with_prev_close["previous_chain_frame"] = result.get("previous_chain_frame")
-            _trade_with_prev_close["zerodha_oi_baseline_chain_frame"] = result.get("zerodha_oi_baseline_chain_frame")
+    _trade_with_prev_close = _build_trade_for_oi_inference(
+        trade=trade,
+        result=result,
+        spot_summary=spot_summary,
+    )
+    _top_call_oi_levels, _top_put_oi_levels = _get_top_oi_levels_cached(
+        result=result,
+        trade_for_oi=_trade_with_prev_close,
+        option_chain_frame=option_chain_frame,
+        top_n=5,
+    ) if trade else ([], [])
 
     _top_support_levels, _top_resistance_levels = _resolve_top_liquidity_walls(
         trade,
         top_n=3,
         formatted=False,
         option_chain_frame=option_chain_frame,
-    ) if trade else ([], [])
-    _top_call_oi_levels, _top_put_oi_levels = _resolve_top_oi_levels(
-        _trade_with_prev_close,
-        option_chain_frame,
-        top_n=5,
+        precomputed_oi_levels=(_top_call_oi_levels, _top_put_oi_levels),
     ) if trade else ([], [])
 
     _print_section("MARKET SUMMARY", {
@@ -2508,6 +2898,12 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
 
     if isinstance(trade, dict) and isinstance(result, dict) and "previous_chain_frame" in result:
         trade.setdefault("previous_chain_frame", result.get("previous_chain_frame"))
+    if isinstance(trade, dict) and isinstance(result, dict) and "premium_baseline_chain_frames" in result:
+        trade.setdefault("premium_baseline_chain_frames", result.get("premium_baseline_chain_frames"))
+    if isinstance(trade, dict) and isinstance(result, dict) and "premium_baseline_labels" in result:
+        trade.setdefault("premium_baseline_labels", result.get("premium_baseline_labels"))
+    if isinstance(trade, dict) and isinstance(result, dict) and "premium_baseline_chain_frame" in result:
+        trade.setdefault("premium_baseline_chain_frame", result.get("premium_baseline_chain_frame"))
     if isinstance(trade, dict) and isinstance(result, dict) and "zerodha_oi_baseline_chain_frame" in result:
         trade.setdefault("zerodha_oi_baseline_chain_frame", result.get("zerodha_oi_baseline_chain_frame"))
 
@@ -3067,7 +3463,8 @@ def render_snapshot(mode, *, result, spot_summary, spot_validation,
                     option_chain_validation, macro_event_state,
                     macro_news_state, global_risk_state,
                     global_market_snapshot, headline_state,
-                    trade, execution_trade, market_levels_sort_mode="GROUPED"):
+                    trade, execution_trade, market_levels_sort_mode="GROUPED",
+                    signal_capture_policy=None, capture_oi_inference_artifacts=True):
     """Dispatch to the appropriate renderer based on *mode*.
 
     Falls back to STANDARD if the mode is unrecognised.
@@ -3090,6 +3487,29 @@ def render_snapshot(mode, *, result, spot_summary, spot_validation,
         execution_trade=execution_trade,
         option_chain_frame=result.get("option_chain_frame") if isinstance(result, dict) else None,
     )
+
+    # Capture OI inference artifacts for all output modes (policy-gated).
+    if isinstance(result, dict):
+        _trade_for_oi = _build_trade_for_oi_inference(
+            trade=trade,
+            result=result,
+            spot_summary=spot_summary,
+        )
+        _oi_calls, _oi_puts = _get_top_oi_levels_cached(
+            result=result,
+            trade_for_oi=_trade_for_oi,
+            option_chain_frame=kwargs.get("option_chain_frame"),
+            top_n=5,
+        ) if trade else ([], [])
+        _persist_oi_inference_artifact(
+            result=result,
+            trade=trade,
+            spot_summary=spot_summary,
+            call_oi=_oi_calls,
+            put_oi=_oi_puts,
+            signal_capture_policy=signal_capture_policy,
+            capture_enabled=bool(capture_oi_inference_artifacts),
+        )
 
     if renderer is render_compact:
         kwargs["macro_event_state"] = macro_event_state

@@ -97,8 +97,8 @@ def _coerce_runtime_timestamp(value):
     return ts
 
 
-def _select_zerodha_oi_baseline(chain_history, current_ts, *, target_window_seconds: int = 300):
-    """Choose a Zerodha OI baseline snapshot, preferring roughly 5 minutes back."""
+def _select_chain_baseline(chain_history, current_ts, *, target_window_seconds: int = 300):
+    """Choose a chain baseline snapshot, preferring roughly 5 minutes back."""
     if not chain_history:
         return None, None
 
@@ -109,6 +109,7 @@ def _select_zerodha_oi_baseline(chain_history, current_ts, *, target_window_seco
         return chain_history[-1][1].copy(), "prior snapshot"
 
     target_ts = current_ts - pd.Timedelta(seconds=target_window_seconds)
+    target_minutes = max(int(round(target_window_seconds / 60.0)), 1)
     candidate = None
     for frame_ts, frame in chain_history:
         if frame_ts is None:
@@ -117,7 +118,7 @@ def _select_zerodha_oi_baseline(chain_history, current_ts, *, target_window_seco
             candidate = (frame_ts, frame)
 
     if candidate is not None:
-        return candidate[1].copy(), "5m rolling"
+        return candidate[1].copy(), f"{target_minutes}m rolling"
 
     latest_prior = None
     for frame_ts, frame in reversed(chain_history):
@@ -131,6 +132,15 @@ def _select_zerodha_oi_baseline(chain_history, current_ts, *, target_window_seco
         return latest_prior[1].copy(), "prior snapshot"
 
     return None, None
+
+
+def _select_zerodha_oi_baseline(chain_history, current_ts, *, target_window_seconds: int = 300):
+    """Backward-compatible alias for Zerodha OI baseline snapshot selection."""
+    return _select_chain_baseline(
+        chain_history,
+        current_ts,
+        target_window_seconds=target_window_seconds,
+    )
 
 
 def _append_regime_switch_log(record: dict, relative_path: str) -> None:
@@ -981,7 +991,7 @@ def main():
             return
 
     previous_chain = None
-    zerodha_chain_history: list[tuple[pd.Timestamp | None, pd.DataFrame]] = []
+    option_chain_history: list[tuple[pd.Timestamp | None, pd.DataFrame]] = []
     saved_one_spot_snapshot = False
     saved_one_option_chain_snapshot = False
     replay_paths_printed = False
@@ -1089,15 +1099,33 @@ def main():
                 elif signal_capture_status.startswith("SKIPPED_POLICY:"):
                     print(f"\n{'signal_capture':26}: {signal_capture_status}")
 
-            if source == "ZERODHA" and option_chain_frame is not None and not option_chain_frame.empty:
+            if option_chain_frame is not None and not option_chain_frame.empty:
                 current_chain_ts = _coerce_runtime_timestamp(spot_summary.get("timestamp"))
-                baseline_chain, baseline_label = _select_zerodha_oi_baseline(
-                    zerodha_chain_history,
-                    current_chain_ts,
-                )
+                premium_baseline_frames = {}
+                premium_baseline_labels = {}
+                for horizon_name, window_seconds in (("1m", 60), ("3m", 180), ("5m", 300)):
+                    baseline_chain, baseline_label = _select_chain_baseline(
+                        option_chain_history,
+                        current_chain_ts,
+                        target_window_seconds=window_seconds,
+                    )
+                    if baseline_chain is None:
+                        continue
+                    premium_baseline_frames[horizon_name] = baseline_chain
+                    premium_baseline_labels[horizon_name] = baseline_label
+
+                if premium_baseline_frames:
+                    result["premium_baseline_chain_frames"] = premium_baseline_frames
+                    result["premium_baseline_labels"] = premium_baseline_labels
+
+                baseline_chain = premium_baseline_frames.get("5m")
+                baseline_label = premium_baseline_labels.get("5m")
                 if baseline_chain is not None:
-                    result["zerodha_oi_baseline_chain_frame"] = baseline_chain
-                    result["zerodha_oi_baseline_label"] = baseline_label
+                    result["premium_baseline_chain_frame"] = baseline_chain
+                    result["premium_baseline_label"] = baseline_label
+                    if source == "ZERODHA":
+                        result["zerodha_oi_baseline_chain_frame"] = baseline_chain
+                        result["zerodha_oi_baseline_label"] = baseline_label
 
             render_snapshot(
                 output_mode,
@@ -1113,21 +1141,23 @@ def main():
                 trade=trade_for_display,
                 execution_trade=execution_trade,
                 market_levels_sort_mode=args.market_levels_sort,
+                signal_capture_policy=signal_capture_policy,
+                capture_oi_inference_artifacts=True,
             )
 
             previous_chain = option_chain_frame.copy()
-            if source == "ZERODHA" and option_chain_frame is not None and not option_chain_frame.empty:
+            if option_chain_frame is not None and not option_chain_frame.empty:
                 current_chain_ts = _coerce_runtime_timestamp(spot_summary.get("timestamp"))
-                zerodha_chain_history.append((current_chain_ts, option_chain_frame.copy()))
+                option_chain_history.append((current_chain_ts, option_chain_frame.copy()))
                 cutoff_ts = current_chain_ts - pd.Timedelta(minutes=15) if current_chain_ts is not None else None
                 if cutoff_ts is not None:
-                    zerodha_chain_history = [
+                    option_chain_history = [
                         (frame_ts, frame)
-                        for frame_ts, frame in zerodha_chain_history
+                        for frame_ts, frame in option_chain_history
                         if frame_ts is None or frame_ts >= cutoff_ts
                     ]
-                elif len(zerodha_chain_history) > 90:
-                    zerodha_chain_history = zerodha_chain_history[-90:]
+                elif len(option_chain_history) > 90:
+                    option_chain_history = option_chain_history[-90:]
 
             # Telegram push alert on meaningful state transitions.
             if trade_for_display and isinstance(trade_for_display, dict):

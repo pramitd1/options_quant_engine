@@ -125,7 +125,10 @@ def test_decision_policy_predictor_uses_ml_score_fields(monkeypatch):
     assert out.components.get("research_rank_score") == 0.68
     assert out.components.get("research_confidence_score") == 0.74
     assert out.components.get("policy_decision") == "ALLOW"
-    assert out.hybrid_move_probability == 0.74
+    # Decision-policy predictor now preserves engine hybrid probability and
+    # applies policy as an overlay rather than replacing it with ML confidence.
+    assert out.components.get("engine_hybrid_probability") == 0.49
+    assert out.hybrid_move_probability == 0.49
 
 
 def test_ev_sizing_predictor_passes_row_dict_to_infer_single(monkeypatch):

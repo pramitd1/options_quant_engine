@@ -129,6 +129,17 @@ def _coerce_timestamp(value):
         return None
 
 
+def _state_bucket_key(symbol, selected_expiry, ts):
+    """Namespace state by trading date to reduce cross-session contamination."""
+    date_bucket = "NO_DATE"
+    try:
+        if ts is not None:
+            date_bucket = str(ts.date())
+    except _SIGNAL_STATE_ERRORS:
+        date_bucket = "NO_DATE"
+    return f"{symbol}:{selected_expiry or 'NO_EXPIRY'}:{date_bucket}"
+
+
 def _compute_signal_elapsed_minutes(*, symbol, selected_expiry, valuation_time, direction):
     """Track signal age (minutes) by symbol+expiry and direction for time-decay."""
     if _as_upper(direction) not in {"CALL", "PUT"}:
@@ -138,7 +149,7 @@ def _compute_signal_elapsed_minutes(*, symbol, selected_expiry, valuation_time, 
     if ts is None:
         return 0.0
 
-    key = f"{symbol}:{selected_expiry or 'NO_EXPIRY'}"
+    key = _state_bucket_key(symbol, selected_expiry, ts)
     state = _DECAY_SIGNAL_STATE.get(key) or {}
     prev_direction = _as_upper(state.get("direction"))
     start_ts = state.get("start_ts")
@@ -200,7 +211,7 @@ def _compute_path_observation_bps(*, symbol, selected_expiry, valuation_time, sp
     if ts is None or spot_now is None or spot_now <= 0:
         return None, None
 
-    key = f"{symbol}:{selected_expiry or 'NO_EXPIRY'}"
+    key = _state_bucket_key(symbol, selected_expiry, ts)
     state = _PATH_SIGNAL_STATE.get(key) or {}
     last_spot = _safe_float(state.get("last_spot"), None)
     last_ts = state.get("last_ts")
@@ -406,6 +417,11 @@ def _compute_runtime_composite_score(
     confirmation_status,
     data_quality_status,
     gamma_vol_acceleration_score_normalized,
+    weight_trade_strength=0.50,
+    weight_move_probability=0.20,
+    weight_confirmation=0.15,
+    weight_data_quality=0.10,
+    weight_gamma_stability=0.05,
 ):
     confirmation_map = {
         "STRONG_CONFIRMATION": 100,
@@ -432,12 +448,28 @@ def _compute_runtime_composite_score(
     data_quality_score = data_quality_map.get(_as_upper(data_quality_status), 50)
     gamma_stability_score = 100.0 - _clip(_safe_float(gamma_vol_acceleration_score_normalized, 0.0), 0, 100)
 
+    w_trade = max(0.0, _safe_float(weight_trade_strength, 0.50))
+    w_prob = max(0.0, _safe_float(weight_move_probability, 0.20))
+    w_conf = max(0.0, _safe_float(weight_confirmation, 0.15))
+    w_data = max(0.0, _safe_float(weight_data_quality, 0.10))
+    w_gamma = max(0.0, _safe_float(weight_gamma_stability, 0.05))
+    w_sum = w_trade + w_prob + w_conf + w_data + w_gamma
+    if w_sum <= 0:
+        w_trade, w_prob, w_conf, w_data, w_gamma = 0.50, 0.20, 0.15, 0.10, 0.05
+        w_sum = 1.0
+
+    w_trade /= w_sum
+    w_prob /= w_sum
+    w_conf /= w_sum
+    w_data /= w_sum
+    w_gamma /= w_sum
+
     composite = (
-        0.50 * trade_strength_score
-        + 0.20 * move_probability_score
-        + 0.15 * confirmation_score
-        + 0.10 * data_quality_score
-        + 0.05 * gamma_stability_score
+        w_trade * trade_strength_score
+        + w_prob * move_probability_score
+        + w_conf * confirmation_score
+        + w_data * data_quality_score
+        + w_gamma * gamma_stability_score
     )
     return int(_clip(round(composite), 0, 100))
 
@@ -593,6 +625,7 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
 
     activation_score = 0
     acfg = get_activation_score_policy_config()
+    policy_fallback_active = acfg is None
     fallback_acfg = {
         "dead_inactive_threshold": 25,
         "confirmation_score_strong": 90,
@@ -952,6 +985,8 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
             "gamma_flip": gamma_flip,
         },
         "directional_resolution_needed": bool(directional_resolution_needed),
+        "activation_policy_fallback_active": bool(policy_fallback_active),
+        "activation_policy_fallback_reason": "activation_score_policy_config_unavailable" if policy_fallback_active else None,
         **neutralization,
     }
     return explainability
@@ -2226,6 +2261,11 @@ def generate_trade(
         confirmation_status=confirmation["status"],
         data_quality_status=data_quality["status"],
         gamma_vol_acceleration_score_normalized=gamma_vol_acceleration_score_normalized,
+        weight_trade_strength=runtime_thresholds.get("composite_weight_trade_strength", 0.50),
+        weight_move_probability=runtime_thresholds.get("composite_weight_move_probability", 0.20),
+        weight_confirmation=runtime_thresholds.get("composite_weight_confirmation", 0.15),
+        weight_data_quality=runtime_thresholds.get("composite_weight_data_quality", 0.10),
+        weight_gamma_stability=runtime_thresholds.get("composite_weight_gamma_stability", 0.05),
     )
     
     # Apply score calibration if enabled

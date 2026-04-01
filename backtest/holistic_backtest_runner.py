@@ -35,6 +35,7 @@ from config.settings import (
     STOP_LOSS_PERCENT,
     TARGET_PROFIT_PERCENT,
 )
+from config.signal_evaluation_policy import SIGNAL_EVALUATION_HORIZON_MINUTES
 from data.expiry_resolver import (
     filter_option_chain_by_expiry,
     ordered_expiries,
@@ -233,7 +234,11 @@ def build_realized_spot_path(
             "spot": float(r["close"]),
         })
 
-    return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+    path = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+    # This path is synthesized from daily OHLC values and should not be used to
+    # claim true 5m/15m/30m intraday timing accuracy.
+    path.attrs["synthetic_intraday"] = True
+    return path
 
 
 # ---------------------------------------------------------------
@@ -258,6 +263,18 @@ def evaluate_eod_outcomes(
     """
     # 1. Run the standard evaluator for baseline fields
     updated = evaluate_signal_outcomes(row, realized_spot_path)
+
+    # Guardrail: remove synthetic intraday checkpoints to avoid reporting
+    # false precision from daily OHLC-derived pseudo timestamps.
+    if bool(getattr(realized_spot_path, "attrs", {}).get("synthetic_intraday", False)):
+        for horizon in SIGNAL_EVALUATION_HORIZON_MINUTES:
+            updated[f"spot_{horizon}m"] = pd.NA
+            updated[f"signed_return_{horizon}m_bps"] = pd.NA
+            updated[f"correct_{horizon}m"] = pd.NA
+        updated["direction_score"] = pd.NA
+        updated["timing_score"] = pd.NA
+        updated["composite_signal_score"] = pd.NA
+        updated["intraday_eval_disabled_reason"] = "synthetic_intraday_path"
 
     entry_spot = updated.get("spot_at_signal")
     if not entry_spot or entry_spot == 0:
@@ -379,13 +396,25 @@ def evaluate_eod_outcomes(
                 else:
                     favorable = entry_spot - spot_low
                     adverse = spot_high - entry_spot
-                if favorable >= target_spot_move:
-                    updated["target_hit"] = True
-                    updated["target_hit_date"] = str(wr["date"].date() if hasattr(wr["date"], "date") else wr["date"])
-                    break
-                if adverse >= sl_spot_move:
+                favorable_hit = favorable >= target_spot_move
+                adverse_hit = adverse >= sl_spot_move
+
+                if favorable_hit and adverse_hit:
+                    updated["target_stop_same_bar_ambiguous"] = True
+                    # Conservative treatment under OHLC-only sequencing: assume
+                    # stop-loss triggers first when ordering is unknown.
                     updated["stop_loss_hit"] = True
                     updated["stop_loss_hit_date"] = str(wr["date"].date() if hasattr(wr["date"], "date") else wr["date"])
+                    break
+
+                if adverse_hit:
+                    updated["stop_loss_hit"] = True
+                    updated["stop_loss_hit_date"] = str(wr["date"].date() if hasattr(wr["date"], "date") else wr["date"])
+                    break
+
+                if favorable_hit:
+                    updated["target_hit"] = True
+                    updated["target_hit_date"] = str(wr["date"].date() if hasattr(wr["date"], "date") else wr["date"])
                     break
 
         if "target_hit" not in updated:

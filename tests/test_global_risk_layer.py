@@ -3,9 +3,19 @@ from __future__ import annotations
 import unittest
 
 from risk import build_global_risk_state, evaluate_global_risk_layer
+from risk.global_risk_layer import _fallback_global_risk_state
 
 
 class GlobalRiskLayerStageOneTests(unittest.TestCase):
+    def test_fallback_global_risk_preserves_overnight_relevance_for_auto_profile(self):
+        state = _fallback_global_risk_state(
+            event_window_status="NO_EVENT_DATA",
+            macro_event_risk_score=0,
+            event_lockdown_flag=False,
+            holding_profile="AUTO",
+        )
+        self.assertTrue(state["holding_context"]["overnight_relevant"])
+
     def test_build_global_risk_state_gracefully_falls_back_to_neutral(self):
         state = build_global_risk_state(
             macro_event_state={

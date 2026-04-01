@@ -76,7 +76,19 @@ def test_format_expected_move_display_keeps_single_view_when_close() -> None:
 
 
 def test_render_market_summary_note_mentions_rolling_baseline_when_proxy_used() -> None:
-    proxy_rows = [(22950.0, 1200.0, 200.0, "BUY_BUILDUP", True)]
+    proxy_rows = [
+        (
+            22950.0,
+            1200.0,
+            200.0,
+            "BUY_BUILDUP",
+            True,
+            0.73,
+            "PROXY_ONLY",
+            "1m:0 3m:0 5m:0",
+            {},
+        )
+    ]
 
     with StringIO() as buffer, redirect_stdout(buffer):
         _render_market_summary_levels_table(
