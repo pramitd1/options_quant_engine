@@ -16,10 +16,26 @@ Downstream Usage:
 
 from __future__ import annotations
 
+import math
+
 from config.option_efficiency_policy import get_option_efficiency_policy_config
 from risk.option_efficiency_features import build_option_efficiency_features
 from risk.option_efficiency_models import OptionEfficiencyState
 from utils.numerics import clip as _clip, safe_float as _safe_float  # noqa: F401
+
+
+def _sigmoid(x: float) -> float:
+    x = _clip(_safe_float(x, 0.0), -60.0, 60.0)
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def _smooth_score_from_ratio(ratio, *, center: float, steepness: float, floor: float = 10.0, ceiling: float = 95.0) -> int:
+    ratio_value = _safe_float(ratio, None)
+    if ratio_value is None:
+        return int(round((floor + ceiling) / 2.0))
+    normalized = _sigmoid((ratio_value - center) * steepness)
+    score = floor + ((ceiling - floor) * normalized)
+    return int(round(_clip(score, 0.0, 100.0)))
 
 
 def _score_target_reachability(features):
@@ -43,16 +59,17 @@ def _score_target_reachability(features):
     ratio = features.get("expected_move_coverage_ratio")
     if ratio is None:
         return cfg.neutral_score
-    ratio = _safe_float(ratio, 0.0)
-    if ratio >= 1.25:
-        return 90
-    if ratio >= 1.0:
-        return 78
-    if ratio >= 0.75:
-        return 62
-    if ratio >= 0.50:
-        return 38
-    return 15
+
+    # Continuous transform centered near parity (coverage ratio ~= 1.0)
+    # and calibrated to preserve historical bucket ordering while avoiding
+    # threshold aliasing around boundary values.
+    return _smooth_score_from_ratio(
+        ratio,
+        center=0.90,
+        steepness=4.0,
+        floor=12.0,
+        ceiling=92.0,
+    )
 
 
 def _score_premium_efficiency(features):
@@ -76,16 +93,16 @@ def _score_premium_efficiency(features):
     ratio = features.get("premium_coverage_ratio")
     if ratio is None:
         return cfg.neutral_score
-    ratio = _safe_float(ratio, 0.0)
-    if ratio >= 1.40:
-        return 88
-    if ratio >= 1.0:
-        return 74
-    if ratio >= 0.75:
-        return 58
-    if ratio >= 0.50:
-        return 34
-    return 18
+
+    # Slightly right-shifted center because premium coverage tends to require
+    # a bit more headroom than pure target reachability.
+    return _smooth_score_from_ratio(
+        ratio,
+        center=1.00,
+        steepness=3.6,
+        floor=14.0,
+        ceiling=90.0,
+    )
 
 
 def _score_strike_efficiency(features):
@@ -113,27 +130,30 @@ def _score_strike_efficiency(features):
         return cfg.neutral_score
     ratio = _safe_float(ratio, 0.0)
 
-    if bucket == "ATM":
-        base = 78
-    elif bucket == "OTM":
-        if ratio <= 0.55:
-            base = 68
-        elif ratio <= 0.90:
-            base = 52
-        else:
-            base = 24
-    elif bucket == "ITM":
-        if premium_ratio is not None and premium_ratio < 0.65:
-            base = 34
-        else:
-            base = 58
-    else:
-        base = cfg.neutral_score
+    # Lower strike-distance ratio is generally better for intraday
+    # reachability; smooth decay removes hard cliffs near policy thresholds.
+    base = _smooth_score_from_ratio(
+        1.0 - ratio,
+        center=0.20,
+        steepness=4.2,
+        floor=18.0,
+        ceiling=82.0,
+    )
 
-    if ratio > 1.20:
-        base -= 12
-    elif ratio > 0.90:
+    # Structural bias by moneyness bucket.
+    if bucket == "ATM":
+        base += 8
+    elif bucket == "ITM":
         base -= 6
+    elif bucket == "OTM":
+        base += 0
+
+    # Penalize expensive ITM setups when premium coverage is weak.
+    if bucket == "ITM" and premium_ratio is not None:
+        if premium_ratio < 0.65:
+            base -= 8
+        elif premium_ratio < 0.85:
+            base -= 3
 
     return int(_clip(base, 0, 100))
 
@@ -223,6 +243,9 @@ def _overnight_evaluation(
     if premium_efficiency_score <= 28:
         penalty += 2
         reasons.append("premium_efficiency_poor")
+    elif premium_efficiency_score <= 34:
+        penalty += 1
+        reasons.append("premium_efficiency_weak")
 
     if strike_efficiency_score <= 20:
         penalty += 3
@@ -230,6 +253,15 @@ def _overnight_evaluation(
     elif strike_efficiency_score <= 35:
         penalty += 1
         reasons.append("strike_efficiency_weak")
+
+    premium_coverage_ratio = _safe_float(features.get("premium_coverage_ratio"), None)
+    strike_distance_ratio = _safe_float(features.get("strike_distance_ratio"), None)
+    if premium_coverage_ratio is not None and premium_coverage_ratio <= 0.65:
+        penalty += 2
+        reasons.append("premium_coverage_insufficient")
+    if strike_distance_ratio is not None and strike_distance_ratio >= 1.15:
+        penalty += 2
+        reasons.append("strike_distance_excessive")
 
     penalty = int(_clip(penalty, 0, 10))
     if penalty >= cfg.overnight_block_threshold:

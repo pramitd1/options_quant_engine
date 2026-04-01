@@ -22,7 +22,7 @@ import logging
 from analytics.greeks_engine import estimate_iv_from_price, compute_option_greeks, _parse_expiry_years
 from config.strike_selection_policy import get_strike_selection_score_config
 from strategy.enhanced_strike_scoring import compute_enhanced_strike_scores
-from utils.numerics import safe_float as _safe_float, to_python_number as _to_python_number  # noqa: F401
+from utils.numerics import clip as _clip, safe_float as _safe_float, to_python_number as _to_python_number  # noqa: F401
 
 
 _LOG = logging.getLogger(__name__)
@@ -853,6 +853,8 @@ def rank_strike_candidates(
     days_to_expiry=None,
     vol_surface_regime=None,
     volatility_shock_score=None,
+    directional_call_probability=None,
+    directional_put_probability=None,
 ):
     """
     Purpose:
@@ -1165,6 +1167,54 @@ def rank_strike_candidates(
         put_delta = call_delta - 1.0
         return max(-0.95, min(-0.05, put_delta))
 
+    def _resolve_direction_probability(option_type_local: str) -> float:
+        call_prob = _safe_float(directional_call_probability, None)
+        put_prob = _safe_float(directional_put_probability, None)
+
+        if option_type_local == "CE":
+            if call_prob is not None:
+                return float(_clip(call_prob, 0.05, 0.95))
+            if put_prob is not None:
+                return float(_clip(1.0 - put_prob, 0.05, 0.95))
+        else:
+            if put_prob is not None:
+                return float(_clip(put_prob, 0.05, 0.95))
+            if call_prob is not None:
+                return float(_clip(1.0 - call_prob, 0.05, 0.95))
+
+        return 0.5
+
+    def _expected_value_score_adjustment(*, strike_value: float, premium_value: float, option_type_local: str, hook_payload_local: dict):
+        """Translate directional edge + contract geometry into a bounded EV score tweak."""
+        direction_prob = _resolve_direction_probability(option_type_local)
+        option_eff = _clip(_safe_float(hook_payload_local.get("option_efficiency_score"), 50.0) / 100.0, 0.0, 1.0)
+        reachability = _clip(_safe_float(hook_payload_local.get("target_reachability_score"), 50.0) / 100.0, 0.0, 1.0)
+        expected_move_pts = _safe_float(hook_payload_local.get("expected_move_points"), None)
+
+        # Strike-distance alignment relative to expected move (1.0 is best, 0.0 is poor reachability).
+        distance_alignment = 0.5
+        premium_drag = 0.33
+        if expected_move_pts is not None and expected_move_pts > 0 and spot_safe is not None:
+            distance_ratio = abs(float(strike_value) - float(spot_safe)) / max(float(expected_move_pts), 1e-6)
+            distance_alignment = _clip(1.0 - 0.5 * distance_ratio, 0.0, 1.0)
+            premium_drag = _clip(float(premium_value) / max(float(expected_move_pts), 1e-6), 0.0, 3.0) / 3.0
+        elif spot_safe is not None:
+            fallback_scale = max(abs(float(strike_value) - float(spot_safe)), 1.0)
+            premium_drag = _clip(float(premium_value) / fallback_scale, 0.0, 3.0) / 3.0
+
+        upside = direction_prob * (0.35 + (0.35 * option_eff) + (0.30 * reachability)) * (0.5 + 0.5 * distance_alignment)
+        downside = (1.0 - direction_prob) * (0.4 + 0.6 * premium_drag)
+        ev_edge = upside - downside
+        ev_adjustment = round(_clip(ev_edge * 8.0, -4.0, 4.0), 2)
+
+        diagnostics = {
+            "direction_probability": round(direction_prob, 4),
+            "distance_alignment": round(float(distance_alignment), 4),
+            "premium_drag": round(float(premium_drag), 4),
+            "ev_edge": round(float(ev_edge), 4),
+        }
+        return ev_adjustment, diagnostics
+
     # Convert the scored dataframe into plain records because the final engine
     # payload and downstream reporting stack work with JSON-friendly structures.
     candidates = []
@@ -1249,7 +1299,21 @@ def rank_strike_candidates(
         if efficiency_score_adjustment:
             score_breakdown["option_efficiency_score_adjustment"] = efficiency_score_adjustment
 
-        total_score = round(_safe_float(_row_get("_base_score", 0.0), 0.0) + efficiency_score_adjustment, 2)
+        ev_score_adjustment, ev_diagnostics = _expected_value_score_adjustment(
+            strike_value=float(strike),
+            premium_value=float(premium),
+            option_type_local=option_type,
+            hook_payload_local=hook_payload,
+        )
+        if ev_score_adjustment:
+            score_breakdown["expected_value_score_adjustment"] = ev_score_adjustment
+
+        total_score = round(
+            _safe_float(_row_get("_base_score", 0.0), 0.0)
+            + efficiency_score_adjustment
+            + ev_score_adjustment,
+            2,
+        )
         delta_raw = _safe_float(_row_get("DELTA"), None)
         delta_proxy_source = None
         ba_spread_ratio = _safe_float(_row_get("_normalized_ba_spread_ratio"), None)
@@ -1306,6 +1370,10 @@ def rank_strike_candidates(
             record["ba_spread_score"] = round(_safe_float(_row_get("_ba_spread_score", 0.0), 0.0), 2)
         if hook_payload:
             record.update({key: value for key, value in hook_payload.items() if key != "score_adjustment"})
+        record["direction_probability"] = ev_diagnostics["direction_probability"]
+        record["expected_value_edge"] = ev_diagnostics["ev_edge"]
+        record["expected_value_distance_alignment"] = ev_diagnostics["distance_alignment"]
+        record["expected_value_premium_drag"] = ev_diagnostics["premium_drag"]
 
         # Attach enhanced institutional-grade scoring fields when available.
         if _has_enhanced:
@@ -1359,6 +1427,8 @@ def select_best_strike(
     days_to_expiry=None,
     vol_surface_regime=None,
     volatility_shock_score=None,
+    directional_call_probability=None,
+    directional_put_probability=None,
 ):
     """
     Purpose:
@@ -1406,6 +1476,8 @@ def select_best_strike(
         days_to_expiry=days_to_expiry,
         vol_surface_regime=vol_surface_regime,
         volatility_shock_score=volatility_shock_score,
+        directional_call_probability=directional_call_probability,
+        directional_put_probability=directional_put_probability,
     )
 
     if not ranked:

@@ -115,6 +115,26 @@ class OptionEfficiencyLayerTests(unittest.TestCase):
         self.assertFalse(state["overnight_hold_allowed"])
         self.assertGreaterEqual(state["overnight_option_efficiency_penalty"], 5)
 
+    def test_target_reachability_scoring_is_smooth_and_monotonic(self):
+        common = {
+            "spot": 22000,
+            "atm_iv": 18.0,
+            "expiry_value": "2026-03-21",
+            "valuation_time": "2026-03-14T10:00:00+05:30",
+            "direction": "CALL",
+            "strike": 22000,
+            "option_type": "CE",
+            "entry_price": 110,
+        }
+
+        near_target = build_option_efficiency_state(**common, target=130)
+        mid_target = build_option_efficiency_state(**common, target=260)
+        far_target = build_option_efficiency_state(**common, target=420)
+
+        self.assertGreaterEqual(near_target["target_reachability_score"], mid_target["target_reachability_score"])
+        self.assertGreaterEqual(mid_target["target_reachability_score"], far_target["target_reachability_score"])
+        self.assertNotEqual(near_target["target_reachability_score"], mid_target["target_reachability_score"])
+
 
 if __name__ == "__main__":
     unittest.main()

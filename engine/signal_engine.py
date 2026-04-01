@@ -1162,6 +1162,8 @@ def generate_trade(
     )
     direction = signal_state["direction"]
     direction_source = signal_state["direction_source"]
+    bull_probability = _safe_float(signal_state.get("bull_probability"), 0.5)
+    bear_probability = _safe_float(signal_state.get("bear_probability"), 0.5)
     trade_strength = signal_state["trade_strength"]
     scoring_breakdown = signal_state["scoring_breakdown"]
     confirmation = signal_state["confirmation"]
@@ -1556,6 +1558,8 @@ def generate_trade(
         "path_aware_mae_zscore": _to_python_number(path_check.get("mae_zscore")),
         "path_aware_reasons": path_check.get("reasons", []),
         "direction_source": direction_source,
+        "direction_call_probability": round(float(_clip(bull_probability, 0.0, 1.0)), 4),
+        "direction_put_probability": round(float(_clip(bear_probability, 0.0, 1.0)), 4),
         "trade_strength": adjusted_trade_strength,
         "signal_quality": classify_signal_quality(adjusted_trade_strength),
         "signal_regime": signal_regime,
@@ -1958,6 +1962,8 @@ def generate_trade(
             days_to_expiry=days_to_expiry,
             vol_surface_regime=market_state["surface_regime"],
             volatility_shock_score=market_state.get("volatility_shock_score", 0.0),
+            directional_call_probability=bull_probability,
+            directional_put_probability=bear_probability,
         )
 
     base_payload["ranked_strike_candidates"] = ranked_strikes

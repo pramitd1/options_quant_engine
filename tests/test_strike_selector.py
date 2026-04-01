@@ -183,3 +183,47 @@ def test_trade_strength_includes_new_signal_components_and_max_pain_penalty():
     assert breakdown["pcr_score_component"] > 0
     assert breakdown["flip_drift_score_component"] > 0
     assert breakdown["max_pain_expiry_component"] < 0
+
+
+def test_ev_aware_strike_ranking_responds_to_direction_probability():
+    chain = pd.DataFrame(
+        [
+            {
+                "strikePrice": 22000,
+                "OPTION_TYP": "CE",
+                "lastPrice": 100.0,
+                "totalTradedVolume": 5000,
+                "openInterest": 100000,
+                "impliedVolatility": 17.0,
+            }
+        ]
+    )
+
+    hook = lambda _row, _payload: {
+        "score_adjustment": 0,
+        "option_efficiency_score": 70,
+        "target_reachability_score": 72,
+        "expected_move_points": 210,
+    }
+
+    high_conviction = rank_strike_candidates(
+        option_chain=chain,
+        direction="CALL",
+        spot=22000.0,
+        candidate_score_hook=hook,
+        directional_call_probability=0.80,
+        directional_put_probability=0.20,
+    )
+
+    low_conviction = rank_strike_candidates(
+        option_chain=chain,
+        direction="CALL",
+        spot=22000.0,
+        candidate_score_hook=hook,
+        directional_call_probability=0.35,
+        directional_put_probability=0.65,
+    )
+
+    assert high_conviction and low_conviction
+    assert high_conviction[0]["score"] > low_conviction[0]["score"]
+    assert "expected_value_score_adjustment" in high_conviction[0]["score_breakdown"]
