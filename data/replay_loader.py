@@ -26,6 +26,13 @@ from pandas.errors import EmptyDataError
 from data.spot_downloader import validate_spot_snapshot
 
 
+def _resolve_snapshot_output_dir(output_dir: str, *, snapshot_kind: str) -> Path:
+    base_dir = Path(output_dir)
+    if base_dir == Path("debug_samples"):
+        return base_dir / snapshot_kind
+    return base_dir
+
+
 def load_spot_snapshot(path: str) -> dict:
     """
     Purpose:
@@ -172,7 +179,7 @@ def save_option_chain_snapshot(
     Notes:
         The helper keeps the surrounding module readable without changing runtime behavior.
     """
-    out_dir = Path(output_dir)
+    out_dir = _resolve_snapshot_output_dir(output_dir, snapshot_kind="option_chain_snapshots")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     symbol = str(symbol or "UNKNOWN").upper().strip()
@@ -245,7 +252,7 @@ def list_replay_chain_snapshots(
         else f"{symbol_token}_*_option_chain_snapshot_*.csv"
     )
 
-    candidates = sorted(directory.glob(pattern))
+    candidates = sorted(directory.rglob(pattern))
     valid: list[tuple[pd.Timestamp, Path]] = []
     skipped: list[dict] = []
 
@@ -295,7 +302,7 @@ def resolve_replay_snapshot_paths(
         }
 
     symbol_token = str(symbol or "").upper().strip()
-    spot_candidates = sorted(directory.glob(f"{symbol_token}_spot_snapshot_*.json"))
+    spot_candidates = sorted(directory.rglob(f"{symbol_token}_spot_snapshot_*.json"))
     spot_path = str(spot_candidates[-1]) if spot_candidates else None
 
     chain_paths, skipped_chain_files = list_replay_chain_snapshots(

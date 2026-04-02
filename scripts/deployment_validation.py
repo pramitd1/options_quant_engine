@@ -34,8 +34,8 @@ try:
         requested_lots=1,
         lot_size=65,
         max_capital=20000,
-        replay_spot='debug_samples/NIFTY_spot_snapshot_2026-03-30T10-35-00+05-30.json',
-        replay_chain='debug_samples/NIFTY_ICICI_option_chain_snapshot_2026-03-30T10-35-44.046236+05-30.csv',
+        replay_spot='debug_samples/replay_fixtures/spot_snapshots/NIFTY_spot_snapshot_2026-03-30T10-35-00+05-30.json',
+        replay_chain='debug_samples/replay_fixtures/option_chain_snapshots/NIFTY_ICICI_option_chain_snapshot_2026-03-30T10-35-44.046236+05-30.csv',
         capture_signal_evaluation=False,
         signal_capture_policy='ALL_SIGNALS',
     )

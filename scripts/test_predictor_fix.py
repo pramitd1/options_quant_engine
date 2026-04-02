@@ -374,8 +374,8 @@ This report documents the validation of the corrected `ResearchDecisionPolicyPre
 ## Files Modified
 
 - `engine/predictors/decision_policy_predictor.py` - Corrected predictor logic
-- `DECISION_POLICY_PREDICTOR_CORRECTED.py` - Reference implementation
-- `DEBUG_LIVE_PREDICTOR_REVIEW.md` - Issue analysis
+- `archive/reference_implementations/DECISION_POLICY_PREDICTOR_CORRECTED.py` - Reference implementation
+- `documentation/reviews/debug_live_predictor_review.md` - Issue analysis
 
 ---
 

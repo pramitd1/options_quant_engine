@@ -21,14 +21,14 @@ def parse_ts(path, rx):
 
 def build_pairs(limit=25):
     spots = []
-    for path in glob.glob("debug_samples/*spot_snapshot*.json"):
+    for path in glob.glob("debug_samples/**/*spot_snapshot*.json", recursive=True):
         ts = parse_ts(path, SPOT_RE)
         if ts is not None:
             spots.append((ts, path))
     spots.sort()
 
     chains = []
-    for path in glob.glob("debug_samples/*option_chain_snapshot*.csv"):
+    for path in glob.glob("debug_samples/**/*option_chain_snapshot*.csv", recursive=True):
         ts = parse_ts(path, CHAIN_RE)
         if ts is not None:
             chains.append((ts, path))

@@ -27,14 +27,14 @@ def get_recent_snapshot_pairs(limit: int = 25) -> List[Tuple[str, str]]:
     
     # Get all chain snapshots, sorted by mtime descending
     chains = sorted(
-        glob.glob("debug_samples/*option_chain_snapshot*.csv"),
+        glob.glob("debug_samples/**/*option_chain_snapshot*.csv", recursive=True),
         key=lambda f: os.path.getmtime(f),
         reverse=True
     )[:limit*2]  # Get more to account for potential mismatches
     
     # Get all spot snapshots sorted by timestamp
     spots = sorted(
-        glob.glob("debug_samples/NIFTY_spot_snapshot*.json"),
+        glob.glob("debug_samples/**/*NIFTY_spot_snapshot*.json", recursive=True),
         key=lambda f: os.path.getmtime(f),
         reverse=True
     )

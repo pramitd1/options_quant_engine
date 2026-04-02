@@ -216,7 +216,7 @@ CONFIRMATION_FILTER_CONFIG = {
     "continuous_range_expansion": 1,
     "continuous_move_probability": 1,
     # Direction reversal control — manages confirmation status stickiness across direction changes.
-    # See documentation/REVERSAL_STICKINESS_CONTROL.md for comprehensive guide.
+    # See documentation/system_docs/reference/reversal_stickiness_control.md for the full guide.
     #
     # Three mechanisms (all tunable, independent):
     # 1. revers_veto_steps (RECOMMENDED): forces MIXED status for N snapshots after reversal

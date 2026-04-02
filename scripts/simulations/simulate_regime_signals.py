@@ -22,8 +22,8 @@ Usage
 
   # Use a specific spot and chain snapshot
     python scripts/simulations/simulate_regime_signals.py \
-      --spot debug_samples/NIFTY_spot_snapshot_2026-03-17T11-35-00+05-30.json \
-      --chain debug_samples/NIFTY_ICICI_option_chain_snapshot_2026-03-17T11-36-24.157999+05-30.csv
+            --spot debug_samples/replay_fixtures/spot_snapshots/NIFTY_spot_snapshot_2026-03-17T11-35-00+05-30.json \
+            --chain debug_samples/replay_fixtures/option_chain_snapshots/NIFTY_ICICI_option_chain_snapshot_2026-03-17T11-36-24.157999+05-30.csv
 
   # List available regime scenarios
     python scripts/simulations/simulate_regime_signals.py --list
@@ -97,10 +97,10 @@ class _SimulationSignalCaptureSink:
 def _latest_snapshot_pair(symbol: str = "NIFTY", replay_dir: str = "debug_samples"):
     """Discover the most recent spot + chain snapshot pair for the given symbol."""
     base = Path(BASE_DIR) / replay_dir
-    spots = sorted(base.glob(f"{symbol}_spot_snapshot_*.json"))
+    spots = sorted(base.rglob(f"{symbol}_spot_snapshot_*.json"))
     # Skip empty chain files (< 100 bytes)
     chains = sorted(
-        p for p in base.glob(f"{symbol}_*_option_chain_snapshot_*.csv")
+        p for p in base.rglob(f"{symbol}_*_option_chain_snapshot_*.csv")
         if p.stat().st_size > 100
     )
     if not spots or not chains:
@@ -250,7 +250,7 @@ def main():
         spot_path = spot_path or auto_spot
         chain_path = chain_path or auto_chain
     if not spot_path or not chain_path:
-        print(f"No saved snapshots found for {args.symbol} in debug_samples/")
+        print(f"No saved snapshots found for {args.symbol} under debug_samples/")
         print("Run the engine once with --save-snapshots, or specify --spot and --chain paths.")
         sys.exit(1)
 

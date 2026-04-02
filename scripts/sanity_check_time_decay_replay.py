@@ -23,8 +23,8 @@ def _safe(v, default=None):
 
 
 def main() -> int:
-    spot_path = "debug_samples/NIFTY_spot_snapshot_2026-03-16T12-35-00+05-30.json"
-    chain_path = "debug_samples/NIFTY_ICICI_option_chain_snapshot_2026-03-16T12-34-24.280934+05-30.csv"
+    spot_path = "debug_samples/replay_fixtures/spot_snapshots/NIFTY_spot_snapshot_2026-03-16T12-35-00+05-30.json"
+    chain_path = "debug_samples/replay_fixtures/option_chain_snapshots/NIFTY_ICICI_option_chain_snapshot_2026-03-16T12-34-24.280934+05-30.csv"
 
     with open(spot_path, "r", encoding="utf-8") as f:
         spot_snapshot = json.load(f)

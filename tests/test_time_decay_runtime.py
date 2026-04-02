@@ -181,10 +181,10 @@ def test_path_observation_isolated_by_symbol_key():
 
 def test_generate_trade_exposes_score_calibration_metadata():
     spot_snapshot = load_spot_snapshot(
-        "debug_samples/NIFTY_spot_snapshot_2026-03-25T09-50-00+05-30.json"
+        "debug_samples/replay_fixtures/spot_snapshots/NIFTY_spot_snapshot_2026-03-25T09-50-00+05-30.json"
     )
     option_chain = load_option_chain_snapshot(
-        "debug_samples/NIFTY_ICICI_option_chain_snapshot_2026-03-25T09-50-05.194161+05-30.csv"
+        "debug_samples/replay_fixtures/option_chain_snapshots/NIFTY_ICICI_option_chain_snapshot_2026-03-25T09-50-05.194161+05-30.csv"
     )
     spot = float(spot_snapshot.get("spot"))
     option_chain_validation = validate_option_chain(option_chain, spot=spot)
@@ -218,10 +218,10 @@ def test_generate_trade_exposes_score_calibration_metadata():
 
 def test_generate_trade_marks_reversal_age_time_decay_fallback(monkeypatch):
     spot_snapshot = load_spot_snapshot(
-        "debug_samples/NIFTY_spot_snapshot_2026-03-25T09-50-00+05-30.json"
+        "debug_samples/replay_fixtures/spot_snapshots/NIFTY_spot_snapshot_2026-03-25T09-50-00+05-30.json"
     )
     option_chain = load_option_chain_snapshot(
-        "debug_samples/NIFTY_ICICI_option_chain_snapshot_2026-03-25T09-50-05.194161+05-30.csv"
+        "debug_samples/replay_fixtures/option_chain_snapshots/NIFTY_ICICI_option_chain_snapshot_2026-03-25T09-50-05.194161+05-30.csv"
     )
     spot = float(spot_snapshot.get("spot"))
     option_chain_validation = validate_option_chain(option_chain, spot=spot)

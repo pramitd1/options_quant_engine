@@ -546,6 +546,8 @@ def save_spot_snapshot(snapshot: dict, output_dir: str = "debug_samples"):
     Save one live spot snapshot for inspection.
     """
     out_dir = Path(output_dir)
+    if out_dir == Path("debug_samples"):
+        out_dir = out_dir / "spot_snapshots"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     symbol = snapshot.get("symbol", "UNKNOWN")

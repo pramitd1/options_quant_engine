@@ -141,6 +141,7 @@ python scripts/build_model_registry.py
 
 To keep the repository maintainable and reproducible, use these artifact path conventions.
 
+- Human-readable operator docs, plans, reviews, summaries, and deployment guides belong under `documentation/` and should follow the index in `documentation/README.md`.
 - Runtime validation and profiling outputs: store under `research/runtime_validation/`.
 - Backtest logs and comparison outputs: store under `research/runtime_validation/backtest_runs/`.
 - Signal-evaluation reports and generated tables: store under `research/signal_evaluation/reports/`.
