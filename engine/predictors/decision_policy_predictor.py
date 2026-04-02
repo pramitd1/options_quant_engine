@@ -2,17 +2,19 @@
 ResearchDecisionPolicyPredictor
 ================================
 Extends the research_dual_model pathway with an overlay of the
-Decision Policy Layer.  This predictor:
+Decision Policy Layer. This predictor:
 
   1. Runs the full engine pipeline (rule + ML blend)
   2. Overlays GBT ranking + LogReg calibration (research dual-model)
-  3. Evaluates the **dual_threshold** policy to produce an ALLOW / BLOCK /
+  3. Evaluates the dual-threshold policy to produce an ALLOW / BLOCK /
      DOWNGRADE decision
-  4. Adjusts hybrid_move_probability and components accordingly
+  4. Preserves the engine move probability while surfacing policy diagnostics
 
-When the policy BLOCKs a signal the ``hybrid_move_probability`` is clamped
-to 0.0; DOWNGRADEd signals are halved.  Components carry full diagnostic
-detail (policy_decision, policy_reason, size_multiplier, etc.).
+Policy outcomes are carried in components (`policy_decision`,
+`policy_reason`, `policy_size_multiplier`) and are intended to influence
+execution gating and sizing downstream. They should not rewrite the engine's
+underlying move-likelihood metric to zero because that obscures whether the
+setup was blocked by policy or by a genuinely low modeled move probability.
 
 RESEARCH ONLY — set PREDICTION_METHOD=research_decision_policy to activate.
 """
@@ -90,16 +92,16 @@ class ResearchDecisionPolicyPredictor:
         except Exception:
             logger.debug("Decision policy evaluation failed — defaulting to ALLOW", exc_info=True)
 
-        # 4. ★ CORRECTED: Apply policy as OVERLAY on engine probability
-        # Use engine probability as base, modify via policy decision and size multiplier
+        # 4. Apply policy as an execution/sizing overlay on top of the engine
+        # probability. A policy BLOCK should not erase the underlying modeled
+        # move likelihood because downstream surfaces need to distinguish
+        # "blocked despite edge" from "no edge".
         effective_prob = engine_hybrid_prob
-        
-        if policy_decision == "BLOCK":
-            effective_prob = 0.0
-        elif policy_decision == "DOWNGRADE" and effective_prob is not None:
-            # Use size_multiplier from policy, not hardcoded 0.5
+
+        if policy_decision == "DOWNGRADE" and effective_prob is not None:
             effective_prob = effective_prob * size_multiplier
-        # ALLOW: leave engine probability unchanged
+        # ALLOW and BLOCK both preserve the engine probability; BLOCK is
+        # conveyed via policy_decision/policy_reason for downstream gating.
 
         # 5. Validate effective_prob stays in valid range [0, 1]
         if effective_prob is not None:

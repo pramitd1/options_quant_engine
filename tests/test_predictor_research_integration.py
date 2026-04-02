@@ -131,6 +131,40 @@ def test_decision_policy_predictor_uses_ml_score_fields(monkeypatch):
     assert out.hybrid_move_probability == 0.49
 
 
+def test_decision_policy_predictor_preserves_engine_probability_when_policy_blocks(monkeypatch):
+    from engine.predictors.decision_policy_predictor import ResearchDecisionPolicyPredictor
+    import research.decision_policy.policy_definitions as policy_defs
+    import research.ml_models.ml_inference as ml_inf
+    import engine.trading_support.probability as prob
+
+    class _Result:
+        ml_rank_score = 0.12
+        ml_confidence_score = 0.18
+
+    class _BlockedDecision:
+        decision = "BLOCK"
+        reason = "below_dual_thresholds"
+        size_multiplier = 0.0
+
+    def _fake_infer_single(_arg):
+        return _Result()
+
+    def _fake_impl(**kwargs):
+        return _stub_raw_probability_state(hybrid_move_probability=0.52)
+
+    monkeypatch.setattr(ml_inf, "infer_single", _fake_infer_single)
+    monkeypatch.setattr(prob, "_compute_probability_state_impl", _fake_impl)
+    monkeypatch.setattr(policy_defs, "dual_threshold_policy", lambda _row: _BlockedDecision())
+
+    predictor = ResearchDecisionPolicyPredictor()
+    out = predictor.predict(_base_market_ctx())
+
+    assert out.components.get("policy_decision") == "BLOCK"
+    assert out.components.get("policy_reason") == "below_dual_thresholds"
+    assert out.components.get("engine_hybrid_probability") == 0.52
+    assert out.hybrid_move_probability == 0.52
+
+
 def test_ev_sizing_predictor_passes_row_dict_to_infer_single(monkeypatch):
     from engine.predictors.ev_sizing_predictor import EVSizingPredictor
 

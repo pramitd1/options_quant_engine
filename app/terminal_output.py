@@ -211,6 +211,62 @@ def _fmt(value, max_items=8):
     return value
 
 
+def _format_probability_display(probability):
+    """Format probabilities without collapsing small nonzero values to `0%`."""
+    if not isinstance(probability, (int, float)):
+        return "-"
+    if isinstance(probability, float) and (math.isnan(probability) or math.isinf(probability)):
+        return "-"
+
+    prob = float(probability)
+    if prob <= 0:
+        return "0%"
+    if prob < 0.01:
+        return "<1%"
+    if prob < 0.10:
+        return f"{prob:.1%}"
+    return f"{prob:.0%}"
+
+
+def _summarize_confidence_guards(guards):
+    """Return a compact explanation when display confidence is being capped."""
+    if not isinstance(guards, list) or not guards:
+        return None
+
+    normalized = {str(item).strip().lower() for item in guards if str(item).strip()}
+    notes = []
+
+    if "provider_health_weak" in normalized:
+        notes.append("capped by weak provider health")
+    elif "provider_health_caution" in normalized:
+        notes.append("capped by caution provider health")
+
+    if "status_watchlist_or_blocked" in normalized:
+        notes.append("capped by blocked/watchlist status")
+    if "data_quality_weak" in normalized:
+        notes.append("capped by weak data quality")
+    elif "data_quality_caution" in normalized:
+        notes.append("capped by caution data quality")
+    if "explicit_no_trade_reason" in normalized:
+        notes.append("capped by explicit no-trade reason")
+    if "direction_unresolved" in normalized:
+        notes.append("capped by unresolved direction")
+    if "confirmation_conflict_or_no_direction" in normalized:
+        notes.append("capped by confirmation conflict")
+
+    if not notes:
+        return None
+
+    deduped_notes = []
+    seen = set()
+    for note in notes:
+        if note in seen:
+            continue
+        seen.add(note)
+        deduped_notes.append(note)
+    return "; ".join(deduped_notes)
+
+
 def _resolve_move_sigma_points(trade):
     """Resolve a 1-sigma move estimate in points for breakout odds."""
     if not isinstance(trade, dict):
@@ -1601,7 +1657,7 @@ def _describe_effective_strength_gate(trade):
 
     regime_adj = trade.get("regime_threshold_adjustments")
     if isinstance(regime_adj, list) and regime_adj:
-        regime_note = "+".join(str(x) for x in regime_adj)
+        regime_note = ", ".join(str(x) for x in regime_adj)
     else:
         regime_note = "none"
 
@@ -2530,7 +2586,10 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         confidence = compute_signal_confidence(trade)
         conf_icon = _CONFIDENCE_ICONS.get(confidence["confidence_level"], "")
         prob = trade.get("hybrid_move_probability")
-        prob_str = f"{prob:.0%}" if isinstance(prob, (int, float)) else "-"
+        prob_str = _format_probability_display(prob)
+        confidence_note = _summarize_confidence_guards(
+            confidence.get("confidence_recalibration_guards")
+        )
         
         decision_classification = trade.get("decision_classification")
         decision_dict = {
@@ -2544,6 +2603,8 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         }
         
         _print_section("TRADE DECISION", decision_dict)
+        if confidence_note:
+            print(f"{'confidence_note':26}: {confidence_note}")
 
         _render_directionality_diagnostics(trade, mode="compact")
         
@@ -3187,7 +3248,7 @@ def _render_diagnostics(trade):
         _print_section("DIAGNOSTICS", diagnostics)
 
 
-def _render_full_signal_summary(trade):
+def _render_full_signal_summary(trade, option_chain_frame=None):
     """Print the exhaustive quant trade signal block."""
     _exp_pct_straddle = trade.get("expected_move_pct")
     _exp_pct_model = trade.get("expected_move_pct_model")
@@ -3428,7 +3489,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
     _render_dealer_dashboard(dashboard)
 
     # Full signal summary + explainability
-    _render_full_signal_summary(trade)
+    _render_full_signal_summary(trade, option_chain_frame=option_chain_frame)
 
     # Full diagnostics
     _render_diagnostics(trade)
