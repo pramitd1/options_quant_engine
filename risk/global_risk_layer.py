@@ -347,6 +347,27 @@ def evaluate_global_risk_layer(
             message="Trade downgraded to watchlist due to confirmation conflict",
         )
 
+    global_risk_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
+    macro_uncertainty_score = _safe_float(global_risk_features.get("macro_uncertainty_score"), 0.0)
+    if macro_uncertainty_score >= cfg.macro_uncertainty_watch_threshold:
+        reasons.append("macro_uncertainty_window")
+        if global_risk_features.get("headline_data_stale"):
+            reasons.append("headline_data_stale")
+        if global_risk_features.get("global_macro_data_stale"):
+            reasons.append("global_macro_data_stale")
+        if _safe_float(global_risk_features.get("event_uncertainty_score"), 0.0) > 0:
+            reasons.append("event_uncertainty_elevated")
+        return _result(
+            state=global_risk_state,
+            score=max(score, cfg.macro_uncertainty_watch_score_floor),
+            level="HIGH",
+            action="WATCHLIST",
+            size_cap=min(size_cap, cfg.macro_uncertainty_watch_size_cap),
+            reasons=reasons,
+            trade_status="WATCHLIST",
+            message="Trade downgraded to watchlist due to elevated macro uncertainty",
+        )
+
     if adjusted_trade_strength < min_trade_strength:
         reasons.append("insufficient_trade_strength")
         return _result(

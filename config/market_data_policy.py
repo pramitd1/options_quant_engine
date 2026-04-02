@@ -15,8 +15,13 @@ Downstream Usage:
 """
 from __future__ import annotations
 
+import os
+
 
 IST_TIMEZONE = "Asia/Kolkata"
+DXY_TICKER = os.getenv("OQE_DXY_TICKER", "DX-Y.NYB")
+GIFT_NIFTY_TICKER = os.getenv("OQE_GIFT_NIFTY_TICKER", "^NSEI")
+GIFT_NIFTY_PROXY_IN_USE = GIFT_NIFTY_TICKER == "^NSEI"
 GLOBAL_MARKET_TICKERS = {
     "oil": "CL=F",
     "gold": "GC=F",
@@ -27,6 +32,8 @@ GLOBAL_MARKET_TICKERS = {
     "nasdaq": "^IXIC",
     "us10y": "^TNX",
     "usdinr": "INR=X",
+    "dxy": DXY_TICKER,
+    "gift_nifty": GIFT_NIFTY_TICKER,
 }
 YFINANCE_UNDERLYING_SYMBOL_MAP = {
     "NIFTY": "^NSEI",

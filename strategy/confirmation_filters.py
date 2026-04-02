@@ -511,7 +511,8 @@ def compute_confirmation_filters(
         reasons.append("confirmation_veto_due_to_multi_factor_conflict")
 
     # Reversal grace period veto: force MIXED status for N snapshots
-    # starting from the reversal itself (reversal_age=0).
+    # starting from the reversal itself (reversal_age=0), unless breakout
+    # evidence is strong enough to justify a faster directional handoff.
     veto_steps = _bounded_reversal_veto_steps(cfg)
     if veto_steps > 0 and reversal_age is not None:
         try:
@@ -521,14 +522,42 @@ def compute_confirmation_filters(
         if age is not None and 0 <= age < veto_steps:
             computed_status = _sign_label(total, cfg)
             if computed_status in {"STRONG_CONFIRMATION", "CONFIRMED"}:
-                reasons.append("reversal_grace_period_active")
-                return {
-                    "score_adjustment": round(float(total), 2),
-                    "status": "MIXED",
-                    "veto": veto,
-                    "reasons": reasons,
-                    "breakdown": breakdown,
-                }
+                override_prob_floor = _safe_float(rt.get("reversal_breakout_override_move_probability_floor"), 0.62)
+                override_range_floor = _safe_float(rt.get("reversal_breakout_override_range_pct_floor"), 0.35)
+                require_directional_flow = str(rt.get("reversal_breakout_override_requires_flow", 1)).strip().lower() not in {"0", "false", "no", "off"}
+                require_hedging_alignment = str(rt.get("reversal_breakout_override_requires_hedging", 0)).strip().lower() not in {"0", "false", "no", "off"}
+                try:
+                    min_signals = int(float(rt.get("reversal_breakout_override_min_signals", 2)))
+                except (TypeError, ValueError):
+                    min_signals = 2
+                min_signals = max(1, min(4, min_signals))
+
+                directional_flow_ok = final_flow_signal in {"BULLISH_FLOW", "BEARISH_FLOW"}
+                move_prob_ok = move_prob is not None and move_prob >= override_prob_floor
+                range_ok = range_pct is not None and range_pct >= override_range_floor
+                hedging_ok = (
+                    (bullish and hedging_bias == "UPSIDE_ACCELERATION")
+                    or (bearish and hedging_bias == "DOWNSIDE_ACCELERATION")
+                )
+
+                evidence_count = int(move_prob_ok) + int(range_ok) + int(directional_flow_ok) + int(hedging_ok)
+                override_allowed = evidence_count >= min_signals
+                if require_directional_flow:
+                    override_allowed = override_allowed and directional_flow_ok
+                if require_hedging_alignment:
+                    override_allowed = override_allowed and hedging_ok
+
+                if not override_allowed:
+                    reasons.append("reversal_grace_period_active")
+                    return {
+                        "score_adjustment": round(float(total), 2),
+                        "status": "MIXED",
+                        "veto": veto,
+                        "reasons": reasons,
+                        "breakdown": breakdown,
+                    }
+                reasons.append("reversal_grace_bypassed_on_breakout")
+                reasons.append(f"reversal_grace_override_evidence:{evidence_count}")
 
     return {
         "score_adjustment": round(float(total), 2),

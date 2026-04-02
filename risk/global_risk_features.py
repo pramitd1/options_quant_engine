@@ -33,6 +33,8 @@ MARKET_INPUT_KEYS = [
     "nasdaq_change_24h",
     "us10y_change_bp",
     "usdinr_change_24h",
+    "dxy_change_24h",
+    "gift_nifty_change_24h",
     "realized_vol_5d",
     "realized_vol_30d",
 ]
@@ -343,6 +345,19 @@ def _currency_shock_score(usdinr_change_24h, *, cfg):
     return cfg.currency_shock_score_base if _safe_float(usdinr_change_24h, 0.0) > cfg.currency_shock_threshold_pct else 0.0
 
 
+def _dxy_shock_score(dxy_change_24h, *, cfg):
+    return cfg.dxy_shock_score_base if _safe_float(dxy_change_24h, 0.0) > cfg.dxy_shock_threshold_pct else 0.0
+
+
+def _gift_nifty_lead_score(gift_nifty_change_24h, *, cfg):
+    move = _safe_float(gift_nifty_change_24h, 0.0)
+    if move >= cfg.gift_nifty_positive_threshold_pct:
+        return cfg.gift_nifty_lead_score_base
+    if move <= cfg.gift_nifty_negative_threshold_pct:
+        return -cfg.gift_nifty_lead_score_base
+    return 0.0
+
+
 def _volatility_compression_score(realized_vol_5d, realized_vol_30d, *, cfg):
     """
     Purpose:
@@ -526,6 +541,8 @@ def build_global_risk_features(
     nasdaq_change_24h = _safe_float(effective_market_inputs.get("nasdaq_change_24h"), None)
     us10y_change_bp = _safe_float(effective_market_inputs.get("us10y_change_bp"), None)
     usdinr_change_24h = _safe_float(effective_market_inputs.get("usdinr_change_24h"), None)
+    dxy_change_24h = _safe_float(effective_market_inputs.get("dxy_change_24h"), None)
+    gift_nifty_change_24h = _safe_float(effective_market_inputs.get("gift_nifty_change_24h"), None)
     realized_vol_5d = _safe_float(effective_market_inputs.get("realized_vol_5d"), None)
     realized_vol_30d = _safe_float(effective_market_inputs.get("realized_vol_30d"), None)
 
@@ -544,6 +561,8 @@ def build_global_risk_features(
     us_equity_risk_score = _us_equity_risk_score(sp500_change_24h, nasdaq_change_24h, cfg=cfg)
     rates_shock_score = _rates_shock_score(us10y_change_bp, cfg=cfg)
     currency_shock_score = _currency_shock_score(usdinr_change_24h, cfg=cfg)
+    dxy_shock_score = _dxy_shock_score(dxy_change_24h, cfg=cfg)
+    gift_nifty_lead_score = _gift_nifty_lead_score(gift_nifty_change_24h, cfg=cfg)
     macro_event_risk_score = _safe_int(macro_event_state.get("macro_event_risk_score"), 0)
     macro_event_risk_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     volatility_compression_score = _volatility_compression_score(realized_vol_5d, realized_vol_30d, cfg=cfg)
@@ -562,8 +581,30 @@ def build_global_risk_features(
             + (cfg.risk_off_intensity_us_equity_weight * us_equity_risk_score)
             + (cfg.risk_off_intensity_rates_weight * rates_shock_score)
             + (cfg.risk_off_intensity_currency_weight * currency_shock_score)
+            + (cfg.risk_off_intensity_dxy_weight * dxy_shock_score)
+            + (cfg.risk_off_intensity_gift_nifty_weight * max(-gift_nifty_lead_score, 0.0))
             + (cfg.risk_off_intensity_commodity_weight * commodity_stress_component)
             + (cfg.risk_off_intensity_macro_event_weight * macro_event_risk_norm),
+            0.0,
+            1.0,
+        ),
+        4,
+    )
+    headline_data_stale = bool(macro_news_state.get("neutral_fallback", True)) and any(
+        "stale" in str(item).lower() for item in (macro_news_state.get("warnings") or [])
+    )
+    global_macro_data_stale = bool(market_data_stale or market_state["market_features_neutralized"])
+    event_uncertainty_score = _clip(
+        _safe_float(((macro_news_state.get("event_features") or {}).get("event_uncertainty_score")), 0.0) / 100.0,
+        0.0,
+        1.0,
+    )
+    macro_uncertainty_score = round(
+        _clip(
+            (cfg.macro_uncertainty_event_weight * event_uncertainty_score)
+            + (cfg.macro_uncertainty_headline_velocity_weight * _clip(_safe_float(macro_news_state.get("headline_velocity"), 0.0), 0.0, 1.0))
+            + (cfg.macro_uncertainty_headline_stale_weight * float(headline_data_stale))
+            + (cfg.macro_uncertainty_market_stale_weight * float(global_macro_data_stale)),
             0.0,
             1.0,
         ),
@@ -582,6 +623,7 @@ def build_global_risk_features(
     warnings = list(macro_news_state.get("warnings", [])) + list(global_market_snapshot.get("warnings", []))
     if market_state["market_features_neutralized"]:
         warnings.append(f"market_features_neutralized:{market_state['market_neutralization_reason']}")
+    gift_nifty_proxy_in_use = any("gift_nifty_proxy_in_use" in str(item) for item in warnings)
 
     return {
         "holding_profile": holding_profile,
@@ -624,6 +666,9 @@ def build_global_risk_features(
         "nasdaq_change_24h": nasdaq_change_24h,
         "us10y_change_bp": us10y_change_bp,
         "usdinr_change_24h": usdinr_change_24h,
+        "dxy_change_24h": dxy_change_24h,
+        "gift_nifty_change_24h": gift_nifty_change_24h,
+        "gift_nifty_proxy_in_use": gift_nifty_proxy_in_use,
         "realized_vol_5d": realized_vol_5d,
         "realized_vol_30d": realized_vol_30d,
         "oil_shock_score": oil_shock_score,
@@ -634,9 +679,15 @@ def build_global_risk_features(
         "us_equity_risk_score": us_equity_risk_score,
         "rates_shock_score": rates_shock_score,
         "currency_shock_score": currency_shock_score,
+        "dxy_shock_score": dxy_shock_score,
+        "gift_nifty_lead_score": gift_nifty_lead_score,
         "risk_off_intensity": risk_off_intensity,
         "volatility_compression_score": volatility_compression_score,
         "volatility_explosion_probability": volatility_explosion_probability,
+        "headline_data_stale": headline_data_stale,
+        "global_macro_data_stale": global_macro_data_stale,
+        "event_uncertainty_score": event_uncertainty_score,
+        "macro_uncertainty_score": macro_uncertainty_score,
         "market_data_available": market_data_available,
         "market_data_stale": market_data_stale,
         "market_data_provider": global_market_snapshot.get("provider"),

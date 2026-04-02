@@ -30,6 +30,13 @@ from strategy.trade_strength import compute_trade_strength
 from .common import _clip, _normalize_validation_dict, _safe_float
 
 
+def _has_stale_warning(items):
+    for item in items or []:
+        if "stale" in str(item).lower():
+            return True
+    return False
+
+
 def _compute_data_quality(*, spot_validation, option_chain_validation, analytics_state, probability_state):
     """
     Purpose:
@@ -366,6 +373,17 @@ def decide_direction(
     rr_momentum=None,
     volume_pcr_atm=None,
     gamma_flip_drift=None,
+    spot=None,
+    support_wall=None,
+    resistance_wall=None,
+    vacuum_state=None,
+    intraday_range_pct=None,
+    intraday_gamma_state=None,
+    previous_direction=None,
+    reversal_age=None,
+    hybrid_move_probability=None,
+    macro_news_state=None,
+    global_risk_state=None,
 ):
     """
     Purpose:
@@ -399,6 +417,9 @@ def decide_direction(
     runtime_thresholds = get_trade_runtime_thresholds()
     bullish_votes = []
     bearish_votes = []
+    macro_news_state = macro_news_state if isinstance(macro_news_state, dict) else {}
+    global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
+    global_risk_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state.get("global_risk_features"), dict) else {}
 
     def _flag_enabled(name, default=True):
         value = runtime_thresholds.get(name, 1 if default else 0)
@@ -517,6 +538,118 @@ def decide_direction(
         else:
             add_vote("BEARISH", "FLIP_DRIFT")
 
+    # Breakout-sensitive vote layer: reacts faster to obvious directional expansions
+    # while preserving margin gates to avoid trading random noise.
+    bullish_breakout_evidence = 0.0
+    bearish_breakout_evidence = 0.0
+    spot_value = _safe_float(spot, None)
+    support_value = _safe_float(support_wall, None)
+    resistance_value = _safe_float(resistance_wall, None)
+    breakout_buffer = abs(_safe_float(runtime_thresholds.get("direction_breakout_buffer_points"), 20.0) or 20.0)
+    range_floor = _safe_float(runtime_thresholds.get("direction_breakout_range_pct_floor"), 0.35)
+    range_value = _safe_float(intraday_range_pct, None)
+    move_probability = _safe_float(hybrid_move_probability, None)
+
+    if spot_value is not None and resistance_value is not None and spot_value >= (resistance_value + breakout_buffer):
+        add_vote("BULLISH", "BREAKOUT_STRUCTURE")
+        bullish_breakout_evidence += 1.0
+    if spot_value is not None and support_value is not None and spot_value <= (support_value - breakout_buffer):
+        add_vote("BEARISH", "BREAKOUT_STRUCTURE")
+        bearish_breakout_evidence += 1.0
+
+    if range_value is not None and range_value >= range_floor:
+        if spot_vs_flip == "ABOVE_FLIP":
+            add_vote("BULLISH", "RANGE_EXPANSION")
+            bullish_breakout_evidence += 0.6
+        elif spot_vs_flip == "BELOW_FLIP":
+            add_vote("BEARISH", "RANGE_EXPANSION")
+            bearish_breakout_evidence += 0.6
+
+    if str(vacuum_state or "").upper().strip() == "BREAKOUT_ZONE":
+        if spot_vs_flip == "ABOVE_FLIP":
+            add_vote("BULLISH", "BREAKOUT_STRUCTURE")
+            bullish_breakout_evidence += 0.8
+        elif spot_vs_flip == "BELOW_FLIP":
+            add_vote("BEARISH", "BREAKOUT_STRUCTURE")
+            bearish_breakout_evidence += 0.8
+
+    if str(intraday_gamma_state or "").upper().strip() == "VOL_EXPANSION":
+        if spot_vs_flip == "ABOVE_FLIP":
+            bullish_breakout_evidence += 0.3
+        elif spot_vs_flip == "BELOW_FLIP":
+            bearish_breakout_evidence += 0.3
+
+    macro_regime = str(
+        macro_news_state.get("macro_regime") or global_risk_state.get("global_risk_state") or ""
+    ).upper().strip()
+    news_confidence = _safe_float(macro_news_state.get("news_confidence_score"), 0.0)
+    macro_sentiment = _safe_float(macro_news_state.get("macro_sentiment_score"), 0.0)
+    india_macro_bias = _safe_float(macro_news_state.get("india_macro_bias"), 0.0)
+    global_risk_bias = _safe_float(macro_news_state.get("global_risk_bias"), 0.0)
+    macro_direction_confidence_floor = _safe_float(runtime_thresholds.get("macro_direction_confidence_floor"), 55.0)
+    macro_direction_bias_floor = _safe_float(runtime_thresholds.get("macro_direction_bias_floor"), 10.0)
+    macro_regime_vote_bonus = _safe_float(runtime_thresholds.get("macro_regime_vote_bonus"), 5.0)
+    headline_stale = bool(macro_news_state.get("neutral_fallback", False)) or _has_stale_warning(macro_news_state.get("warnings", []))
+    bullish_macro_pressure = max(macro_sentiment, 0.0) + max(india_macro_bias, 0.0)
+    bearish_macro_pressure = max(-macro_sentiment, 0.0) + max(global_risk_bias, 0.0)
+    if macro_regime == "RISK_ON":
+        bullish_macro_pressure += macro_regime_vote_bonus
+    elif macro_regime == "RISK_OFF":
+        bearish_macro_pressure += macro_regime_vote_bonus
+    if not headline_stale and news_confidence >= macro_direction_confidence_floor:
+        if bullish_macro_pressure >= macro_direction_bias_floor and bullish_macro_pressure > bearish_macro_pressure:
+            add_vote("BULLISH", "MACRO_PRESSURE")
+            bullish_breakout_evidence += 0.2
+        elif bearish_macro_pressure >= macro_direction_bias_floor and bearish_macro_pressure > bullish_macro_pressure:
+            add_vote("BEARISH", "MACRO_PRESSURE")
+            bearish_breakout_evidence += 0.2
+
+    usdinr_change_24h = _safe_float(
+        global_risk_features.get("usdinr_change_24h", global_risk_state.get("usdinr_change_24h")),
+        None,
+    )
+    dxy_change_24h = _safe_float(
+        global_risk_features.get("dxy_change_24h", global_risk_state.get("dxy_change_24h")),
+        None,
+    )
+    gift_nifty_change_24h = _safe_float(
+        global_risk_features.get("gift_nifty_change_24h", global_risk_state.get("gift_nifty_change_24h")),
+        None,
+    )
+    currency_shock_score = _safe_float(
+        global_risk_features.get("currency_shock_score", global_risk_state.get("currency_shock_score")),
+        0.0,
+    )
+    fx_put_threshold = _safe_float(runtime_thresholds.get("fx_usdinr_put_threshold_pct"), 0.35)
+    fx_call_threshold = abs(_safe_float(runtime_thresholds.get("fx_usdinr_call_threshold_pct"), -0.35))
+    if usdinr_change_24h is not None:
+        if usdinr_change_24h >= fx_put_threshold:
+            add_vote("BEARISH", "FX_PRESSURE")
+            bearish_breakout_evidence += 0.2 + min(currency_shock_score, 1.0) * 0.15
+        elif usdinr_change_24h <= -fx_call_threshold:
+            add_vote("BULLISH", "FX_PRESSURE")
+            bullish_breakout_evidence += 0.2
+
+    dxy_put_threshold = _safe_float(runtime_thresholds.get("dxy_put_threshold_pct"), 0.30)
+    dxy_call_threshold = abs(_safe_float(runtime_thresholds.get("dxy_call_threshold_pct"), -0.30))
+    if dxy_change_24h is not None:
+        if dxy_change_24h >= dxy_put_threshold:
+            add_vote("BEARISH", "DXY_PRESSURE")
+            bearish_breakout_evidence += 0.15
+        elif dxy_change_24h <= -dxy_call_threshold:
+            add_vote("BULLISH", "DXY_PRESSURE")
+            bullish_breakout_evidence += 0.15
+
+    gift_nifty_call_threshold = _safe_float(runtime_thresholds.get("gift_nifty_call_threshold_pct"), 0.35)
+    gift_nifty_put_threshold = _safe_float(runtime_thresholds.get("gift_nifty_put_threshold_pct"), -0.35)
+    if gift_nifty_change_24h is not None and not bool(global_risk_features.get("gift_nifty_proxy_in_use", False)):
+        if gift_nifty_change_24h >= gift_nifty_call_threshold:
+            add_vote("BULLISH", "GIFT_LEAD")
+            bullish_breakout_evidence += 0.15
+        elif gift_nifty_change_24h <= gift_nifty_put_threshold:
+            add_vote("BEARISH", "GIFT_LEAD")
+            bearish_breakout_evidence += 0.15
+
     bullish_score = round(sum(weight for _, weight in bullish_votes), 2)
     bearish_score = round(sum(weight for _, weight in bearish_votes), 2)
     
@@ -560,21 +693,83 @@ def decide_direction(
     bull_probability = round(bullish_score / total_score, 4)
     bear_probability = round(bearish_score / total_score, 4)
 
+    base_min_score = float(direction_thresholds["min_score"])
+    base_min_margin = float(direction_thresholds["min_margin"])
+    breakout_evidence_threshold = _safe_float(runtime_thresholds.get("direction_breakout_evidence_threshold"), 2.0)
+    previous_direction_clean = str(previous_direction or "").strip().upper()
+    reversal_context = previous_direction_clean in {"CALL", "PUT"}
+    breakout_evidence = max(bullish_breakout_evidence, bearish_breakout_evidence)
+    expansion_mode_breakout_threshold = _safe_float(runtime_thresholds.get("expansion_mode_breakout_evidence_threshold"), 1.25)
+    expansion_mode_move_prob_floor = _safe_float(runtime_thresholds.get("expansion_mode_move_probability_floor"), 0.56)
+    expansion_mode_range_floor = _safe_float(runtime_thresholds.get("expansion_mode_range_pct_floor"), 0.25)
+    bullish_expansion_mode = (
+        bullish_breakout_evidence >= expansion_mode_breakout_threshold
+        and bullish_score >= bearish_score
+        and (
+            (move_probability is not None and move_probability >= expansion_mode_move_prob_floor)
+            or (range_value is not None and range_value >= expansion_mode_range_floor)
+            or final_flow_signal == "BULLISH_FLOW"
+            or hedging_bias == "UPSIDE_ACCELERATION"
+        )
+    )
+    bearish_expansion_mode = (
+        bearish_breakout_evidence >= expansion_mode_breakout_threshold
+        and bearish_score >= bullish_score
+        and (
+            (move_probability is not None and move_probability >= expansion_mode_move_prob_floor)
+            or (range_value is not None and range_value >= expansion_mode_range_floor)
+            or final_flow_signal == "BEARISH_FLOW"
+            or hedging_bias == "DOWNSIDE_ACCELERATION"
+        )
+    )
+    expansion_mode = bullish_expansion_mode or bearish_expansion_mode
+    expansion_direction = "CALL" if bullish_expansion_mode and not bearish_expansion_mode else "PUT" if bearish_expansion_mode and not bullish_expansion_mode else None
+    flipback_guard_steps = max(0, int(_safe_float(runtime_thresholds.get("asymmetric_flipback_guard_steps"), 3.0)))
+    try:
+        reversal_age_value = int(reversal_age) if reversal_age is not None else None
+    except (TypeError, ValueError):
+        reversal_age_value = None
+    flipback_guard_active = reversal_age_value is not None and 0 <= reversal_age_value < flipback_guard_steps
+
+    def _effective_thresholds(side, side_expansion_mode):
+        min_score = base_min_score
+        min_margin = base_min_margin
+        if breakout_evidence >= breakout_evidence_threshold:
+            min_margin = max(0.4, min_margin - _safe_float(runtime_thresholds.get("direction_breakout_margin_relief"), 0.25))
+            min_score = max(1.2, min_score - _safe_float(runtime_thresholds.get("direction_breakout_score_relief"), 0.15))
+
+        if side_expansion_mode:
+            min_margin = max(0.15, min_margin - _safe_float(runtime_thresholds.get("expansion_mode_margin_relief"), 0.30))
+            min_score = max(1.0, min_score - _safe_float(runtime_thresholds.get("expansion_mode_score_relief"), 0.20))
+
+        reversal_evidence_threshold = _safe_float(runtime_thresholds.get("reversal_fast_handoff_evidence_threshold"), 1.2)
+        if reversal_context and breakout_evidence >= reversal_evidence_threshold:
+            min_margin = max(0.3, min_margin - _safe_float(runtime_thresholds.get("reversal_fast_handoff_margin_relief"), 0.20))
+            min_score = max(1.1, min_score - _safe_float(runtime_thresholds.get("reversal_fast_handoff_score_relief"), 0.10))
+
+        if flipback_guard_active and previous_direction_clean != side and not side_expansion_mode:
+            min_margin += _safe_float(runtime_thresholds.get("asymmetric_flipback_margin_surcharge"), 0.35)
+            min_score += _safe_float(runtime_thresholds.get("asymmetric_flipback_score_surcharge"), 0.20)
+
+        return round(min_score, 4), round(min_margin, 4)
+    call_min_score, call_min_margin = _effective_thresholds("CALL", bullish_expansion_mode)
+    put_min_score, put_min_margin = _effective_thresholds("PUT", bearish_expansion_mode)
+
     if (
-        bullish_score >= direction_thresholds["min_score"]
+        bullish_score >= call_min_score
         and bullish_score > bearish_score
-        and score_margin >= direction_thresholds["min_margin"]
+        and score_margin >= call_min_margin
     ):
-        return "CALL", build_source(bullish_votes), bull_probability, bear_probability
+        return "CALL", build_source(bullish_votes), bull_probability, bear_probability, expansion_mode, expansion_direction, round(breakout_evidence, 3)
 
     if (
-        bearish_score >= direction_thresholds["min_score"]
+        bearish_score >= put_min_score
         and bearish_score > bullish_score
-        and score_margin >= direction_thresholds["min_margin"]
+        and score_margin >= put_min_margin
     ):
-        return "PUT", build_source(bearish_votes), bull_probability, bear_probability
+        return "PUT", build_source(bearish_votes), bull_probability, bear_probability, expansion_mode, expansion_direction, round(breakout_evidence, 3)
 
-    return None, None, 0.5, 0.5  # Neutral case: equal probabilities
+    return None, None, 0.5, 0.5, expansion_mode, expansion_direction, round(breakout_evidence, 3)
 
 
 def _compute_signal_state(
@@ -589,6 +784,8 @@ def _compute_signal_state(
     backtest_mode,
     market_state,
     probability_state,
+    macro_news_state=None,
+    global_risk_state=None,
 ):
     """
     Purpose:
@@ -613,7 +810,7 @@ def _compute_signal_state(
     Notes:
         Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
     """
-    direction, direction_source, bull_probability, bear_probability = decide_direction(
+    direction, direction_source, bull_probability, bear_probability, expansion_mode, expansion_direction, breakout_evidence = decide_direction(
         final_flow_signal=market_state["final_flow_signal"],
         dealer_pos=market_state["dealer_pos"],
         vol_regime=market_state["vol_regime"],
@@ -630,6 +827,17 @@ def _compute_signal_state(
         rr_momentum=market_state.get("rr_momentum"),
         volume_pcr_atm=market_state.get("volume_pcr_atm"),
         gamma_flip_drift=market_state.get("gamma_flip_drift"),
+        spot=spot,
+        support_wall=market_state.get("support_wall"),
+        resistance_wall=market_state.get("resistance_wall"),
+        vacuum_state=market_state.get("vacuum_state"),
+        intraday_range_pct=intraday_range_pct,
+        intraday_gamma_state=market_state.get("intraday_gamma_state"),
+        previous_direction=previous_direction,
+        reversal_age=reversal_age,
+        hybrid_move_probability=probability_state["hybrid_move_probability"],
+        macro_news_state=macro_news_state,
+        global_risk_state=global_risk_state,
     )
 
     if direction is None:
@@ -637,6 +845,9 @@ def _compute_signal_state(
             "direction": None,
             "direction_source": None,
             "direction_vote_count": 0,
+            "expansion_mode": bool(expansion_mode),
+            "expansion_direction": expansion_direction,
+            "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
             "bull_probability": 0.5,
             "bear_probability": 0.5,
             "trade_strength": 0,
@@ -704,10 +915,38 @@ def _compute_signal_state(
     # can use to temper sizing or urgency.
     direction_vote_count = len(direction_source.split("+")) if direction_source else 0
 
+    runtime_thresholds = get_trade_runtime_thresholds()
+    previous_direction_clean = str(previous_direction or "").strip().upper()
+    reversal_context = previous_direction_clean in {"CALL", "PUT"} and previous_direction_clean != direction
+    source_tokens = {token.strip().upper() for token in (direction_source or "").split("+") if token}
+    breakout_vote_count = sum(1 for token in source_tokens if token in {"BREAKOUT_STRUCTURE", "RANGE_EXPANSION"})
+    min_vote_count = max(1, int(_safe_float(runtime_thresholds.get("reversal_stage_min_vote_count"), 3.0)))
+    min_breakout_votes = max(0, int(_safe_float(runtime_thresholds.get("reversal_stage_min_breakout_votes"), 1.0)))
+    confirmation_status = str(confirmation.get("status") or "").upper().strip()
+
+    reversal_stage = "NONE"
+    if reversal_context:
+        if (
+            confirmation_status in {"STRONG_CONFIRMATION", "CONFIRMED"}
+            and direction_vote_count >= min_vote_count
+            and breakout_vote_count >= min_breakout_votes
+        ):
+            reversal_stage = "CONFIRMED_REVERSAL"
+        elif expansion_mode or direction_vote_count >= max(2, min_vote_count - 1) or breakout_vote_count > 0:
+            reversal_stage = "EARLY_REVERSAL_CANDIDATE"
+        else:
+            reversal_stage = "REVERSAL_UNRESOLVED"
+
     return {
         "direction": direction,
         "direction_source": direction_source,
         "direction_vote_count": direction_vote_count,
+        "expansion_mode": bool(expansion_mode),
+        "expansion_direction": expansion_direction,
+        "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
+        "reversal_context": reversal_context,
+        "reversal_stage": reversal_stage,
+        "breakout_vote_count": int(breakout_vote_count),
         "bull_probability": bull_probability,
         "bear_probability": bear_probability,
         "trade_strength": trade_strength,

@@ -31,6 +31,12 @@ DIRECTION_VOTE_WEIGHTS = {
     "RR_MOMENTUM": 0.30,
     "PCR_ATM": 0.25,
     "FLIP_DRIFT": 0.30,
+    "BREAKOUT_STRUCTURE": 0.95,
+    "RANGE_EXPANSION": 0.55,
+    "MACRO_PRESSURE": 0.45,
+    "FX_PRESSURE": 0.45,
+    "DXY_PRESSURE": 0.40,
+    "GIFT_LEAD": 0.45,
 }
 
 DIRECTION_MIN_SCORE = 1.50
@@ -163,6 +169,52 @@ TRADE_RUNTIME_THRESHOLDS = {
     "gamma_flip_drift_pts_vote_on": 80,
     "gamma_flip_drift_pts_strong": 180,
     "gamma_flip_drift_gamma_vol_weight": 0.08,
+    # Breakout sensitivity controls for sudden directional expansions.
+    "direction_breakout_buffer_points": 20,
+    "direction_breakout_range_pct_floor": 0.35,
+    "direction_breakout_evidence_threshold": 2.0,
+    "direction_breakout_margin_relief": 0.25,
+    "direction_breakout_score_relief": 0.15,
+    "reversal_fast_handoff_evidence_threshold": 1.2,
+    "reversal_fast_handoff_margin_relief": 0.20,
+    "reversal_fast_handoff_score_relief": 0.10,
+    "expansion_mode_breakout_evidence_threshold": 1.25,
+    "expansion_mode_move_probability_floor": 0.56,
+    "expansion_mode_range_pct_floor": 0.25,
+    "expansion_mode_margin_relief": 0.30,
+    "expansion_mode_score_relief": 0.20,
+    "expansion_mode_strength_relief": 3,
+    "expansion_mode_size_mult": 1.10,
+    "expansion_mode_hold_mult": 0.75,
+    "asymmetric_flipback_guard_steps": 3,
+    "asymmetric_flipback_margin_surcharge": 0.35,
+    "asymmetric_flipback_score_surcharge": 0.20,
+    "macro_direction_confidence_floor": 55.0,
+    "macro_direction_bias_floor": 10.0,
+    "macro_regime_vote_bonus": 5.0,
+    "fx_usdinr_put_threshold_pct": 0.35,
+    "fx_usdinr_call_threshold_pct": -0.35,
+    "dxy_put_threshold_pct": 0.30,
+    "dxy_call_threshold_pct": -0.30,
+    "gift_nifty_call_threshold_pct": 0.35,
+    "gift_nifty_put_threshold_pct": -0.35,
+    "headline_staleness_score_penalty": 4,
+    "headline_staleness_size_cap": 0.75,
+    "global_macro_staleness_score_penalty": 5,
+    "global_macro_staleness_size_cap": 0.70,
+    # Two-stage reversal state controls (EARLY candidate -> CONFIRMED reversal)
+    "reversal_stage_min_vote_count": 3,
+    "reversal_stage_min_breakout_votes": 1,
+    "reversal_stage_strength_relief": 4,
+    "reversal_stage_early_size_mult": 0.60,
+    "reversal_stage_early_hold_mult": 0.60,
+    "reversal_stage_confirmed_size_mult": 1.00,
+    # Reversal grace can be bypassed only on high-conviction breakout evidence.
+    "reversal_breakout_override_move_probability_floor": 0.55,
+    "reversal_breakout_override_range_pct_floor": 0.25,
+    "reversal_breakout_override_requires_flow": 0,
+    "reversal_breakout_override_requires_hedging": 0,
+    "reversal_breakout_override_min_signals": 2,
     # Expiry-conditioned max pain pinning settings.
     "max_pain_overlay_max_dte": 2,
     "max_pain_pin_distance_pct": 0.35,
@@ -231,7 +283,7 @@ CONFIRMATION_FILTER_CONFIG = {
     "direction_change_penalty": 0.0,  # Bounded to [0.0, 6.0]
     "direction_change_decay_steps": 0,  # Post-reversal decay window (0 disables)
     "direction_change_decay_factor": 0.5,  # Decay multiplier per step (0.0-1.0)
-    "reversal_veto_steps": 1,  # RECOMMENDED: 1-step grace period on reversals (0 disables)
+    "reversal_veto_steps": 0,  # 0-step grace: reduce stickiness on fast trend reversals
     "strong_confirmation_threshold": 6,
     "confirmed_threshold": 2,
     "mixed_threshold": -3,

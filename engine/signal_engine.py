@@ -1194,9 +1194,17 @@ def generate_trade(
         backtest_mode=backtest_mode,
         market_state=market_state,
         probability_state=probability_state,
+        macro_news_state=macro_news_state,
+        global_risk_state=global_risk_state,
     )
     direction = signal_state["direction"]
     direction_source = signal_state["direction_source"]
+    expansion_mode = bool(signal_state.get("expansion_mode", False))
+    expansion_direction = signal_state.get("expansion_direction")
+    breakout_evidence = _safe_float(signal_state.get("breakout_evidence"), 0.0)
+    reversal_context = bool(signal_state.get("reversal_context", False))
+    reversal_stage = signal_state.get("reversal_stage", "NONE")
+    breakout_vote_count = int(_safe_float(signal_state.get("breakout_vote_count"), 0.0))
     bull_probability = _safe_float(signal_state.get("bull_probability"), 0.5)
     bear_probability = _safe_float(signal_state.get("bear_probability"), 0.5)
     trade_strength = signal_state["trade_strength"]
@@ -1245,6 +1253,31 @@ def generate_trade(
         direction=direction,
         macro_news_state=macro_news_state,
     )
+    macro_news_state = macro_news_state if isinstance(macro_news_state, dict) else {}
+    macro_news_stale = bool(macro_news_state.get("neutral_fallback", False)) and any(
+        "stale" in str(item).lower() for item in (macro_news_state.get("warnings") or [])
+    )
+    global_risk_features_snapshot = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
+    global_macro_data_stale = bool(global_risk_features_snapshot.get("market_data_stale", False)) or bool(
+        global_risk_features_snapshot.get("market_features_neutralized", False)
+    )
+    freshness_overlay_reasons = []
+    freshness_score_penalty = 0
+    freshness_size_cap = 1.0
+    if macro_news_stale:
+        freshness_score_penalty += int(_safe_float(get_trade_runtime_thresholds().get("headline_staleness_score_penalty"), 4.0))
+        freshness_size_cap = min(
+            freshness_size_cap,
+            _safe_float(get_trade_runtime_thresholds().get("headline_staleness_size_cap"), 0.75),
+        )
+        freshness_overlay_reasons.append("headline_data_stale")
+    if global_macro_data_stale:
+        freshness_score_penalty += int(_safe_float(get_trade_runtime_thresholds().get("global_macro_staleness_score_penalty"), 5.0))
+        freshness_size_cap = min(
+            freshness_size_cap,
+            _safe_float(get_trade_runtime_thresholds().get("global_macro_staleness_size_cap"), 0.70),
+        )
+        freshness_overlay_reasons.append("global_macro_data_stale")
     event_overlay_probability_multiplier = _safe_float(
         macro_news_adjustments.get("event_overlay_probability_multiplier"),
         1.0,
@@ -1390,6 +1423,8 @@ def generate_trade(
             100,
         )
     )
+    if freshness_score_penalty > 0:
+        adjusted_trade_strength = int(_clip(adjusted_trade_strength - freshness_score_penalty, 0, 100))
     adjusted_trade_strength = int(
         _clip(
             adjusted_trade_strength + global_risk_adjustment_score + gamma_vol_adjustment_score + dealer_pressure_adjustment_score,
@@ -1433,6 +1468,13 @@ def generate_trade(
             min_trade_strength = int(_clip(min_trade_strength - _relief, 40, 100))
         elif _low_confidence:
             min_trade_strength = int(_clip(min_trade_strength + _surcharge, 0, 100))
+
+    if reversal_stage == "CONFIRMED_REVERSAL":
+        reversal_strength_relief = int(_safe_float(runtime_thresholds.get("reversal_stage_strength_relief"), 4.0))
+        min_trade_strength = int(_clip(min_trade_strength - reversal_strength_relief, 40, 100))
+    if expansion_mode and expansion_direction == direction:
+        expansion_strength_relief = int(_safe_float(runtime_thresholds.get("expansion_mode_strength_relief"), 3.0))
+        min_trade_strength = int(_clip(min_trade_strength - expansion_strength_relief, 40, 100))
 
     provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
 
@@ -1498,6 +1540,7 @@ def generate_trade(
     )
 
     scoring_breakdown["base_trade_strength"] = trade_strength
+    scoring_breakdown["freshness_uncertainty_score"] = -freshness_score_penalty
     scoring_breakdown["at_flip_trade_strength_penalty"] = -at_flip_penalty_applied
     scoring_breakdown["total_score"] = adjusted_trade_strength
     signal_regime = classify_signal_regime(
@@ -1585,6 +1628,9 @@ def generate_trade(
         "confirmation_veto": confirmation["veto"],
         "confirmation_reasons": confirmation["reasons"],
         "confirmation_breakdown": confirmation["breakdown"],
+        "expansion_mode": expansion_mode,
+        "expansion_direction": expansion_direction,
+        "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
         "path_aware_status": path_check.get("path_status"),
         "path_aware_score_penalty": int(_safe_float(path_check.get("score_penalty"), 0.0)),
         "path_aware_entry_veto": bool(path_check.get("entry_veto", False)),
@@ -1613,6 +1659,11 @@ def generate_trade(
         "macro_confirmation_adjustment": macro_news_adjustments["macro_confirmation_adjustment"],
         "macro_position_size_multiplier": macro_news_adjustments["macro_position_size_multiplier"],
         "macro_adjustment_reasons": macro_news_adjustments["macro_adjustment_reasons"],
+        "headline_data_stale": macro_news_stale,
+        "global_macro_data_stale": global_macro_data_stale,
+        "freshness_overlay_reasons": freshness_overlay_reasons,
+        "headline_data_stale": macro_news_stale,
+        "global_macro_data_stale": global_macro_data_stale,
         "event_intelligence_enabled": bool((macro_news_state or {}).get("event_intelligence_enabled", False)),
         "event_bullish_score": ((macro_news_state or {}).get("event_features") or {}).get("bullish_event_score"),
         "event_bearish_score": ((macro_news_state or {}).get("event_features") or {}).get("bearish_event_score"),
@@ -1668,6 +1719,13 @@ def generate_trade(
         "oil_shock_score": global_risk_trade_modifiers["oil_shock_score"],
         "market_volatility_shock_score": global_risk_trade_modifiers["volatility_shock_score"],
         "commodity_risk_score": global_risk_trade_modifiers["commodity_risk_score"],
+        "usdinr_change_24h": global_risk_features_snapshot.get("usdinr_change_24h"),
+        "dxy_change_24h": global_risk_features_snapshot.get("dxy_change_24h"),
+        "gift_nifty_change_24h": global_risk_features_snapshot.get("gift_nifty_change_24h"),
+        "currency_shock_score": global_risk_features_snapshot.get("currency_shock_score"),
+        "dxy_shock_score": global_risk_features_snapshot.get("dxy_shock_score"),
+        "gift_nifty_lead_score": global_risk_features_snapshot.get("gift_nifty_lead_score"),
+        "macro_uncertainty_score": global_risk_features_snapshot.get("macro_uncertainty_score"),
         "risk_off_intensity": (
             global_risk_state.get("global_risk_features", {}).get("risk_off_intensity")
             if isinstance(global_risk_state, dict)
@@ -2047,6 +2105,17 @@ def generate_trade(
     recommended_hold_minutes = min(int(exit_timing["recommended_hold_minutes"]), hold_cap_minutes)
     max_hold_minutes = min(int(exit_timing["max_hold_minutes"]), hold_cap_minutes)
     exit_timing_reasons = list(exit_timing.get("exit_timing_reasons") or [])
+
+    if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
+        early_hold_mult = _safe_float(runtime_thresholds.get("reversal_stage_early_hold_mult"), 0.60)
+        recommended_hold_minutes = max(10, int(recommended_hold_minutes * early_hold_mult))
+        max_hold_minutes = max(recommended_hold_minutes, int(max_hold_minutes * early_hold_mult))
+        exit_timing_reasons.append("reversal_stage_early_hold_cap")
+    if expansion_mode and expansion_direction == direction:
+        expansion_hold_mult = _safe_float(runtime_thresholds.get("expansion_mode_hold_mult"), 0.75)
+        recommended_hold_minutes = max(10, int(recommended_hold_minutes * expansion_hold_mult))
+        max_hold_minutes = max(recommended_hold_minutes, int(max_hold_minutes * expansion_hold_mult))
+        exit_timing_reasons.append("expansion_mode_fast_hold_cap")
     if recommended_hold_minutes < int(exit_timing["recommended_hold_minutes"]) or max_hold_minutes < int(exit_timing["max_hold_minutes"]):
         exit_timing_reasons.append(f"hard_hold_cap_applied_{hold_cap_minutes}m")
 
@@ -2112,6 +2181,12 @@ def generate_trade(
         "direction": direction,
         "strike": _to_python_number(strike),
         "option_type": option_type,
+        "reversal_context": reversal_context,
+        "reversal_stage": reversal_stage,
+        "breakout_vote_count": breakout_vote_count,
+        "expansion_mode": expansion_mode,
+        "expansion_direction": expansion_direction,
+        "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
         "entry_price": round(entry_price, 2),
         "target": round(target, 2),
         "stop_loss": round(stop_loss, 2),
@@ -2223,9 +2298,17 @@ def generate_trade(
         _safe_float(global_risk["global_risk_size_cap"], 1.0),
         _safe_float(at_flip_size_cap, 1.0),
         _safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0),
+        _safe_float(freshness_size_cap, 1.0),
     )
     # Apply confidence-based multiplier to the combined risk cap
     risk_size_cap *= confidence_size_mult
+
+    if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
+        risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_early_size_mult"), 0.60)
+    elif reversal_stage == "CONFIRMED_REVERSAL":
+        risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_confirmed_size_mult"), 1.00)
+    if expansion_mode and expansion_direction == direction:
+        risk_size_cap *= _safe_float(runtime_thresholds.get("expansion_mode_size_mult"), 1.10)
     
     if bool(int(_safe_float(runtime_thresholds.get("enable_regime_conditional_thresholds"), 1.0))):
         risk_size_cap *= _safe_float(regime_thresholds.get("position_size_multiplier"), 1.0)

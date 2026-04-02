@@ -323,6 +323,20 @@ class GlobalRiskPolicyConfig:
     layer_caution_watch_size_cap: float = 0.75
     layer_weak_data_quality_size_cap: float = 0.50
     layer_overnight_watch_size_cap: float = 0.50
+    dxy_shock_threshold_pct: float = 0.35
+    dxy_shock_score_base: float = 0.45
+    gift_nifty_positive_threshold_pct: float = 0.45
+    gift_nifty_negative_threshold_pct: float = -0.45
+    gift_nifty_lead_score_base: float = 0.35
+    risk_off_intensity_dxy_weight: float = 0.10
+    risk_off_intensity_gift_nifty_weight: float = 0.08
+    macro_uncertainty_event_weight: float = 0.45
+    macro_uncertainty_headline_velocity_weight: float = 0.15
+    macro_uncertainty_headline_stale_weight: float = 0.20
+    macro_uncertainty_market_stale_weight: float = 0.20
+    macro_uncertainty_watch_threshold: float = 0.60
+    macro_uncertainty_watch_score_floor: int = 64
+    macro_uncertainty_watch_size_cap: float = 0.50
 
 
 GLOBAL_RISK_POLICY_CONFIG = GlobalRiskPolicyConfig()

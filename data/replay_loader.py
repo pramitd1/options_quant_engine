@@ -26,6 +26,9 @@ from pandas.errors import EmptyDataError
 from data.spot_downloader import validate_spot_snapshot
 
 
+_NEAREST_INDEX_CACHE: dict[tuple[str, str, str], dict] = {}
+
+
 def _resolve_snapshot_output_dir(output_dir: str, *, snapshot_kind: str) -> Path:
     base_dir = Path(output_dir)
     if base_dir == Path("debug_samples"):
@@ -226,6 +229,143 @@ def _extract_chain_timestamp(path: Path) -> pd.Timestamp | None:
     if pd.isna(parsed):
         return None
     return parsed
+
+
+def _extract_spot_timestamp(path: Path) -> pd.Timestamp | None:
+    """Parse timestamp token from spot snapshot filename."""
+    match = re.search(r"_spot_snapshot_(.+)\.json$", path.name)
+    if not match:
+        return None
+    token = match.group(1)
+    token = re.sub(r"T(\d{2})-(\d{2})-(\d{2})", r"T\1:\2:\3", token)
+    token = re.sub(r"\+(\d{2})-(\d{2})$", r"+\1:\2", token)
+    parsed = pd.to_datetime(token, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed
+
+
+def list_replay_spot_snapshots(
+    symbol: str,
+    *,
+    replay_dir: str = "debug_samples",
+) -> tuple[list[str], list[dict]]:
+    """Return valid replay spot snapshot paths and skipped-file diagnostics."""
+    directory = Path(replay_dir)
+    if not directory.exists():
+        return [], []
+
+    symbol_token = str(symbol or "").upper().strip()
+    candidates = sorted(directory.rglob(f"{symbol_token}_spot_snapshot_*.json"))
+    valid: list[tuple[pd.Timestamp, Path]] = []
+    skipped: list[dict] = []
+
+    for path in candidates:
+        timestamp = _extract_spot_timestamp(path)
+        if timestamp is None:
+            skipped.append({"path": str(path), "reason": "bad_timestamp_token"})
+            continue
+        if path.stat().st_size <= 1:
+            skipped.append({"path": str(path), "reason": "empty_file"})
+            continue
+        valid.append((timestamp, path))
+
+    valid.sort(key=lambda item: item[0])
+    return [str(path) for _, path in valid], skipped
+
+
+def resolve_nearest_replay_snapshot_paths(
+    symbol: str,
+    *,
+    target_timestamp,
+    replay_dir: str = "debug_samples",
+    source_label: str | None = None,
+    max_spot_delta_seconds: float = 600.0,
+    max_chain_delta_seconds: float = 900.0,
+) -> dict:
+    """Resolve nearest valid replay spot/chain snapshots around a target timestamp."""
+    target_ts = pd.to_datetime(target_timestamp, errors="coerce")
+    if pd.isna(target_ts):
+        return {
+            "spot_path": None,
+            "chain_path": None,
+            "spot_delta_seconds": None,
+            "chain_delta_seconds": None,
+            "selection_reason": "bad_target_timestamp",
+            "source_label": str(source_label or "").upper().strip() or None,
+        }
+
+    cache_key = (
+        str(Path(replay_dir).resolve()),
+        str(symbol or "").upper().strip(),
+        str(source_label or "").upper().strip(),
+    )
+    indexed = _NEAREST_INDEX_CACHE.get(cache_key)
+    if indexed is None:
+        spot_paths, skipped_spot_files = list_replay_spot_snapshots(symbol, replay_dir=replay_dir)
+        chain_paths, skipped_chain_files = list_replay_chain_snapshots(
+            symbol,
+            replay_dir=replay_dir,
+            source_label=source_label,
+        )
+        spot_pairs = []
+        for path_str in spot_paths:
+            ts = _extract_spot_timestamp(Path(path_str))
+            if ts is not None:
+                spot_pairs.append((ts, path_str))
+        chain_pairs = []
+        for path_str in chain_paths:
+            ts = _extract_chain_timestamp(Path(path_str))
+            if ts is not None:
+                chain_pairs.append((ts, path_str))
+        indexed = {
+            "spot_pairs": spot_pairs,
+            "chain_pairs": chain_pairs,
+            "skipped_spot_files": skipped_spot_files,
+            "skipped_chain_files": skipped_chain_files,
+        }
+        _NEAREST_INDEX_CACHE[cache_key] = indexed
+    else:
+        skipped_spot_files = indexed.get("skipped_spot_files", [])
+        skipped_chain_files = indexed.get("skipped_chain_files", [])
+
+    best_spot_path = None
+    best_chain_path = None
+    best_spot_delta = None
+    best_chain_delta = None
+
+    for ts, path_str in indexed.get("spot_pairs", []):
+        delta = abs((ts - target_ts).total_seconds())
+        if best_spot_delta is None or delta < best_spot_delta:
+            best_spot_delta = delta
+            best_spot_path = path_str
+
+    for ts, path_str in indexed.get("chain_pairs", []):
+        delta = abs((ts - target_ts).total_seconds())
+        if best_chain_delta is None or delta < best_chain_delta:
+            best_chain_delta = delta
+            best_chain_path = path_str
+
+    if best_spot_delta is not None and best_spot_delta > max_spot_delta_seconds:
+        best_spot_path = None
+    if best_chain_delta is not None and best_chain_delta > max_chain_delta_seconds:
+        best_chain_path = None
+
+    if best_spot_path or best_chain_path:
+        reason = "nearest_snapshot_by_timestamp"
+    else:
+        reason = "no_snapshot_within_tolerance"
+
+    return {
+        "spot_path": best_spot_path,
+        "chain_path": best_chain_path,
+        "spot_delta_seconds": round(best_spot_delta, 3) if best_spot_delta is not None else None,
+        "chain_delta_seconds": round(best_chain_delta, 3) if best_chain_delta is not None else None,
+        "selection_reason": reason,
+        "source_label": str(source_label or "").upper().strip() or None,
+        "skipped_spot_files": skipped_spot_files,
+        "skipped_chain_files": skipped_chain_files,
+    }
 
 
 def list_replay_chain_snapshots(

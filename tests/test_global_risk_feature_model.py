@@ -89,6 +89,8 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
                     "nasdaq_change_24h": -0.8,
                     "us10y_change_bp": 12.0,
                     "usdinr_change_24h": 0.9,
+                    "dxy_change_24h": 0.6,
+                    "gift_nifty_change_24h": -0.7,
                     "realized_vol_5d": 0.12,
                     "realized_vol_30d": 0.25,
                 },
@@ -105,12 +107,16 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         self.assertEqual(features["us_equity_risk_score"], 0.4)
         self.assertEqual(features["rates_shock_score"], 0.6)
         self.assertEqual(features["currency_shock_score"], 0.5)
+        self.assertEqual(features["dxy_shock_score"], 0.45)
+        self.assertEqual(features["gift_nifty_lead_score"], -0.35)
         self.assertEqual(features["volatility_compression_score"], 0.7)
-        self.assertAlmostEqual(features["risk_off_intensity"], 0.614, places=3)
+        self.assertAlmostEqual(features["risk_off_intensity"], 0.687, places=3)
         self.assertAlmostEqual(features["volatility_explosion_probability"], 0.945, places=3)
         self.assertEqual(features["us_vix_change_24h"], 12.0)
         self.assertEqual(features["india_vix_change_24h"], 6.0)
         self.assertEqual(features["india_vix_level"], 15.5)
+        self.assertEqual(features["dxy_change_24h"], 0.6)
+        self.assertEqual(features["gift_nifty_change_24h"], -0.7)
         self.assertTrue(features["market_data_available"])
         self.assertFalse(features["neutral_fallback"])
 
@@ -200,7 +206,7 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         )
 
         diagnostics = state["global_risk_diagnostics"]
-        self.assertAlmostEqual(diagnostics["market_feature_confidence"], 0.4, places=4)
+        self.assertAlmostEqual(diagnostics["market_feature_confidence"], 0.3333, places=4)
         self.assertFalse(diagnostics["market_features_neutralized"])
         self.assertEqual(diagnostics["market_input_availability"]["oil_change_24h"], True)
         self.assertEqual(diagnostics["market_input_availability"]["gold_change_24h"], False)

@@ -11,6 +11,8 @@ that the signal engine's global-risk overlay consumes:
   Equities    : S&P 500 (^GSPC), NASDAQ (^IXIC)
   Rates       : US 10Y Yield (^TNX)
   Currencies  : USD/INR (INR=X)
+    Macro FX    : US Dollar Index (DX-Y.NYB)
+    Lead Index  : GIFT Nifty / configured proxy
   Indices     : NIFTY 50 (^NSEI), BANKNIFTY (^NSEBANK)
 
 For each ticker the script:
@@ -89,6 +91,8 @@ TICKER_META: dict[str, dict] = {
     "nasdaq":    {"name": "NASDAQ Composite",      "unit": "index"},
     "us10y":     {"name": "US 10Y Treasury Yield", "unit": "yield_pct"},
     "usdinr":    {"name": "USD/INR Exchange Rate",  "unit": "INR"},
+    "dxy":       {"name": "US Dollar Index",        "unit": "index"},
+    "gift_nifty": {"name": "GIFT Nifty",            "unit": "index"},
     "nifty50":   {"name": "NIFTY 50",              "unit": "index"},
     "banknifty": {"name": "BANK NIFTY",            "unit": "index"},
 }

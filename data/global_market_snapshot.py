@@ -25,6 +25,7 @@ import yfinance as yf
 from utils.numerics import safe_float as _safe_float
 
 from config.market_data_policy import (
+    GIFT_NIFTY_PROXY_IN_USE,
     GLOBAL_MARKET_TICKERS,
     IST_TIMEZONE,
     normalize_symbol_to_yfinance,
@@ -500,8 +501,13 @@ def build_global_market_snapshot(symbol: str, *, as_of=None) -> dict:
     market_inputs["nasdaq_change_24h"] = _daily_change_pct(histories.get("nasdaq"))
     market_inputs["us10y_change_bp"] = _us10y_change_bp(histories.get("us10y"))
     market_inputs["usdinr_change_24h"] = _daily_change_pct(histories.get("usdinr"))
+    market_inputs["dxy_change_24h"] = _daily_change_pct(histories.get("dxy"))
+    market_inputs["gift_nifty_change_24h"] = _daily_change_pct(histories.get("gift_nifty"))
     market_inputs["realized_vol_5d"] = _realized_volatility(histories.get("underlying"), 5)
     market_inputs["realized_vol_30d"] = _realized_volatility(histories.get("underlying"), 30)
+
+    if GIFT_NIFTY_PROXY_IN_USE:
+        warnings.append("gift_nifty_proxy_in_use:^NSEI")
 
     if all(value is None for value in market_inputs.values()):
         return _neutral_market_snapshot(

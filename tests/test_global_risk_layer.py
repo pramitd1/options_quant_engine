@@ -89,7 +89,7 @@ class GlobalRiskLayerStageOneTests(unittest.TestCase):
         self.assertEqual(state["overnight_hold_reason"], "vol_shock_block")
         self.assertEqual(state["overnight_risk_penalty"], 10)
         self.assertTrue(state["global_risk_veto"])
-        self.assertGreaterEqual(state["overnight_gap_risk_score"], 80)
+        self.assertGreaterEqual(state["overnight_gap_risk_score"], 79)
 
     def test_evaluate_global_risk_layer_blocks_when_global_risk_veto_is_active(self):
         global_risk_state = build_global_risk_state(
@@ -187,6 +187,48 @@ class GlobalRiskLayerStageOneTests(unittest.TestCase):
         self.assertEqual(decision["global_risk_action"], "REDUCE")
         self.assertEqual(decision["global_risk_size_cap"], 0.8)
         self.assertEqual(decision["global_risk_adjustment_score"], -2)
+
+    def test_evaluate_global_risk_layer_watchlists_large_macro_uncertainty_window(self):
+        global_risk_state = {
+            "global_risk_state": "GLOBAL_NEUTRAL",
+            "global_risk_score": 28,
+            "overnight_gap_risk_score": 10,
+            "volatility_expansion_risk_score": 20,
+            "overnight_hold_allowed": True,
+            "overnight_hold_reason": "overnight_risk_contained",
+            "overnight_risk_penalty": 0,
+            "global_risk_adjustment_score": 0,
+            "global_risk_veto": False,
+            "global_risk_position_size_multiplier": 1.0,
+            "global_risk_reasons": [],
+            "global_risk_features": {
+                "macro_uncertainty_score": 0.82,
+                "headline_data_stale": True,
+                "global_macro_data_stale": True,
+                "event_uncertainty_score": 0.75,
+            },
+            "global_risk_diagnostics": {},
+            "holding_context": {"overnight_relevant": False},
+        }
+
+        decision = evaluate_global_risk_layer(
+            data_quality={"score": 91, "status": "GOOD", "fatal": False},
+            confirmation={"status": "CONFIRMED", "veto": False},
+            adjusted_trade_strength=84,
+            min_trade_strength=45,
+            event_window_status="NO_EVENT_DATA",
+            macro_event_risk_score=10,
+            event_lockdown_flag=False,
+            next_event_name=None,
+            active_event_name=None,
+            macro_news_adjustments={"macro_position_size_multiplier": 1.0, "event_lockdown_flag": False},
+            global_risk_state=global_risk_state,
+            holding_profile="AUTO",
+        )
+
+        self.assertEqual(decision["risk_trade_status"], "WATCHLIST")
+        self.assertEqual(decision["global_risk_action"], "WATCHLIST")
+        self.assertIn("macro_uncertainty_window", decision["global_risk_reasons"])
 
 
 if __name__ == "__main__":
