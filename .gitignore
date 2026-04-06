@@ -15,6 +15,7 @@ logs/
 data_store/icici_cache/
 data_store/historical/
 data_store/spot_history/
+data_store/NIFTY/
 data_store/decision_journal.sqlite3
 data_store/decision_journal*.sqlite3-shm
 data_store/decision_journal*.sqlite3-wal
