@@ -411,6 +411,24 @@ def _state_bucket_key(symbol, selected_expiry, ts):
     return f"{symbol}:{selected_expiry or 'NO_EXPIRY'}:{date_bucket}"
 
 
+def _prune_state_dict(state_dict: dict, now_ts, max_age_minutes: float = 24 * 60) -> None:
+    """Evict entries from a state dict whose last_ts is older than max_age_minutes.
+
+    Uses a single-pass dict comprehension rather than a two-pass collect-then-
+    delete loop, halving the number of iterations over the dict.
+    """
+    def _age(entry) -> float:
+        last_ts = entry.get("last_ts")
+        try:
+            return (now_ts - last_ts).total_seconds() / 60.0
+        except _SIGNAL_STATE_ERRORS:
+            return 0.0
+
+    stale = {k for k, v in state_dict.items() if _age(v) > max_age_minutes}
+    for k in stale:
+        state_dict.pop(k, None)
+
+
 def _compute_signal_elapsed_minutes(*, symbol, selected_expiry, valuation_time, direction):
     """Track signal age (minutes) by symbol+expiry and direction for time-decay."""
     if _as_upper(direction) not in {"CALL", "PUT"}:
@@ -451,29 +469,27 @@ def _compute_signal_elapsed_minutes(*, symbol, selected_expiry, valuation_time, 
 
     # Prune stale entries opportunistically to keep in-memory state bounded.
     if len(_DECAY_SIGNAL_STATE) > 512:
-        stale_keys = []
-        for k, v in _DECAY_SIGNAL_STATE.items():
-            last_ts = v.get("last_ts")
-            try:
-                age_m = (ts - last_ts).total_seconds() / 60.0
-            except _SIGNAL_STATE_ERRORS as exc:
-                _LOG.debug(
-                    "signal_engine: unable to compute decay-state age for %s with last_ts=%r: %s",
-                    k,
-                    last_ts,
-                    exc,
-                )
-                age_m = 0.0
-            if age_m > 24 * 60:
-                stale_keys.append(k)
-        for k in stale_keys:
-            _DECAY_SIGNAL_STATE.pop(k, None)
+        _prune_state_dict(_DECAY_SIGNAL_STATE, ts)
 
     return elapsed_minutes
 
 
 def _compute_path_observation_bps(*, symbol, selected_expiry, valuation_time, spot, direction):
-    """Build micro-path proxy (MFE/MAE bps) from consecutive snapshot spot deltas."""
+    """Track cumulative MFE/MAE (bps) from signal entry.
+
+    MFE (Maximum Favorable Excursion) and MAE (Maximum Adverse Excursion) are
+    cumulative extremes measured from the entry spot recorded on the first
+    observed tick for this signal bucket.  A single-tick snapshot delta is
+    **not** sufficient — the PathAwareFilter needs to know the furthest the
+    market has travelled in each direction since the signal was raised.
+
+    State stored per bucket key:
+        entry_spot   – spot at the first tick (anchor for bps calculation)
+        high_water   – running session high
+        low_water    – running session low
+        last_spot    – previous tick spot (kept for compatibility/debugging)
+        last_ts      – previous tick timestamp
+    """
     if _as_upper(direction) not in {"CALL", "PUT"}:
         return None, None
 
@@ -484,48 +500,50 @@ def _compute_path_observation_bps(*, symbol, selected_expiry, valuation_time, sp
 
     key = _state_bucket_key(symbol, selected_expiry, ts)
     state = _PATH_SIGNAL_STATE.get(key) or {}
-    last_spot = _safe_float(state.get("last_spot"), None)
+
+    entry_spot = _safe_float(state.get("entry_spot"), None)
+    high_water = _safe_float(state.get("high_water"), None)
+    low_water = _safe_float(state.get("low_water"), None)
     last_ts = state.get("last_ts")
 
-    delta_bps = 0.0
-    if last_spot and last_spot > 0:
-        delta_bps = ((spot_now - last_spot) / last_spot) * 10000.0
+    # On the first tick there is no history yet — initialise anchors.
+    first_tick = entry_spot is None or high_water is None or low_water is None or last_ts is None
+    if first_tick:
+        _PATH_SIGNAL_STATE[key] = {
+            "entry_spot": spot_now,
+            "high_water": spot_now,
+            "low_water": spot_now,
+            "last_spot": spot_now,
+            "last_ts": ts,
+        }
+        if len(_PATH_SIGNAL_STATE) > 512:
+            _prune_state_dict(_PATH_SIGNAL_STATE, ts)
+        return None, None
 
-    if _as_upper(direction) == "CALL":
-        mfe_bps = max(0.0, delta_bps)
-        mae_bps = min(0.0, delta_bps)
-    else:
-        # For PUT, down move is favorable.
-        mfe_bps = max(0.0, -delta_bps)
-        mae_bps = min(0.0, -delta_bps)
+    # Update running extremes.
+    high_water = max(high_water, spot_now)
+    low_water = min(low_water, spot_now)
 
     _PATH_SIGNAL_STATE[key] = {
+        "entry_spot": entry_spot,
+        "high_water": high_water,
+        "low_water": low_water,
         "last_spot": spot_now,
         "last_ts": ts,
     }
 
     if len(_PATH_SIGNAL_STATE) > 512:
-        stale_keys = []
-        for k, v in _PATH_SIGNAL_STATE.items():
-            _lts = v.get("last_ts")
-            try:
-                age_m = (ts - _lts).total_seconds() / 60.0
-            except _SIGNAL_STATE_ERRORS as exc:
-                _LOG.debug(
-                    "signal_engine: unable to compute path-state age for %s with last_ts=%r: %s",
-                    k,
-                    _lts,
-                    exc,
-                )
-                age_m = 0.0
-            if age_m > 24 * 60:
-                stale_keys.append(k)
-        for k in stale_keys:
-            _PATH_SIGNAL_STATE.pop(k, None)
+        _prune_state_dict(_PATH_SIGNAL_STATE, ts)
 
-    # If we do not yet have a previous spot, do not force a penalty.
-    if last_spot is None or last_ts is None:
-        return None, None
+    # Compute MFE/MAE in basis points relative to entry.
+    if _as_upper(direction) == "CALL":
+        # For a long-call position: up move is favorable.
+        mfe_bps = ((high_water - entry_spot) / entry_spot) * 10000.0
+        mae_bps = ((low_water - entry_spot) / entry_spot) * 10000.0
+    else:
+        # For a long-put position: down move is favorable.
+        mfe_bps = -((low_water - entry_spot) / entry_spot) * 10000.0
+        mae_bps = -((high_water - entry_spot) / entry_spot) * 10000.0
 
     return float(mfe_bps), float(mae_bps)
 
