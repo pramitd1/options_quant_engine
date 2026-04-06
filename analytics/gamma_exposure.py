@@ -153,6 +153,8 @@ def gamma_signal(option_chain: pd.DataFrame, spot=None):
     if gross_gamma <= 0 or abs(net_gamma) <= gross_gamma * 0.05:
         return "NEUTRAL_GAMMA"
     if net_gamma > 0:
+        # Keep legacy output labels for gamma_signal() to preserve API
+        # compatibility with existing tests and downstream consumers.
         return "LONG_GAMMA"
     return "SHORT_GAMMA"
 

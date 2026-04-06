@@ -18,6 +18,7 @@ import pandas as pd
 
 from analytics.flow_utils import front_expiry_atm_slice
 from analytics.market_gamma_map import calculate_market_gamma
+from config.analytics_feature_policy import get_gamma_flip_policy_config
 
 
 def _interpolate_zero_crossing(left_strike, left_value, right_strike, right_value):
@@ -168,26 +169,40 @@ def gamma_flip_distance(spot, flip):
 def gamma_regime(spot, flip):
 
     """
-    Purpose:
-        Process gamma regime for downstream use.
-    
-    Context:
-        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
-    
-    Inputs:
-        spot (Any): Input associated with spot.
-        flip (Any): Input associated with flip.
-    
-    Returns:
-        Any: Result returned by the helper.
-    
-    Notes:
-        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    Classify the current gamma regime as POSITIVE_GAMMA, NEUTRAL_GAMMA, or
+    NEGATIVE_GAMMA relative to the estimated gamma-flip level.
+
+    A configurable neutral band (``neutral_band_pct`` in
+    ``GammaFlipPolicyConfig``) prevents the classifier from flipping between
+    positive and negative on every tick when spot is hovering around the flip
+    level.  The band is expressed as a percentage of the flip price:
+
+        neutral when  |spot - flip| / flip * 100  <=  neutral_band_pct
+
+    Returns
+    -------
+    str
+        ``"POSITIVE_GAMMA"``  – spot is above the neutral band
+        ``"NEUTRAL_GAMMA"``   – spot is within the neutral band around flip
+        ``"NEGATIVE_GAMMA"``  – spot is below the neutral band
+        ``"UNKNOWN"``         – flip level is unavailable
     """
     if flip is None:
         return "UNKNOWN"
 
-    if spot > flip:
+    cfg = get_gamma_flip_policy_config()
+    flip_f = float(flip)
+    spot_f = float(spot)
+
+    if flip_f != 0.0:
+        distance_pct = abs(spot_f - flip_f) / abs(flip_f) * 100.0
+    else:
+        distance_pct = 0.0
+
+    if distance_pct <= cfg.neutral_band_pct:
+        return "NEUTRAL_GAMMA"
+
+    if spot_f > flip_f:
         return "POSITIVE_GAMMA"
 
     return "NEGATIVE_GAMMA"

@@ -87,6 +87,38 @@ class VolatilityRegimePolicyConfig:
     normal_vol_threshold: float = 0.25
 
 
+@dataclass(frozen=True)
+class GammaFlipPolicyConfig:
+    """
+    Policy thresholds governing the gamma-regime classifier in gamma_flip.py.
+
+    Attributes
+    ----------
+    neutral_band_pct : float
+        Half-width of the neutral zone around the gamma-flip level, expressed
+        as a percentage of the flip price.  When
+        ``|spot - flip| / flip * 100 <= neutral_band_pct`` the regime is
+        ``NEUTRAL_GAMMA`` rather than ``POSITIVE_GAMMA`` or ``NEGATIVE_GAMMA``.
+
+        Calibration guidance
+        --------------------
+        * NIFTY weekly options: 0.5 % corresponds to roughly ±120 pts on a
+          24000 index level — a reasonable dead zone where dealer net gamma
+          flips sign frequently on consecutive ticks.
+        * Tighten toward 0.25 % for higher-conviction regime labels; widen
+          toward 1.0 % in low-liquidity sessions where the flip estimate is
+          noisy.
+    """
+    neutral_band_pct: float = 0.50
+
+
+def get_gamma_flip_policy_config() -> GammaFlipPolicyConfig:
+    """Return the gamma-flip policy bundle used by analytics features."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config("analytics.gamma_flip", GammaFlipPolicyConfig())
+
+
 def get_flow_imbalance_policy_config() -> FlowImbalancePolicyConfig:
     """
     Purpose:
