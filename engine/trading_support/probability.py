@@ -20,6 +20,7 @@ from pathlib import Path
 
 from config.probability_feature_policy import get_probability_feature_policy_config
 from config.symbol_microstructure import get_microstructure_config
+import models.expanded_feature_builder as expanded_feature_builder_mod
 import models.feature_builder as feature_builder_mod
 import models.large_move_probability as large_move_probability_mod
 import models.ml_move_predictor as ml_move_predictor_mod
@@ -39,6 +40,60 @@ def _warn_once(key: str, message: str, *args) -> None:
         return
     _WARN_ONCE_KEYS.add(key)
     _LOG.warning(message, *args)
+
+
+def _enforce_model_feature_contract(model_features):
+    """Validate and sanitize 33-feature live vectors; disable malformed ML inputs."""
+    if model_features is None:
+        return None, {
+            "status": "missing",
+            "legacy_vector": False,
+            "sanitized": False,
+        }
+
+    validation = expanded_feature_builder_mod.validate_live_feature_vector(model_features)
+    if validation.get("legacy_vector"):
+        return model_features, {
+            "status": "legacy_vector",
+            "legacy_vector": True,
+            "sanitized": False,
+            "feature_count": validation.get("feature_count"),
+            "violations": [],
+        }
+
+    feature_count = validation.get("feature_count")
+    if feature_count != expanded_feature_builder_mod.N_FEATURES:
+        _warn_once(
+            f"probability_feature_contract_count:{feature_count}",
+            "probability: disabling ML leg because model feature count %s does not match expected contract %s",
+            feature_count,
+            expanded_feature_builder_mod.N_FEATURES,
+        )
+        return None, {
+            "status": "unexpected_feature_count",
+            "legacy_vector": False,
+            "sanitized": False,
+            "feature_count": feature_count,
+            "violations": validation.get("violations", []),
+        }
+
+    sanitized_features, enforcement = expanded_feature_builder_mod.enforce_live_feature_contract(model_features)
+    violations = enforcement.get("original_violations") or []
+    if violations:
+        violated_names = ", ".join(item.get("feature", "unknown") for item in violations)
+        _warn_once(
+            f"probability_feature_contract_sanitized:{violated_names}",
+            "probability: sanitized live-unavailable model features back to contract defaults (%s)",
+            violated_names,
+        )
+
+    return sanitized_features, {
+        "status": "ok",
+        "legacy_vector": False,
+        "sanitized": bool(enforcement.get("sanitized")),
+        "feature_count": enforcement.get("feature_count"),
+        "violations": violations,
+    }
 
 
 def _map_vacuum_strength(vacuum_state, liquidity_voids=None, nearest_vacuum_gap_pct=None):
@@ -681,6 +736,8 @@ def _compute_probability_state_impl(
         days_to_expiry=gc.get("days_to_expiry"),
         default=None,
     )
+    model_features, model_feature_contract = _enforce_model_feature_contract(model_features)
+
     if model_features is None:
         model_features = _call_first(
             feature_builder_mod,
@@ -696,6 +753,7 @@ def _compute_probability_state_impl(
             atm_iv=market_state["atm_iv"],
             default=None,
         )
+        model_features, model_feature_contract = _enforce_model_feature_contract(model_features)
 
     rule_move_probability = _call_first(
         large_move_probability_mod,
@@ -754,6 +812,7 @@ def _compute_probability_state_impl(
         "day_open": day_open,
         "prev_close": prev_close,
         "lookback_avg_range_pct": lookback_avg_range_pct,
+        "model_feature_contract": model_feature_contract,
     }
 
     return {

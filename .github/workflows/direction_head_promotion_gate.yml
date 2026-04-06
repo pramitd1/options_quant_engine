@@ -1,0 +1,77 @@
+name: Direction Head Promotion Gate
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  promotion-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run promotion matrix gate
+        run: |
+          python scripts/ops/run_direction_head_promotion_matrix.py \
+            --fail-on-block \
+            --min-trade-evidence-rows-pass 0
+
+      - name: Publish gate summary
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("research/reviews/direction_head_promotion_matrix")
+          runs = sorted([p for p in root.iterdir() if p.is_dir()])
+          if not runs:
+              raise SystemExit("No promotion matrix run directory found")
+
+          latest = runs[-1]
+          payload = json.loads((latest / "direction_head_promotion_matrix.json").read_text(encoding="utf-8"))
+          gate = payload.get("promotion_gate", {})
+
+          overall = gate.get("overall_status", "UNKNOWN")
+          counts = gate.get("status_counts", {})
+          run_id = payload.get("run_id", latest.name)
+
+          print(f"run_id={run_id}")
+          print(f"promotion_gate_status={overall}")
+          print(f"status_counts={counts}")
+
+          summary_path = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary_path.write_text(
+              "\n".join([
+                  "# Direction Head Promotion Gate",
+                  "",
+                  f"- run_id: {run_id}",
+                  f"- overall_status: {overall}",
+                  f"- status_counts: {counts}",
+                  f"- matrix_json: {latest / 'direction_head_promotion_matrix.json'}",
+                  f"- matrix_md: {latest / 'direction_head_promotion_matrix.md'}",
+              ]) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload promotion artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: direction-head-promotion-matrix
+          path: research/reviews/direction_head_promotion_matrix/
+          if-no-files-found: error

@@ -25,7 +25,7 @@ import sys
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +51,47 @@ class RefreshInputs:
     calibrator_report_json: Path
 
 
+def _segment_metrics(calibrator_payload: dict[str, Any]) -> dict[str, Any]:
+    segmentation = dict(calibrator_payload.get("segmentation") or {})
+    trained_segments = [
+        row for row in (segmentation.get("trained_segments") or [])
+        if isinstance(row, dict)
+    ]
+    singleton_segments = [
+        row for row in trained_segments
+        if "|" not in str(row.get("segment_key") or "")
+    ]
+
+    def _rows_for(prefix: str) -> list[dict[str, Any]]:
+        return [row for row in singleton_segments if str(row.get("segment_key") or "").startswith(prefix)]
+
+    def _worst_gap(rows: list[dict[str, Any]]) -> float | None:
+        gaps = []
+        for row in rows:
+            try:
+                gaps.append(abs(float(row.get("overall_calibration_gap", 0.0) or 0.0)))
+            except Exception:
+                continue
+        return max(gaps) if gaps else None
+
+    direction_rows = _rows_for("direction=")
+    gamma_rows = _rows_for("gamma_regime=")
+    vol_rows = _rows_for("vol_regime=")
+
+    return {
+        "trained_segment_count": int(len(trained_segments)),
+        "singleton_segment_count": int(len(singleton_segments)),
+        "direction_segment_count": int(len(direction_rows)),
+        "gamma_regime_segment_count": int(len(gamma_rows)),
+        "vol_regime_segment_count": int(len(vol_rows)),
+        "worst_direction_abs_gap": _worst_gap(direction_rows),
+        "worst_gamma_regime_abs_gap": _worst_gap(gamma_rows),
+        "worst_vol_regime_abs_gap": _worst_gap(vol_rows),
+    }
+
+
 def _utc_now() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _run_python_script(script_path: Path) -> CommandResult:
@@ -125,6 +164,14 @@ def _evaluate_gates(
     calibrator_model_path: Path,
     max_decay_fit_mse: float,
     max_abs_calibration_gap: float,
+    max_abs_direction_segment_gap: float,
+    max_abs_gamma_regime_segment_gap: float,
+    max_abs_vol_regime_segment_gap: float,
+    min_direction_segments: int,
+    min_gamma_regime_segments: int,
+    min_vol_regime_segments: int,
+    max_calibration_gap_abs_delta: float,
+    max_brier_delta: float,
 ) -> dict[str, Any]:
     regime_fits = list(decay_payload.get("regime_fits") or [])
     fit_mses = [float(row.get("fit_mse", 1e9) or 1e9) for row in regime_fits]
@@ -132,12 +179,44 @@ def _evaluate_gates(
 
     calibration_gap = float(calibrator_payload.get("overall_calibration_gap", 1e9) or 1e9)
     abs_calibration_gap = abs(calibration_gap)
+    segment_metrics = _segment_metrics(calibrator_payload)
+    worst_direction_abs_gap = segment_metrics.get("worst_direction_abs_gap")
+    worst_gamma_abs_gap = segment_metrics.get("worst_gamma_regime_abs_gap")
+    worst_vol_abs_gap = segment_metrics.get("worst_vol_regime_abs_gap")
+    drift = dict(calibrator_payload.get("calibration_drift") or {})
+    calibration_gap_abs_delta = drift.get("calibration_gap_abs_delta")
+    brier_delta = drift.get("brier_delta")
+    calibration_gap_abs_delta = None if calibration_gap_abs_delta is None else abs(float(calibration_gap_abs_delta))
+    brier_delta = None if brier_delta is None else float(brier_delta)
 
     checks = {
         "decay_report_has_regimes": bool(len(regime_fits) >= 3),
         "calibrator_model_exists": bool(calibrator_model_path.exists()),
         "decay_fit_mse_ok": bool(max_fit_mse_seen <= float(max_decay_fit_mse)),
         "calibration_gap_ok": bool(abs_calibration_gap <= float(max_abs_calibration_gap)),
+        "direction_segment_coverage_ok": bool(segment_metrics["direction_segment_count"] >= int(min_direction_segments)),
+        "gamma_regime_segment_coverage_ok": bool(segment_metrics["gamma_regime_segment_count"] >= int(min_gamma_regime_segments)),
+        "vol_regime_segment_coverage_ok": bool(segment_metrics["vol_regime_segment_count"] >= int(min_vol_regime_segments)),
+        "direction_segment_gap_ok": bool(
+            worst_direction_abs_gap is not None
+            and worst_direction_abs_gap <= float(max_abs_direction_segment_gap)
+        ),
+        "gamma_regime_segment_gap_ok": bool(
+            worst_gamma_abs_gap is not None
+            and worst_gamma_abs_gap <= float(max_abs_gamma_regime_segment_gap)
+        ),
+        "vol_regime_segment_gap_ok": bool(
+            worst_vol_abs_gap is not None
+            and worst_vol_abs_gap <= float(max_abs_vol_regime_segment_gap)
+        ),
+        "calibration_gap_drift_ok": bool(
+            calibration_gap_abs_delta is not None
+            and calibration_gap_abs_delta <= float(max_calibration_gap_abs_delta)
+        ),
+        "calibration_brier_drift_ok": bool(
+            brier_delta is not None
+            and brier_delta <= float(max_brier_delta)
+        ),
     }
 
     all_passed = bool(all(checks.values()))
@@ -149,11 +228,29 @@ def _evaluate_gates(
         "thresholds": {
             "max_decay_fit_mse": float(max_decay_fit_mse),
             "max_abs_calibration_gap": float(max_abs_calibration_gap),
+            "max_abs_direction_segment_gap": float(max_abs_direction_segment_gap),
+            "max_abs_gamma_regime_segment_gap": float(max_abs_gamma_regime_segment_gap),
+            "max_abs_vol_regime_segment_gap": float(max_abs_vol_regime_segment_gap),
+            "min_direction_segments": int(min_direction_segments),
+            "min_gamma_regime_segments": int(min_gamma_regime_segments),
+            "min_vol_regime_segments": int(min_vol_regime_segments),
+            "max_calibration_gap_abs_delta": float(max_calibration_gap_abs_delta),
+            "max_brier_delta": float(max_brier_delta),
         },
         "metrics": {
             "max_decay_fit_mse_seen": round(max_fit_mse_seen, 8),
             "calibration_gap": round(calibration_gap, 8),
             "abs_calibration_gap": round(abs_calibration_gap, 8),
+            "trained_segment_count": int(segment_metrics["trained_segment_count"]),
+            "singleton_segment_count": int(segment_metrics["singleton_segment_count"]),
+            "direction_segment_count": int(segment_metrics["direction_segment_count"]),
+            "gamma_regime_segment_count": int(segment_metrics["gamma_regime_segment_count"]),
+            "vol_regime_segment_count": int(segment_metrics["vol_regime_segment_count"]),
+            "worst_direction_abs_gap": None if worst_direction_abs_gap is None else round(float(worst_direction_abs_gap), 8),
+            "worst_gamma_regime_abs_gap": None if worst_gamma_abs_gap is None else round(float(worst_gamma_abs_gap), 8),
+            "worst_vol_regime_abs_gap": None if worst_vol_abs_gap is None else round(float(worst_vol_abs_gap), 8),
+            "calibration_gap_abs_delta": None if calibration_gap_abs_delta is None else round(float(calibration_gap_abs_delta), 8),
+            "brier_delta": None if brier_delta is None else round(float(brier_delta), 8),
         },
         "checks": checks,
     }
@@ -161,7 +258,7 @@ def _evaluate_gates(
 
 def _write_json_report(payload: dict[str, Any]) -> Path:
     IMPROVEMENT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     path = IMPROVEMENT_REPORTS_DIR / f"runtime_model_refresh_{stamp}.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
@@ -177,6 +274,11 @@ def _append_history_row(row: dict[str, Any]) -> Path:
         "max_decay_fit_mse_seen",
         "calibration_gap",
         "abs_calibration_gap",
+        "worst_direction_abs_gap",
+        "worst_gamma_regime_abs_gap",
+        "worst_vol_regime_abs_gap",
+        "calibration_gap_abs_delta",
+        "brier_delta",
         "decay_report_json",
         "calibrator_report_json",
         "calibrator_model_path",
@@ -280,6 +382,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum acceptable absolute calibration gap.",
     )
     parser.add_argument(
+        "--max-abs-direction-segment-gap",
+        type=float,
+        default=0.16,
+        help="Maximum acceptable absolute calibration gap across singleton direction segments.",
+    )
+    parser.add_argument(
+        "--max-abs-gamma-regime-segment-gap",
+        type=float,
+        default=0.22,
+        help="Maximum acceptable absolute calibration gap across singleton gamma-regime segments.",
+    )
+    parser.add_argument(
+        "--max-abs-vol-regime-segment-gap",
+        type=float,
+        default=0.25,
+        help="Maximum acceptable absolute calibration gap across singleton vol-regime segments.",
+    )
+    parser.add_argument(
+        "--min-direction-segments",
+        type=int,
+        default=2,
+        help="Minimum singleton direction segments required in the calibrator report.",
+    )
+    parser.add_argument(
+        "--min-gamma-regime-segments",
+        type=int,
+        default=3,
+        help="Minimum singleton gamma-regime segments required in the calibrator report.",
+    )
+    parser.add_argument(
+        "--min-vol-regime-segments",
+        type=int,
+        default=2,
+        help="Minimum singleton vol-regime segments required in the calibrator report.",
+    )
+    parser.add_argument(
+        "--max-calibration-gap-abs-delta",
+        type=float,
+        default=0.12,
+        help="Maximum acceptable absolute drift between prior/recent calibration gaps.",
+    )
+    parser.add_argument(
+        "--max-brier-delta",
+        type=float,
+        default=0.03,
+        help="Maximum acceptable increase in recent-vs-prior Brier score.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Exit with code 2 when gate fails.",
@@ -345,6 +495,14 @@ def _run_main(args: argparse.Namespace) -> int:
         calibrator_model_path=resolved.calibrator_model_path,
         max_decay_fit_mse=args.max_decay_fit_mse,
         max_abs_calibration_gap=args.max_abs_calibration_gap,
+        max_abs_direction_segment_gap=args.max_abs_direction_segment_gap,
+        max_abs_gamma_regime_segment_gap=args.max_abs_gamma_regime_segment_gap,
+        max_abs_vol_regime_segment_gap=args.max_abs_vol_regime_segment_gap,
+        min_direction_segments=args.min_direction_segments,
+        min_gamma_regime_segments=args.min_gamma_regime_segments,
+        min_vol_regime_segments=args.min_vol_regime_segments,
+        max_calibration_gap_abs_delta=args.max_calibration_gap_abs_delta,
+        max_brier_delta=args.max_brier_delta,
     )
 
     report_payload = {
@@ -375,6 +533,11 @@ def _run_main(args: argparse.Namespace) -> int:
         "max_decay_fit_mse_seen": gate["metrics"]["max_decay_fit_mse_seen"],
         "calibration_gap": gate["metrics"]["calibration_gap"],
         "abs_calibration_gap": gate["metrics"]["abs_calibration_gap"],
+        "worst_direction_abs_gap": gate["metrics"].get("worst_direction_abs_gap"),
+        "worst_gamma_regime_abs_gap": gate["metrics"].get("worst_gamma_regime_abs_gap"),
+        "worst_vol_regime_abs_gap": gate["metrics"].get("worst_vol_regime_abs_gap"),
+        "calibration_gap_abs_delta": gate["metrics"].get("calibration_gap_abs_delta"),
+        "brier_delta": gate["metrics"].get("brier_delta"),
         "decay_report_json": str(resolved.decay_report_json),
         "calibrator_report_json": str(resolved.calibrator_report_json),
         "calibrator_model_path": str(resolved.calibrator_model_path),

@@ -129,6 +129,277 @@ def _coerce_timestamp(value):
         return None
 
 
+def _normalize_string_set(value, *, default: set[str] | None = None) -> set[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return {cleaned.upper()} if cleaned else set(default or set())
+    if isinstance(value, (list, tuple, set)):
+        normalized = {str(item).strip().upper() for item in value if str(item).strip()}
+        return normalized or set(default or set())
+    return set(default or set())
+
+
+def _evaluate_provider_health_override_eligibility(
+    *,
+    runtime_thresholds,
+    provider_health_blocking_reasons,
+    provider_health_summary,
+    data_quality_status,
+    confirmation_status,
+    adjusted_trade_strength,
+    min_trade_strength,
+    runtime_composite_score,
+    min_composite_score,
+    option_chain_validation,
+    provider_health,
+    ranked_strikes,
+    days_to_expiry,
+    blocked,
+):
+    enable_override = bool(int(_safe_float(runtime_thresholds.get("enable_provider_health_degraded_override"), 0.0)))
+    if not enable_override:
+        return False, {"reason": "override_disabled"}
+
+    details = {
+        "eligible": False,
+        "fail_reasons": [],
+    }
+
+    if blocked and not bool(int(_safe_float(runtime_thresholds.get("provider_health_override_allow_block_status"), 0.0))):
+        details["fail_reasons"].append("block_status_not_allowed")
+
+    allowed_summary_statuses = _normalize_string_set(
+        runtime_thresholds.get("provider_health_override_allowed_summary_statuses"),
+        default={"CAUTION"},
+    )
+    provider_health_summary_upper = _as_upper(provider_health_summary)
+    if provider_health_summary_upper not in allowed_summary_statuses:
+        details["fail_reasons"].append("provider_summary_not_allowlisted")
+
+    allowed_data_quality_statuses = _normalize_string_set(
+        runtime_thresholds.get("provider_health_override_allowed_data_quality_statuses"),
+        default={"GOOD", "STRONG"},
+    )
+    data_quality_status_upper = _as_upper(data_quality_status)
+    if data_quality_status_upper not in allowed_data_quality_statuses:
+        details["fail_reasons"].append("data_quality_not_allowlisted")
+
+    dte_max = _safe_float(runtime_thresholds.get("provider_health_override_dte_max"), 1.0)
+    dte_value = _safe_float(days_to_expiry, None)
+    if dte_value is not None and dte_value > dte_max:
+        details["fail_reasons"].append(f"dte_above_max:{dte_value}")
+
+    require_strong_confirmation = bool(int(_safe_float(runtime_thresholds.get("provider_health_override_require_strong_confirmation"), 1.0)))
+    if require_strong_confirmation and _as_upper(confirmation_status) not in {"STRONG_CONFIRMATION", "CONFIRMED"}:
+        details["fail_reasons"].append("confirmation_not_strong")
+
+    strength_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_strength_buffer"), 12.0))
+    composite_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_composite_buffer"), 8.0))
+    if adjusted_trade_strength < (min_trade_strength + strength_buffer):
+        details["fail_reasons"].append("trade_strength_buffer_not_met")
+    if runtime_composite_score < (min_composite_score + composite_buffer):
+        details["fail_reasons"].append("runtime_composite_buffer_not_met")
+
+    effective_priced_ratio = _safe_float(
+        option_chain_validation.get("effective_priced_ratio"),
+        _safe_float(option_chain_validation.get("priced_ratio"), 0.0),
+    )
+    min_effective_priced_ratio = _safe_float(runtime_thresholds.get("provider_health_override_min_effective_priced_ratio"), 0.45)
+    if effective_priced_ratio < min_effective_priced_ratio:
+        details["fail_reasons"].append("effective_priced_ratio_below_floor")
+
+    core_one_sided_ratio = _safe_float(provider_health.get("core_one_sided_quote_ratio"), None)
+    if core_one_sided_ratio is None:
+        row_count = max(int(_safe_float(option_chain_validation.get("row_count"), 0.0)), 1)
+        core_one_sided_ratio = _safe_float(option_chain_validation.get("one_sided_quote_rows"), 0.0) / row_count
+    max_one_sided_ratio = _safe_float(runtime_thresholds.get("provider_health_override_one_sided_quote_ratio_max"), 1.0)
+    if core_one_sided_ratio > max_one_sided_ratio:
+        details["fail_reasons"].append("one_sided_quote_ratio_above_cap")
+
+    ranked_candidates = ranked_strikes or []
+    if ranked_candidates:
+        proxy_count = sum(
+            1
+            for candidate in ranked_candidates
+            if bool(candidate.get("iv_is_proxy")) or bool(candidate.get("delta_is_proxy"))
+        )
+        proxy_ratio = proxy_count / max(len(ranked_candidates), 1)
+    else:
+        proxy_ratio = 1.0
+    max_proxy_ratio = _safe_float(runtime_thresholds.get("provider_health_override_max_proxy_ratio"), 0.90)
+    if proxy_ratio > max_proxy_ratio:
+        details["fail_reasons"].append("proxy_ratio_above_cap")
+
+    allowed_reasons = _normalize_string_set(
+        runtime_thresholds.get("provider_health_override_allowed_block_reasons", ["core_iv_weak"]),
+        default={"CORE_IV_WEAK"},
+    )
+    if blocked:
+        blocking_reasons_upper = {
+            str(reason).strip().upper()
+            for reason in provider_health_blocking_reasons
+            if str(reason).strip()
+        }
+        if not blocking_reasons_upper:
+            details["fail_reasons"].append("missing_block_reasons")
+        elif not blocking_reasons_upper.issubset(allowed_reasons):
+            details["fail_reasons"].append("block_reasons_not_allowlisted")
+
+    details["proxy_ratio"] = round(proxy_ratio, 4)
+    details["effective_priced_ratio"] = round(effective_priced_ratio, 4)
+    details["one_sided_quote_ratio"] = round(core_one_sided_ratio, 4)
+    details["dte"] = dte_value
+    details["provider_health_summary"] = provider_health_summary_upper
+    details["data_quality_status"] = data_quality_status_upper
+    details["eligible"] = not details["fail_reasons"]
+    return details["eligible"], details
+
+
+def _ranked_strike_proxy_ratio(ranked_strikes) -> float:
+    ranked_candidates = ranked_strikes or []
+    if not ranked_candidates:
+        return 1.0
+    proxy_count = sum(
+        1
+        for candidate in ranked_candidates
+        if bool(candidate.get("iv_is_proxy")) or bool(candidate.get("delta_is_proxy"))
+    )
+    return float(proxy_count) / float(max(len(ranked_candidates), 1))
+
+
+def _apply_bearish_bias_threshold_adjustments(
+    *,
+    runtime_thresholds,
+    direction,
+    gamma_regime,
+    vol_regime,
+    base_min_trade_strength,
+    base_min_composite_score,
+):
+    enabled = bool(int(_safe_float(runtime_thresholds.get("enable_bearish_bias_guard"), 1.0)))
+    direction_upper = _as_upper(direction)
+    gamma_upper = canonical_gamma_regime(gamma_regime)
+    vol_upper = _canonical_vol_regime(vol_regime)
+
+    details = {
+        "enabled": enabled,
+        "applied": False,
+        "context": {
+            "direction": direction_upper,
+            "gamma_regime": gamma_upper,
+            "vol_regime": vol_upper,
+        },
+    }
+    min_trade_strength = int(base_min_trade_strength)
+    min_composite_score = int(base_min_composite_score)
+
+    if not enabled:
+        details["reason"] = "disabled"
+        return min_trade_strength, min_composite_score, details
+
+    context_match = (
+        direction_upper == "PUT"
+        and gamma_upper == "NEGATIVE_GAMMA"
+        and vol_upper == "VOL_EXPANSION"
+    )
+    if not context_match:
+        details["reason"] = "context_not_matched"
+        return min_trade_strength, min_composite_score, details
+
+    composite_add = int(_safe_float(runtime_thresholds.get("bearish_bias_guard_composite_add"), 3.0))
+    strength_add = int(_safe_float(runtime_thresholds.get("bearish_bias_guard_strength_add"), 2.0))
+    size_cap = _clip(_safe_float(runtime_thresholds.get("bearish_bias_guard_size_cap"), 0.70), 0.0, 1.0)
+
+    min_trade_strength = int(_clip(min_trade_strength + strength_add, 0, 100))
+    min_composite_score = int(_clip(min_composite_score + composite_add, 0, 100))
+    details.update(
+        {
+            "applied": True,
+            "composite_add": composite_add,
+            "strength_add": strength_add,
+            "size_cap": round(float(size_cap), 4),
+        }
+    )
+    return min_trade_strength, min_composite_score, details
+
+
+def _evaluate_weak_data_circuit_breaker(
+    *,
+    runtime_thresholds,
+    data_quality_status,
+    provider_health_summary,
+    confirmation_status,
+    adjusted_trade_strength,
+    runtime_composite_score,
+    ranked_strikes,
+    direction,
+    gamma_regime,
+    vol_regime,
+):
+    enabled = bool(int(_safe_float(runtime_thresholds.get("enable_weak_data_circuit_breaker"), 1.0)))
+    details = {
+        "enabled": enabled,
+        "triggered": False,
+        "trigger_reasons": [],
+        "data_quality_status": _as_upper(data_quality_status),
+        "provider_health_summary": _as_upper(provider_health_summary),
+        "confirmation_status": _as_upper(confirmation_status),
+        "direction": _as_upper(direction),
+        "gamma_regime": canonical_gamma_regime(gamma_regime),
+        "vol_regime": _canonical_vol_regime(vol_regime),
+    }
+    if not enabled:
+        details["reason"] = "disabled"
+        return False, details
+
+    watch_statuses = _normalize_string_set(
+        runtime_thresholds.get("weak_data_circuit_breaker_data_quality_statuses"),
+        default={"WEAK", "CAUTION"},
+    )
+    if details["data_quality_status"] not in watch_statuses:
+        details["reason"] = "data_quality_not_in_breaker_scope"
+        return False, details
+
+    min_strength = int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_min_trade_strength"), 74.0))
+    min_runtime_score = int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_min_runtime_composite_score"), 70.0))
+    max_proxy_ratio = _clip(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_max_proxy_ratio"), 0.35), 0.0, 1.0)
+    min_trigger_count = max(int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_min_trigger_count"), 2.0)), 1)
+
+    provider_statuses = _normalize_string_set(
+        runtime_thresholds.get("weak_data_circuit_breaker_provider_statuses"),
+        default={"WEAK", "CAUTION"},
+    )
+    require_strong_confirmation = bool(
+        int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_require_strong_confirmation"), 1.0))
+    )
+    proxy_ratio = _ranked_strike_proxy_ratio(ranked_strikes)
+    details["proxy_ratio"] = round(float(proxy_ratio), 4)
+    details["runtime_composite_score"] = int(runtime_composite_score)
+    details["trade_strength"] = int(adjusted_trade_strength)
+
+    if details["provider_health_summary"] in provider_statuses:
+        details["trigger_reasons"].append("provider_health_fragile")
+    if require_strong_confirmation and details["confirmation_status"] not in {"STRONG_CONFIRMATION", "CONFIRMED"}:
+        details["trigger_reasons"].append("confirmation_not_strong")
+    if int(adjusted_trade_strength) < min_strength:
+        details["trigger_reasons"].append("trade_strength_below_floor")
+    if int(runtime_composite_score) < min_runtime_score:
+        details["trigger_reasons"].append("runtime_composite_below_floor")
+    if proxy_ratio > max_proxy_ratio:
+        details["trigger_reasons"].append("proxy_ratio_above_cap")
+    if (
+        details["direction"] == "PUT"
+        and details["gamma_regime"] == "NEGATIVE_GAMMA"
+        and details["vol_regime"] == "VOL_EXPANSION"
+    ):
+        details["trigger_reasons"].append("put_toxic_regime_context")
+
+    details["trigger_count"] = int(len(details["trigger_reasons"]))
+    details["min_trigger_count"] = int(min_trigger_count)
+    details["triggered"] = bool(details["trigger_count"] >= min_trigger_count)
+    return details["triggered"], details
+
+
 def _state_bucket_key(symbol, selected_expiry, ts):
     """Namespace state by trading date to reduce cross-session contamination."""
     date_bucket = "NO_DATE"
@@ -1194,6 +1465,7 @@ def generate_trade(
         backtest_mode=backtest_mode,
         market_state=market_state,
         probability_state=probability_state,
+        option_chain_validation=option_chain_validation,
         macro_news_state=macro_news_state,
         global_risk_state=global_risk_state,
     )
@@ -1639,6 +1911,20 @@ def generate_trade(
         "path_aware_mae_zscore": _to_python_number(path_check.get("mae_zscore")),
         "path_aware_reasons": path_check.get("reasons", []),
         "direction_source": direction_source,
+        "direction_vote_shadow": signal_state.get("direction_vote_shadow"),
+        "direction_source_vote": signal_state.get("direction_source_vote"),
+        "direction_vote_call_probability": _to_python_number(signal_state.get("direction_vote_call_probability")),
+        "direction_vote_put_probability": _to_python_number(signal_state.get("direction_vote_put_probability")),
+        "direction_head_enabled": bool(signal_state.get("direction_head_enabled", False)),
+        "direction_head_direction": signal_state.get("direction_head_direction"),
+        "direction_head_probability_up": _to_python_number(signal_state.get("direction_head_probability_up")),
+        "direction_head_probability_up_raw": _to_python_number(signal_state.get("direction_head_probability_up_raw")),
+        "direction_head_uncertainty": _to_python_number(signal_state.get("direction_head_uncertainty")),
+        "direction_head_confidence": _to_python_number(signal_state.get("direction_head_confidence")),
+        "direction_head_disagreement_with_vote": _to_python_number(signal_state.get("direction_head_disagreement_with_vote")),
+        "direction_head_microstructure_friction_score": _to_python_number(signal_state.get("direction_head_microstructure_friction_score")),
+        "direction_head_calibration_applied": bool(signal_state.get("direction_head_calibration_applied", False)),
+        "direction_head_used_for_final": bool(signal_state.get("direction_head_used_for_final", False)),
         "direction_call_probability": round(float(_clip(bull_probability, 0.0, 1.0)), 4),
         "direction_put_probability": round(float(_clip(bear_probability, 0.0, 1.0)), 4),
         "trade_strength": adjusted_trade_strength,
@@ -1762,6 +2048,8 @@ def generate_trade(
         "score_calibration_applied": False,
         "score_calibration_backend": runtime_thresholds.get("calibration_backend", "isotonic"),
         "score_calibration_artifact_path": runtime_thresholds.get("runtime_score_calibrator_path"),
+        "score_calibration_segment_key": None,
+        "score_calibration_segment_context": {},
         "time_decay_enabled": bool(int(_safe_float(runtime_thresholds.get("enable_time_decay_model"), 1.0))),
         "time_decay_applied": False,
         "time_decay_fallback_used": False,
@@ -1925,7 +2213,7 @@ def generate_trade(
         explainability = _build_decision_explainability(
             payload,
             trade_status=trade_status,
-            min_trade_strength=min_trade_strength,
+            min_trade_strength=int(_safe_float(payload.get("effective_min_trade_strength_threshold"), min_trade_strength)),
         )
         payload.update(explainability)
         payload["explainability"] = explainability
@@ -2355,6 +2643,11 @@ def generate_trade(
     enable_calibration = bool(int(_safe_float(runtime_thresholds.get("enable_score_calibration"), 1.0)))
     calibration_backend = runtime_thresholds.get("calibration_backend", "isotonic")
     calibrator_path = runtime_thresholds.get("runtime_score_calibrator_path")
+    calibration_context = {
+        "direction": direction,
+        "gamma_regime": canonical_gamma_regime(market_state.get("gamma_regime")),
+        "vol_regime": _canonical_vol_regime(market_state.get("vol_regime")),
+    }
     base_payload["score_calibration_enabled"] = enable_calibration
     base_payload["score_calibration_backend"] = calibration_backend if enable_calibration else None
     base_payload["score_calibration_artifact_path"] = calibrator_path if enable_calibration else None
@@ -2363,12 +2656,45 @@ def generate_trade(
             raw_composite_score=runtime_composite_score,
             calibration_backend=calibration_backend,
             calibrator_path=calibrator_path,
+            calibration_context=calibration_context,
         )
-        calibration_metadata = get_calibrator_runtime_metadata(calibrator_path)
+        calibration_metadata = get_calibrator_runtime_metadata(
+            calibrator_path,
+            calibration_context=calibration_context,
+        )
         base_payload["score_calibration_applied"] = bool(calibration_metadata.get("calibrator_loaded"))
         loaded_artifact_path = calibration_metadata.get("loaded_artifact_path")
         if loaded_artifact_path:
             base_payload["score_calibration_artifact_path"] = loaded_artifact_path
+        base_payload["score_calibration_segment_key"] = calibration_metadata.get("selected_segment_key")
+        base_payload["score_calibration_segment_context"] = calibration_metadata.get("selected_segment_context") or {}
+
+    effective_min_trade_strength, effective_min_composite_score, bearish_bias_guard = _apply_bearish_bias_threshold_adjustments(
+        runtime_thresholds=runtime_thresholds,
+        direction=direction,
+        gamma_regime=market_state.get("gamma_regime"),
+        vol_regime=market_state.get("vol_regime"),
+        base_min_trade_strength=min_trade_strength,
+        base_min_composite_score=min_composite_score,
+    )
+    base_payload["bearish_bias_guard"] = bearish_bias_guard
+    base_payload["effective_min_trade_strength_threshold"] = int(effective_min_trade_strength)
+    base_payload["effective_min_composite_score_threshold"] = int(effective_min_composite_score)
+    if bearish_bias_guard.get("applied"):
+        guard_size_cap = _clip(_safe_float(bearish_bias_guard.get("size_cap"), 1.0), 0.0, 1.0)
+        current_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        guarded_cap = min(current_cap, guard_size_cap)
+        base_payload["effective_size_cap"] = round(guarded_cap, 2)
+        current_lots = max(int(_safe_float(base_payload.get("number_of_lots"), 0.0)), 0)
+        guarded_lots = max(int(current_lots * guarded_cap), 0)
+        if current_lots > 0 and guarded_lots == 0 and guarded_cap > 0:
+            guarded_lots = 1
+        if guarded_lots > 0:
+            base_payload["number_of_lots"] = min(current_lots, guarded_lots)
+            base_payload["optimized_lots"] = base_payload["number_of_lots"]
+            if "entry_price" in base_payload:
+                base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
+                base_payload["capital_required"] = round(entry_price * lot_size * base_payload["number_of_lots"], 2)
     
     # Apply time-decay model if enabled
     enable_decay = bool(int(_safe_float(runtime_thresholds.get("enable_time_decay_model"), 1.0)))
@@ -2413,92 +2739,54 @@ def generate_trade(
     
     base_payload["runtime_composite_score"] = runtime_composite_score
 
-    if runtime_composite_score < min_composite_score:
+    if adjusted_trade_strength < effective_min_trade_strength:
         return _finalize(
             base_payload,
             "WATCHLIST",
-            f"Runtime composite score {runtime_composite_score} below threshold {min_composite_score}",
+            f"Trade strength {adjusted_trade_strength} below threshold {effective_min_trade_strength}",
         )
+
+    if runtime_composite_score < effective_min_composite_score:
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            f"Runtime composite score {runtime_composite_score} below threshold {effective_min_composite_score}",
+        )
+
+    weak_data_shadow_triggered, weak_data_shadow = _evaluate_weak_data_circuit_breaker(
+        runtime_thresholds=runtime_thresholds,
+        data_quality_status=data_quality.get("status"),
+        provider_health_summary=provider_health_summary,
+        confirmation_status=confirmation.get("status"),
+        adjusted_trade_strength=adjusted_trade_strength,
+        runtime_composite_score=runtime_composite_score,
+        ranked_strikes=ranked_strikes,
+        direction=direction,
+        gamma_regime=market_state.get("gamma_regime"),
+        vol_regime=market_state.get("vol_regime"),
+    )
+    base_payload["weak_data_circuit_breaker_shadow"] = weak_data_shadow
 
     provider_health_blocking_status = _as_upper(provider_health.get("trade_blocking_status"))
     provider_health_blocking_reasons = provider_health.get("trade_blocking_reasons") if isinstance(provider_health.get("trade_blocking_reasons"), list) else []
 
     def _evaluate_provider_health_override(*, blocked: bool):
-        enable_override = bool(int(_safe_float(runtime_thresholds.get("enable_provider_health_degraded_override"), 0.0)))
-        if not enable_override:
-            return False, {"reason": "override_disabled"}
-
-        details = {
-            "eligible": False,
-            "fail_reasons": [],
-        }
-
-        dte_max = _safe_float(runtime_thresholds.get("provider_health_override_dte_max"), 1.0)
-        dte_value = _safe_float(days_to_expiry, None)
-        if dte_value is not None and dte_value > dte_max:
-            details["fail_reasons"].append(f"dte_above_max:{dte_value}")
-
-        require_strong_confirmation = bool(int(_safe_float(runtime_thresholds.get("provider_health_override_require_strong_confirmation"), 1.0)))
-        if require_strong_confirmation and _as_upper(confirmation.get("status")) not in {"STRONG_CONFIRMATION", "CONFIRMED"}:
-            details["fail_reasons"].append("confirmation_not_strong")
-
-        strength_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_strength_buffer"), 12.0))
-        composite_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_composite_buffer"), 8.0))
-        if adjusted_trade_strength < (min_trade_strength + strength_buffer):
-            details["fail_reasons"].append("trade_strength_buffer_not_met")
-        if runtime_composite_score < (min_composite_score + composite_buffer):
-            details["fail_reasons"].append("runtime_composite_buffer_not_met")
-
-        effective_priced_ratio = _safe_float(option_chain_validation.get("effective_priced_ratio"), _safe_float(option_chain_validation.get("priced_ratio"), 0.0))
-        min_effective_priced_ratio = _safe_float(runtime_thresholds.get("provider_health_override_min_effective_priced_ratio"), 0.45)
-        if effective_priced_ratio < min_effective_priced_ratio:
-            details["fail_reasons"].append("effective_priced_ratio_below_floor")
-
-        core_one_sided_ratio = _safe_float(provider_health.get("core_one_sided_quote_ratio"), None)
-        if core_one_sided_ratio is None:
-            row_count = max(int(_safe_float(option_chain_validation.get("row_count"), 0.0)), 1)
-            core_one_sided_ratio = _safe_float(option_chain_validation.get("one_sided_quote_rows"), 0.0) / row_count
-        max_one_sided_ratio = _safe_float(runtime_thresholds.get("provider_health_override_one_sided_quote_ratio_max"), 1.0)
-        if core_one_sided_ratio > max_one_sided_ratio:
-            details["fail_reasons"].append("one_sided_quote_ratio_above_cap")
-
-        ranked_candidates = ranked_strikes or []
-        if ranked_candidates:
-            proxy_count = sum(
-                1
-                for candidate in ranked_candidates
-                if bool(candidate.get("iv_is_proxy")) or bool(candidate.get("delta_is_proxy"))
-            )
-            proxy_ratio = proxy_count / max(len(ranked_candidates), 1)
-        else:
-            proxy_ratio = 1.0
-        max_proxy_ratio = _safe_float(runtime_thresholds.get("provider_health_override_max_proxy_ratio"), 0.90)
-        if proxy_ratio > max_proxy_ratio:
-            details["fail_reasons"].append("proxy_ratio_above_cap")
-
-        allowed_reasons_raw = runtime_thresholds.get("provider_health_override_allowed_block_reasons", ["core_iv_weak"])
-        if isinstance(allowed_reasons_raw, str):
-            allowed_reasons = {allowed_reasons_raw.strip()} if allowed_reasons_raw.strip() else set()
-        elif isinstance(allowed_reasons_raw, (list, tuple, set)):
-            allowed_reasons = {str(reason).strip() for reason in allowed_reasons_raw if str(reason).strip()}
-        else:
-            allowed_reasons = {"core_iv_weak"}
-
-        if blocked:
-            blocking_reasons_upper = {str(reason).strip().lower() for reason in provider_health_blocking_reasons if str(reason).strip()}
-            if not blocking_reasons_upper:
-                details["fail_reasons"].append("missing_block_reasons")
-            elif not blocking_reasons_upper.issubset({reason.lower() for reason in allowed_reasons}):
-                details["fail_reasons"].append("block_reasons_not_allowlisted")
-        elif provider_health_summary not in {"CAUTION", "WEAK"}:
-            details["fail_reasons"].append("provider_summary_not_caution_or_weak")
-
-        details["proxy_ratio"] = round(proxy_ratio, 4)
-        details["effective_priced_ratio"] = round(effective_priced_ratio, 4)
-        details["one_sided_quote_ratio"] = round(core_one_sided_ratio, 4)
-        details["dte"] = dte_value
-        details["eligible"] = not details["fail_reasons"]
-        return details["eligible"], details
+        return _evaluate_provider_health_override_eligibility(
+            runtime_thresholds=runtime_thresholds,
+            provider_health_blocking_reasons=provider_health_blocking_reasons,
+            provider_health_summary=provider_health_summary,
+            data_quality_status=data_quality.get("status"),
+            confirmation_status=confirmation.get("status"),
+            adjusted_trade_strength=adjusted_trade_strength,
+            min_trade_strength=min_trade_strength,
+            runtime_composite_score=runtime_composite_score,
+            min_composite_score=min_composite_score,
+            option_chain_validation=option_chain_validation or {},
+            provider_health=provider_health or {},
+            ranked_strikes=ranked_strikes,
+            days_to_expiry=days_to_expiry,
+            blocked=blocked,
+        )
 
     def _apply_provider_health_override(*, reason_label: str):
         override_size_cap = _clip(_safe_float(runtime_thresholds.get("provider_health_override_size_cap"), 0.35), 0.0, 1.0)
@@ -2563,6 +2851,17 @@ def generate_trade(
             base_payload,
             "WATCHLIST",
             f"Provider health {provider_health_summary} blocks TRADE and routes to WATCHLIST",
+        )
+
+    weak_data_triggered, weak_data_breaker = weak_data_shadow_triggered, weak_data_shadow
+    base_payload["weak_data_circuit_breaker"] = weak_data_breaker
+    if weak_data_triggered:
+        base_payload["no_trade_reason_code"] = "WEAK_DATA_CIRCUIT_BREAKER"
+        base_payload["no_trade_reason"] = "Weak-data circuit breaker routed trade to WATCHLIST"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Weak-data circuit breaker routed TRADE to WATCHLIST",
         )
 
     if apply_budget_constraint:

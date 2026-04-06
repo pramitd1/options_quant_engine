@@ -85,6 +85,15 @@ FEATURE_NAMES = [
 N_FEATURES = len(FEATURE_NAMES)
 assert N_FEATURES == 33, f"Expected 33 features, got {N_FEATURES}"
 
+LEGACY_FEATURE_COUNT = 7
+FEATURE_INDEX = {name: idx for idx, name in enumerate(FEATURE_NAMES)}
+LIVE_UNAVAILABLE_FEATURE_DEFAULTS = {
+    "hist_vol_5d": 0.0,
+    "hist_vol_20d": 0.0,
+    "confirmation_numeric": 1.0,
+    "moneyness_pct": 0.0,
+}
+
 # ── Target columns ──────────────────────────────────────────────────
 TARGET_COLUMNS = {
     "target_1d":          "correct_1d",
@@ -143,6 +152,103 @@ _CHARM = {"CHARM_BULLISH": 1.0, "CHARM_BEARISH": -1.0,
 _CONFIRM = {"STRONG_CONFIRMATION": 3.0, "CONFIRMED": 2.0, "MIXED": 1.0, "CONFLICT": 0.0}
 
 _MACRO_EVENT = {"NO_EVENT": 0.0, "POST_EVENT": 1.0, "PRE_EVENT": 2.0, "DURING_EVENT": 3.0}
+
+
+def get_live_feature_contract() -> dict:
+    """Return the canonical live inference contract for the expanded feature set."""
+    return {
+        "feature_names": list(FEATURE_NAMES),
+        "feature_count": N_FEATURES,
+        "legacy_feature_count": LEGACY_FEATURE_COUNT,
+        "live_unavailable_feature_defaults": dict(LIVE_UNAVAILABLE_FEATURE_DEFAULTS),
+    }
+
+
+def validate_live_feature_vector(feature_vector, *, atol: float = 1e-9) -> dict:
+    """Validate the expanded live feature vector against the train-serve contract."""
+    arr = np.asarray(feature_vector, dtype=np.float64)
+    if arr.ndim == 2:
+        if arr.shape[0] != 1:
+            return {
+                "valid": False,
+                "feature_count": int(arr.shape[1]) if arr.ndim > 1 else int(arr.size),
+                "violations": ["multirow_feature_vector_not_supported"],
+                "legacy_vector": False,
+            }
+        arr = arr.reshape(-1)
+
+    feature_count = int(arr.size)
+    if feature_count == LEGACY_FEATURE_COUNT:
+        return {
+            "valid": True,
+            "feature_count": feature_count,
+            "violations": [],
+            "legacy_vector": True,
+        }
+
+    if feature_count != N_FEATURES:
+        return {
+            "valid": False,
+            "feature_count": feature_count,
+            "violations": [f"unexpected_feature_count:{feature_count}"],
+            "legacy_vector": False,
+        }
+
+    violations = []
+    for feature_name, expected_default in LIVE_UNAVAILABLE_FEATURE_DEFAULTS.items():
+        idx = FEATURE_INDEX[feature_name]
+        actual = arr[idx]
+        if np.isnan(actual) or abs(float(actual) - float(expected_default)) > atol:
+            violations.append(
+                {
+                    "feature": feature_name,
+                    "index": idx,
+                    "expected": float(expected_default),
+                    "actual": None if np.isnan(actual) else float(actual),
+                }
+            )
+
+    return {
+        "valid": len(violations) == 0,
+        "feature_count": feature_count,
+        "violations": violations,
+        "legacy_vector": False,
+    }
+
+
+def enforce_live_feature_contract(feature_vector, *, atol: float = 1e-9) -> tuple[np.ndarray, dict]:
+    """Sanitize an expanded feature vector so live-unavailable features stay fixed."""
+    arr = np.asarray(feature_vector, dtype=np.float64)
+    original_shape = arr.shape
+    if arr.ndim == 2 and arr.shape[0] == 1:
+        arr = arr.reshape(-1)
+
+    validation = validate_live_feature_vector(arr, atol=atol)
+    if validation.get("legacy_vector"):
+        return np.asarray(feature_vector, dtype=np.float64), {
+            **validation,
+            "sanitized": False,
+        }
+
+    if validation["feature_count"] != N_FEATURES:
+        return np.asarray(feature_vector, dtype=np.float64), {
+            **validation,
+            "sanitized": False,
+        }
+
+    sanitized = arr.copy()
+    for feature_name, expected_default in LIVE_UNAVAILABLE_FEATURE_DEFAULTS.items():
+        sanitized[FEATURE_INDEX[feature_name]] = float(expected_default)
+
+    if len(original_shape) == 2 and original_shape[0] == 1:
+        sanitized = sanitized.reshape(1, -1)
+
+    post_validation = validate_live_feature_vector(sanitized, atol=atol)
+    return sanitized, {
+        **post_validation,
+        "sanitized": len(validation["violations"]) > 0,
+        "original_violations": validation["violations"],
+    }
 
 
 def extract_features(row: dict) -> np.ndarray:

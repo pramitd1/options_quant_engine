@@ -24,11 +24,17 @@ Downstream Usage:
 import json
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+from itertools import combinations
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+CALIBRATION_SELECTOR_FIELDS: Tuple[str, ...] = ("direction", "gamma_regime", "vol_regime")
+_CALIBRATION_SELECTOR_FIELD_ALIASES = {
+    "volatility_regime": "vol_regime",
+}
 
 
 def _safe_float(value, default=None):
@@ -40,6 +46,90 @@ def _safe_float(value, default=None):
 
 def _clip(value, lo, hi):
     return max(lo, min(hi, value))
+
+
+def _normalize_gamma_regime(value) -> str:
+    normalized = str(value or "").upper().strip()
+    if normalized in {"POSITIVE_GAMMA", "LONG_GAMMA", "LONG_GAMMA_ZONE"}:
+        return "POSITIVE_GAMMA"
+    if normalized in {"NEGATIVE_GAMMA", "SHORT_GAMMA", "SHORT_GAMMA_ZONE"}:
+        return "NEGATIVE_GAMMA"
+    if normalized in {"NEUTRAL_GAMMA", "NEUTRAL"}:
+        return "NEUTRAL_GAMMA"
+    return normalized or "UNKNOWN"
+
+
+def _normalize_vol_regime(value) -> str:
+    normalized = str(value or "").upper().strip()
+    if normalized in {"VOL_EXPANSION", "HIGH_VOL", "SHOCK_VOL", "VOLATILE"}:
+        return "VOL_EXPANSION"
+    if normalized in {"VOL_CONTRACTION", "LOW_VOL", "COMPRESSED_VOL"}:
+        return "VOL_CONTRACTION"
+    if normalized in {"NORMAL_VOL", "NORMAL", "MID_VOL"}:
+        return "NORMAL_VOL"
+    return normalized or "UNKNOWN"
+
+
+def _normalize_direction(value) -> str:
+    normalized = str(value or "").upper().strip()
+    if normalized in {"CALL", "PUT", "NO_SIGNAL"}:
+        return normalized
+    return normalized or "UNKNOWN"
+
+
+def normalize_calibration_context(calibration_context: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    normalized_context: Dict[str, str] = {}
+    if not isinstance(calibration_context, dict):
+        return normalized_context
+
+    for raw_field, raw_value in calibration_context.items():
+        field = _CALIBRATION_SELECTOR_FIELD_ALIASES.get(str(raw_field), str(raw_field))
+        if field not in CALIBRATION_SELECTOR_FIELDS:
+            continue
+        if field == "direction":
+            normalized_context[field] = _normalize_direction(raw_value)
+        elif field == "gamma_regime":
+            normalized_context[field] = _normalize_gamma_regime(raw_value)
+        elif field == "vol_regime":
+            normalized_context[field] = _normalize_vol_regime(raw_value)
+
+    return normalized_context
+
+
+def create_calibration_segment_key(calibration_context: Optional[Dict[str, Any]] = None) -> str:
+    normalized_context = normalize_calibration_context(calibration_context)
+    if not normalized_context:
+        return "default"
+    parts = [
+        f"{field}={normalized_context[field]}"
+        for field in CALIBRATION_SELECTOR_FIELDS
+        if field in normalized_context
+    ]
+    return "|".join(parts) if parts else "default"
+
+
+def parse_calibration_segment_key(segment_key: Optional[str]) -> Dict[str, str]:
+    if not segment_key or segment_key == "default":
+        return {}
+    context: Dict[str, str] = {}
+    for part in str(segment_key).split("|"):
+        if "=" not in part:
+            continue
+        field, value = part.split("=", 1)
+        context[str(field)] = str(value)
+    return normalize_calibration_context(context)
+
+
+def _build_segment_candidate_keys(calibration_context: Optional[Dict[str, Any]]) -> List[str]:
+    normalized_context = normalize_calibration_context(calibration_context)
+    available_fields = [field for field in CALIBRATION_SELECTOR_FIELDS if field in normalized_context]
+    candidates: List[str] = []
+    for combo_size in range(len(available_fields), 0, -1):
+        for field_combo in combinations(available_fields, combo_size):
+            combo_context = {field: normalized_context[field] for field in field_combo}
+            candidates.append(create_calibration_segment_key(combo_context))
+    candidates.append("default")
+    return candidates
 
 
 class IsotonicCalibrator:
@@ -353,7 +443,14 @@ class ScoreCalibrator:
     
     def save_to_file(self, filepath: str) -> None:
         """Persist calibrator state to JSON."""
-        state = {
+        state = self.to_state()
+        with open(filepath, 'w') as f:
+            json.dump(state, f, indent=2)
+
+        logger.info(f"Calibrator saved to {filepath}")
+
+    def to_state(self) -> Dict[str, Any]:
+        state: Dict[str, Any] = {
             "method": self.method,
             "n_bins": self.n_bins,
             "config": self.config
@@ -369,17 +466,18 @@ class ScoreCalibrator:
         
         elif self.method == "temperature" and self.backend:
             state["temperature"] = float(self.backend.temperature)
-        
-        with open(filepath, 'w') as f:
-            json.dump(state, f, indent=2)
-        
-        logger.info(f"Calibrator saved to {filepath}")
+        return state
     
     @classmethod
     def load_from_file(cls, filepath: str) -> 'ScoreCalibrator':
         """Restore calibrator state from JSON."""
         with open(filepath, 'r') as f:
             state = json.load(f)
+        return cls.from_state(state)
+
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> 'ScoreCalibrator':
+        """Restore calibrator state from a JSON-compatible payload."""
         
         calibrator = cls(
             method=state.get("method", "isotonic"),
@@ -402,26 +500,138 @@ class ScoreCalibrator:
             backend.temperature = float(state.get("temperature", 1.0))
             backend.is_fitted = True
             calibrator.backend = backend
-        
-        logger.info(f"Calibrator loaded from {filepath}")
+
         return calibrator
+
+
+class RuntimeScoreCalibrator:
+    """Context-aware runtime calibrator with segment fallback support."""
+
+    def __init__(
+        self,
+        *,
+        default_calibrator: Optional[ScoreCalibrator] = None,
+        segments: Optional[Dict[str, ScoreCalibrator]] = None,
+        selector_fields: Optional[List[str]] = None,
+        default_segment: str = "default",
+    ):
+        self.segments: Dict[str, ScoreCalibrator] = dict(segments or {})
+        if default_calibrator is not None:
+            self.segments[default_segment] = default_calibrator
+        self.default_segment = default_segment
+        self.selector_fields = list(selector_fields or CALIBRATION_SELECTOR_FIELDS)
+
+    @property
+    def method(self) -> Optional[str]:
+        calibrator = self.segments.get(self.default_segment)
+        if calibrator is None and self.segments:
+            calibrator = next(iter(self.segments.values()))
+        return calibrator.method if calibrator is not None else None
+
+    def fit(self, raw_scores: List[float], hit_flags: List[float]) -> Dict[str, Any]:
+        calibrator = self.segments.get(self.default_segment)
+        if calibrator is None:
+            calibrator = ScoreCalibrator(method="isotonic", n_bins=10)
+            self.segments[self.default_segment] = calibrator
+        return calibrator.fit(raw_scores, hit_flags)
+
+    def _select_segment(self, calibration_context: Optional[Dict[str, Any]] = None) -> Tuple[Optional[str], Optional[ScoreCalibrator], Dict[str, str]]:
+        normalized_context = normalize_calibration_context(calibration_context)
+        for segment_key in _build_segment_candidate_keys(normalized_context):
+            calibrator = self.segments.get(segment_key)
+            if calibrator is not None:
+                return segment_key, calibrator, parse_calibration_segment_key(segment_key)
+        if self.default_segment in self.segments:
+            return self.default_segment, self.segments[self.default_segment], {}
+        if self.segments:
+            first_key = next(iter(self.segments.keys()))
+            return first_key, self.segments[first_key], parse_calibration_segment_key(first_key)
+        return None, None, normalized_context
+
+    def calibrate(self, raw_score: float, calibration_context: Optional[Dict[str, Any]] = None) -> Tuple[float, Optional[str]]:
+        segment_key, calibrator, _ = self._select_segment(calibration_context)
+        if calibrator is None:
+            return float(raw_score), None
+        return calibrator.calibrate(float(raw_score)), segment_key
+
+    def calibrate_batch(self, raw_scores: List[float], calibration_context: Optional[Dict[str, Any]] = None) -> List[float]:
+        return [self.calibrate(score, calibration_context=calibration_context)[0] for score in raw_scores]
+
+    def get_runtime_metadata(self, calibration_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        segment_key, calibrator, segment_context = self._select_segment(calibration_context)
+        return {
+            "calibrator_loaded": bool(calibrator is not None),
+            "active_method": calibrator.method if calibrator is not None else None,
+            "selector_fields": list(self.selector_fields),
+            "segment_count": int(len(self.segments)),
+            "available_segments": sorted(self.segments.keys()),
+            "selected_segment_key": segment_key,
+            "selected_segment_context": segment_context,
+        }
+
+    def save_to_file(self, filepath: str) -> None:
+        if set(self.segments.keys()) <= {self.default_segment} and self.default_segment in self.segments:
+            self.segments[self.default_segment].save_to_file(filepath)
+            return
+
+        payload = {
+            "artifact_type": "segmented_score_calibrator",
+            "version": 2,
+            "selector_fields": list(self.selector_fields),
+            "default_segment": self.default_segment,
+            "segments": {
+                segment_key: calibrator.to_state()
+                for segment_key, calibrator in sorted(self.segments.items())
+            },
+        }
+        with open(filepath, "w") as f:
+            json.dump(payload, f, indent=2)
+        logger.info("Segmented calibrator saved to %s", filepath)
+
+    @classmethod
+    def from_single_calibrator(cls, calibrator: ScoreCalibrator) -> 'RuntimeScoreCalibrator':
+        return cls(default_calibrator=calibrator)
+
+    @classmethod
+    def load_from_file(cls, filepath: str) -> 'RuntimeScoreCalibrator':
+        with open(filepath, "r") as f:
+            state = json.load(f)
+
+        if isinstance(state, dict) and isinstance(state.get("segments"), dict):
+            segments = {
+                str(segment_key): ScoreCalibrator.from_state(segment_state)
+                for segment_key, segment_state in state.get("segments", {}).items()
+                if isinstance(segment_state, dict)
+            }
+            return cls(
+                segments=segments,
+                selector_fields=[
+                    _CALIBRATION_SELECTOR_FIELD_ALIASES.get(str(field), str(field))
+                    for field in state.get("selector_fields", CALIBRATION_SELECTOR_FIELDS)
+                ],
+                default_segment=str(state.get("default_segment", "default")),
+            )
+
+        return cls.from_single_calibrator(ScoreCalibrator.from_state(state))
 
 
 # ============================================================================
 # Convenience Functions
 # ============================================================================
 
-_global_calibrator: Optional[ScoreCalibrator] = None
+_global_calibrator: Optional[RuntimeScoreCalibrator] = None
 _calibration_autoload_attempted = False
 _loaded_calibrator_path: Optional[Path] = None
 _loaded_calibrator_mtime: Optional[float] = None
 DEFAULT_CALIBRATOR_PATH = Path("models_store") / "runtime_score_calibrator.json"
 
 
-def initialize_calibrator(method: str = "isotonic", n_bins: int = 10) -> ScoreCalibrator:
+def initialize_calibrator(method: str = "isotonic", n_bins: int = 10) -> RuntimeScoreCalibrator:
     """Initialize global calibrator instance."""
     global _global_calibrator
-    _global_calibrator = ScoreCalibrator(method=method, n_bins=n_bins)
+    _global_calibrator = RuntimeScoreCalibrator(
+        default_calibrator=ScoreCalibrator(method=method, n_bins=n_bins)
+    )
     return _global_calibrator
 
 
@@ -433,39 +643,53 @@ def fit_calibrator(raw_scores: List[float], hit_flags: List[float]) -> Dict:
     return _global_calibrator.fit(raw_scores, hit_flags)
 
 
-def calibrate_score(raw_score: float) -> float:
+def calibrate_score(raw_score: float, calibration_context: Optional[Dict[str, Any]] = None) -> float:
     """Apply global calibration to a single score."""
     global _global_calibrator
     if _global_calibrator is None:
         logger.warning("Global calibrator not initialized; returning raw score")
         return float(raw_score)
-    return _global_calibrator.calibrate(raw_score)
+    return _global_calibrator.calibrate(raw_score, calibration_context=calibration_context)[0]
 
 
-def calibrate_scores(raw_scores: List[float]) -> List[float]:
+def calibrate_scores(raw_scores: List[float], calibration_context: Optional[Dict[str, Any]] = None) -> List[float]:
     """Apply global calibration to multiple scores."""
     global _global_calibrator
     if _global_calibrator is None:
         logger.warning("Global calibrator not initialized; returning raw scores")
         return list(raw_scores)
-    return _global_calibrator.calibrate_batch(raw_scores)
+    return _global_calibrator.calibrate_batch(raw_scores, calibration_context=calibration_context)
 
 
-def get_calibrator() -> Optional[ScoreCalibrator]:
+def get_calibrator() -> Optional[RuntimeScoreCalibrator]:
     """Get reference to global calibrator instance."""
     return _global_calibrator
 
 
-def get_calibrator_runtime_metadata(filepath: Optional[str] = None) -> Dict[str, object]:
+def get_calibrator_runtime_metadata(
+    filepath: Optional[str] = None,
+    calibration_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, object]:
     """Describe the currently loaded runtime calibrator state."""
     path = Path(filepath or os.getenv("RUNTIME_SCORE_CALIBRATOR_PATH") or DEFAULT_CALIBRATOR_PATH)
-    active_method = _global_calibrator.method if _global_calibrator is not None else None
-    return {
-        "calibrator_loaded": _global_calibrator is not None,
-        "active_method": active_method,
+    runtime_metadata = (
+        _global_calibrator.get_runtime_metadata(calibration_context=calibration_context)
+        if _global_calibrator is not None
+        else {
+            "calibrator_loaded": False,
+            "active_method": None,
+            "selector_fields": list(CALIBRATION_SELECTOR_FIELDS),
+            "segment_count": 0,
+            "available_segments": [],
+            "selected_segment_key": None,
+            "selected_segment_context": {},
+        }
+    )
+    runtime_metadata.update({
         "requested_artifact_path": str(path),
         "loaded_artifact_path": str(_loaded_calibrator_path) if _loaded_calibrator_path is not None else None,
-    }
+    })
+    return runtime_metadata
 
 
 def try_load_calibrator(filepath: Optional[str] = None) -> bool:
@@ -475,7 +699,7 @@ def try_load_calibrator(filepath: Optional[str] = None) -> bool:
     if not path.exists():
         return False
     try:
-        _global_calibrator = ScoreCalibrator.load_from_file(str(path))
+        _global_calibrator = RuntimeScoreCalibrator.load_from_file(str(path))
         _loaded_calibrator_path = path.resolve()
         _loaded_calibrator_mtime = float(path.stat().st_mtime)
         logger.info("Loaded runtime score calibrator from %s", path)
@@ -509,6 +733,7 @@ def apply_score_calibration(
     raw_composite_score: float,
     calibration_backend: str = "isotonic",
     calibrator_path: Optional[str] = None,
+    calibration_context: Optional[Dict[str, Any]] = None,
 ) -> int:
     """
     Apply score calibration to a raw composite score.
@@ -520,6 +745,7 @@ def apply_score_calibration(
         raw_composite_score: Raw composite score (0-100)
         calibration_backend: "isotonic" or "temperature" (ignored if using global calibrator)
         calibrator_path: Optional path to persisted calibrator artifact
+        calibration_context: Optional runtime segment selector context
     
     Returns:
         Calibrated score (0-100, integer)
@@ -535,5 +761,5 @@ def apply_score_calibration(
         # Safe fallback: do not distort scores without a fitted calibrator.
         return int(max(0, min(100, round(float(raw_composite_score)))))
 
-    calibrated = calibrate_score(float(raw_composite_score))
+    calibrated = calibrate_score(float(raw_composite_score), calibration_context=calibration_context)
     return int(max(0, min(100, round(calibrated))))

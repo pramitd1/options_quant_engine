@@ -157,6 +157,254 @@ def _append_regime_switch_log(record: dict, relative_path: str) -> None:
         return
 
 
+def _safe_ratio(value):
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _compute_stickiness_gate_verdict(
+    *,
+    dataset_path: Path,
+    cache_state: dict,
+    max_stickiness: float,
+    max_imbalance: float,
+    max_flip_lag_penalty: float,
+):
+    """Compute a compact directional stickiness gate verdict with mtime caching."""
+    if not dataset_path.exists():
+        return {
+            "ok": False,
+            "error": f"dataset missing: {dataset_path}",
+        }
+
+    mtime = dataset_path.stat().st_mtime
+    if cache_state.get("last_mtime") == mtime and cache_state.get("last_result") is not None:
+        return cache_state["last_result"]
+
+    frame = pd.read_csv(dataset_path, low_memory=False)
+    if "direction" not in frame.columns:
+        return {
+            "ok": False,
+            "error": "direction column missing",
+        }
+
+    working = frame.copy()
+    if "signal_timestamp" in working.columns:
+        working["signal_timestamp"] = pd.to_datetime(
+            working["signal_timestamp"],
+            errors="coerce",
+            format="mixed",
+        )
+        working = working.sort_values("signal_timestamp")
+
+    working["dir"] = working["direction"].astype(str).str.upper()
+    directional = working[working["dir"].isin(["CALL", "PUT"])].copy()
+    if len(directional) <= 1:
+        result = {
+            "ok": True,
+            "verdict": "CAUTION",
+            "stickiness_1step": None,
+            "direction_imbalance": None,
+            "flip_lag_penalty": None,
+            "red_alerts": 0,
+            "reason": "insufficient_directional_rows",
+        }
+        cache_state["last_mtime"] = mtime
+        cache_state["last_result"] = result
+        return result
+
+    same_prev = directional["dir"].eq(directional["dir"].shift(1))
+    stickiness_1step = _safe_ratio(same_prev.iloc[1:].mean())
+
+    mix = directional["dir"].value_counts(normalize=True)
+    call_share = _safe_ratio(mix.get("CALL"))
+    put_share = _safe_ratio(mix.get("PUT"))
+    direction_imbalance = None
+    if call_share is not None and put_share is not None:
+        direction_imbalance = abs(put_share - call_share)
+
+    hit_rates = []
+    for horizon in ("5m", "15m", "30m"):
+        col = f"correct_{horizon}"
+        if col in directional.columns:
+            series = pd.to_numeric(directional[col], errors="coerce")
+            hr = _safe_ratio(series.mean() if series.notna().any() else None)
+            if hr is not None:
+                hit_rates.append(hr)
+    flip_lag_penalty = None
+    if stickiness_1step is not None and hit_rates:
+        flip_lag_penalty = stickiness_1step - max(hit_rates)
+
+    red_alerts = 0
+    if stickiness_1step is not None and stickiness_1step > max_stickiness:
+        red_alerts += 1
+    if direction_imbalance is not None and direction_imbalance > max_imbalance:
+        red_alerts += 1
+    if flip_lag_penalty is not None and flip_lag_penalty > max_flip_lag_penalty:
+        red_alerts += 1
+
+    if red_alerts == 0:
+        verdict = "GO"
+    elif red_alerts == 1:
+        verdict = "CAUTION"
+    else:
+        verdict = "BLOCK"
+
+    result = {
+        "ok": True,
+        "verdict": verdict,
+        "stickiness_1step": stickiness_1step,
+        "direction_imbalance": direction_imbalance,
+        "flip_lag_penalty": flip_lag_penalty,
+        "red_alerts": red_alerts,
+    }
+    cache_state["last_mtime"] = mtime
+    cache_state["last_result"] = result
+    return result
+
+
+def _compute_calibration_gate_verdict(
+    *,
+    dataset_path: Path,
+    cache_state: dict,
+    lookback_trades: int,
+    max_ece: float,
+    max_brier: float,
+    max_top_decile_overconfidence: float,
+    min_completed_trades: int,
+):
+    """Compute a compact live calibration-health verdict on recent completed trades."""
+    if not dataset_path.exists():
+        return {
+            "ok": False,
+            "error": f"dataset missing: {dataset_path}",
+        }
+
+    mtime = dataset_path.stat().st_mtime
+    cache_key = (
+        mtime,
+        int(lookback_trades),
+        float(max_ece),
+        float(max_brier),
+        float(max_top_decile_overconfidence),
+        int(min_completed_trades),
+    )
+    if cache_state.get("cache_key") == cache_key and cache_state.get("last_result") is not None:
+        return cache_state["last_result"]
+
+    frame = pd.read_csv(dataset_path, low_memory=False)
+    required_columns = {"trade_status", "correct_60m", "hybrid_move_probability"}
+    missing_columns = sorted(col for col in required_columns if col not in frame.columns)
+    if missing_columns:
+        return {
+            "ok": False,
+            "error": f"missing columns: {', '.join(missing_columns)}",
+        }
+
+    working = frame.copy()
+    if "signal_timestamp" in working.columns:
+        working["signal_timestamp"] = pd.to_datetime(
+            working["signal_timestamp"],
+            errors="coerce",
+            format="mixed",
+        )
+        working = working.sort_values("signal_timestamp")
+
+    trade_status = working["trade_status"].astype(str).str.upper()
+    completed = working[trade_status.eq("TRADE")].copy()
+    completed["y"] = pd.to_numeric(completed["correct_60m"], errors="coerce")
+    completed["p"] = pd.to_numeric(completed["hybrid_move_probability"], errors="coerce")
+    completed = completed.dropna(subset=["y", "p"])
+
+    if "outcome_status" in completed.columns:
+        outcome_status = completed["outcome_status"].astype(str).str.upper()
+        completed = completed[outcome_status.eq("COMPLETE") | outcome_status.eq("")]
+
+    if len(completed) < min_completed_trades:
+        result = {
+            "ok": True,
+            "verdict": "CAUTION",
+            "completed_trades": int(len(completed)),
+            "ece": None,
+            "brier": None,
+            "top_decile_overconfidence": None,
+            "red_alerts": 0,
+            "reason": "insufficient_completed_trades",
+        }
+        cache_state["cache_key"] = cache_key
+        cache_state["last_result"] = result
+        return result
+
+    recent = completed.tail(max(int(lookback_trades), int(min_completed_trades))).copy()
+    recent = recent[(recent["p"] >= 0.0) & (recent["p"] <= 1.0)]
+
+    if len(recent) < min_completed_trades:
+        result = {
+            "ok": True,
+            "verdict": "CAUTION",
+            "completed_trades": int(len(recent)),
+            "ece": None,
+            "brier": None,
+            "top_decile_overconfidence": None,
+            "red_alerts": 0,
+            "reason": "insufficient_recent_trades",
+        }
+        cache_state["cache_key"] = cache_key
+        cache_state["last_result"] = result
+        return result
+
+    brier = float(((recent["p"] - recent["y"]) ** 2).mean())
+
+    n_bins = min(10, int(recent["p"].nunique()))
+    if n_bins >= 2:
+        binned = recent.assign(
+            calibration_bin=pd.qcut(recent["p"], q=n_bins, duplicates="drop")
+        )
+        grouped = (
+            binned.groupby("calibration_bin", observed=True)
+            .agg(pred=("p", "mean"), actual=("y", "mean"), n=("y", "size"))
+            .reset_index(drop=True)
+        )
+        ece = float((grouped["n"] * (grouped["actual"] - grouped["pred"]).abs()).sum() / grouped["n"].sum())
+        top_row = grouped.iloc[-1]
+        top_decile_overconfidence = float(max(top_row["pred"] - top_row["actual"], 0.0))
+    else:
+        ece = None
+        top_decile_overconfidence = None
+
+    red_alerts = 0
+    if ece is not None and ece > max_ece:
+        red_alerts += 1
+    if brier > max_brier:
+        red_alerts += 1
+    if top_decile_overconfidence is not None and top_decile_overconfidence > max_top_decile_overconfidence:
+        red_alerts += 1
+
+    if red_alerts == 0:
+        verdict = "GO"
+    elif red_alerts == 1:
+        verdict = "CAUTION"
+    else:
+        verdict = "BLOCK"
+
+    result = {
+        "ok": True,
+        "verdict": verdict,
+        "completed_trades": int(len(recent)),
+        "ece": ece,
+        "brier": brier,
+        "top_decile_overconfidence": top_decile_overconfidence,
+        "red_alerts": red_alerts,
+    }
+    cache_state["cache_key"] = cache_key
+    cache_state["last_result"] = result
+    return result
+
+
 def choose_data_source():
     """
     Purpose:
@@ -1002,9 +1250,75 @@ def main():
         "last_switch_ts": None,
         "active_since_ts": time.time(),
     }
+    _live_gate_cache = {"last_mtime": None, "last_result": None}
+    _live_calibration_gate_cache = {"cache_key": None, "last_result": None}
+    _stickiness_gate_dataset = Path.cwd() / "research" / "signal_evaluation" / "signals_dataset_cumul.csv"
+    _stickiness_gate_max_stickiness = float(os.getenv("STICKINESS_GATE_MAX_STICKINESS", "0.90"))
+    _stickiness_gate_max_imbalance = float(os.getenv("STICKINESS_GATE_MAX_IMBALANCE", "0.20"))
+    _stickiness_gate_max_flip_lag_penalty = float(os.getenv("STICKINESS_GATE_MAX_FLIP_LAG_PENALTY", "0.35"))
+    _calibration_gate_lookback_trades = int(float(os.getenv("CALIBRATION_GATE_LOOKBACK_TRADES", "250")))
+    _calibration_gate_max_ece = float(os.getenv("CALIBRATION_GATE_MAX_ECE", "0.18"))
+    _calibration_gate_max_brier = float(os.getenv("CALIBRATION_GATE_MAX_BRIER", "0.24"))
+    _calibration_gate_max_top_decile_overconfidence = float(
+        os.getenv("CALIBRATION_GATE_MAX_TOP_DECILE_OVERCONFIDENCE", "0.20")
+    )
+    _calibration_gate_min_completed_trades = int(float(os.getenv("CALIBRATION_GATE_MIN_COMPLETED_TRADES", "80")))
 
     try:
         while True:
+            calibration_gate = _compute_calibration_gate_verdict(
+                dataset_path=_stickiness_gate_dataset,
+                cache_state=_live_calibration_gate_cache,
+                lookback_trades=_calibration_gate_lookback_trades,
+                max_ece=_calibration_gate_max_ece,
+                max_brier=_calibration_gate_max_brier,
+                max_top_decile_overconfidence=_calibration_gate_max_top_decile_overconfidence,
+                min_completed_trades=_calibration_gate_min_completed_trades,
+            )
+            if calibration_gate.get("ok"):
+                ece = calibration_gate.get("ece")
+                brier = calibration_gate.get("brier")
+                overconfidence = calibration_gate.get("top_decile_overconfidence")
+                ece_txt = "NA" if ece is None else f"{ece:.4f}/{_calibration_gate_max_ece:.4f}"
+                brier_txt = "NA" if brier is None else f"{brier:.4f}/{_calibration_gate_max_brier:.4f}"
+                overconfidence_txt = (
+                    "NA"
+                    if overconfidence is None
+                    else f"{overconfidence:.4f}/{_calibration_gate_max_top_decile_overconfidence:.4f}"
+                )
+                print(
+                    "\n"
+                    f"LIVE CALIBRATION GATE: {calibration_gate.get('verdict')} "
+                    f"(red_alerts={calibration_gate.get('red_alerts')}/3, "
+                    f"n={calibration_gate.get('completed_trades')}, "
+                    f"ece={ece_txt}, brier={brier_txt}, top_decile_overconfidence={overconfidence_txt})"
+                )
+            else:
+                print(f"\nLIVE CALIBRATION GATE: CAUTION (reason={calibration_gate.get('error', 'unknown')})")
+
+            gate = _compute_stickiness_gate_verdict(
+                dataset_path=_stickiness_gate_dataset,
+                cache_state=_live_gate_cache,
+                max_stickiness=_stickiness_gate_max_stickiness,
+                max_imbalance=_stickiness_gate_max_imbalance,
+                max_flip_lag_penalty=_stickiness_gate_max_flip_lag_penalty,
+            )
+            if gate.get("ok"):
+                stickiness_1step = gate.get("stickiness_1step")
+                direction_imbalance = gate.get("direction_imbalance")
+                flip_lag_penalty = gate.get("flip_lag_penalty")
+                stickiness_txt = "NA" if stickiness_1step is None else f"{stickiness_1step:.4f}/{_stickiness_gate_max_stickiness:.4f}"
+                imbalance_txt = "NA" if direction_imbalance is None else f"{direction_imbalance:.4f}/{_stickiness_gate_max_imbalance:.4f}"
+                lag_txt = "NA" if flip_lag_penalty is None else f"{flip_lag_penalty:.4f}/{_stickiness_gate_max_flip_lag_penalty:.4f}"
+                print(
+                    "\n"
+                    f"LIVE DIRECTIONAL GATE: {gate.get('verdict')} "
+                    f"(red_alerts={gate.get('red_alerts')}/3, "
+                    f"stick={stickiness_txt}, imbalance={imbalance_txt}, flip_lag={lag_txt})"
+                )
+            else:
+                print(f"\nLIVE DIRECTIONAL GATE: CAUTION (reason={gate.get('error', 'unknown')})")
+
             result = run_engine_snapshot(
                 symbol=symbol,
                 mode="REPLAY" if args.replay else "LIVE",

@@ -132,9 +132,9 @@ class RegimeAdaptiveThresholds:
                 "holding_delta_m": 0
             },
             "VOL_EXPANSION": {
-                "composite_delta": 2,    # Tighten in high vol
-                "position_size_mult": 0.85,  # Reduce size
-                "holding_delta_m": -30   # Shorten holds
+                "composite_delta": 4,    # Tighten further in high vol
+                "position_size_mult": 0.75,  # Reduce size
+                "holding_delta_m": -45   # Shorten holds
             },
             "VOL_CONTRACTION": {
                 "composite_delta": -1,   # Relax in low vol

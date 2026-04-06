@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from engine.trading_support import probability as prob
+import models.expanded_feature_builder as expanded_feature_builder_mod
 
 
 class _DummyPredictor:
@@ -152,3 +153,74 @@ def test_probability_hotpath_benchmark_call_count(monkeypatch):
     assert calls["count"] == n
     # Keep this loose to avoid environment flakiness while catching regressions.
     assert elapsed < 3.0
+
+
+def test_probability_sanitizes_live_unavailable_expanded_features(monkeypatch):
+    features = [0.0] * expanded_feature_builder_mod.N_FEATURES
+    features[expanded_feature_builder_mod.FEATURE_INDEX["hist_vol_5d"]] = 3.5
+    features[expanded_feature_builder_mod.FEATURE_INDEX["hist_vol_20d"]] = 4.5
+    features[expanded_feature_builder_mod.FEATURE_INDEX["confirmation_numeric"]] = 3.0
+    features[expanded_feature_builder_mod.FEATURE_INDEX["moneyness_pct"]] = 1.2
+
+    monkeypatch.setattr(prob.feature_builder_mod, "build_features", lambda *args, **kwargs: features)
+    monkeypatch.setattr(
+        prob.large_move_probability_mod,
+        "large_move_probability",
+        lambda *args, **kwargs: 0.52,
+        raising=False,
+    )
+
+    state = _market_state_template()
+    out = prob._compute_probability_state_impl(
+        df=None,
+        spot=22000.0,
+        symbol="NIFTY",
+        market_state=state,
+        day_high=22100.0,
+        day_low=21900.0,
+        day_open=22010.0,
+        prev_close=21980.0,
+        lookback_avg_range_pct=1.2,
+        global_context={},
+        _force_rule_only=True,
+    )
+
+    sanitized = out["model_features"]
+    assert sanitized is not None
+    assert sanitized[expanded_feature_builder_mod.FEATURE_INDEX["hist_vol_5d"]] == 0.0
+    assert sanitized[expanded_feature_builder_mod.FEATURE_INDEX["hist_vol_20d"]] == 0.0
+    assert sanitized[expanded_feature_builder_mod.FEATURE_INDEX["confirmation_numeric"]] == 1.0
+    assert sanitized[expanded_feature_builder_mod.FEATURE_INDEX["moneyness_pct"]] == 0.0
+    contract = out["components"]["model_feature_contract"]
+    assert contract["sanitized"] is True
+    assert len(contract["violations"]) == 4
+
+
+def test_probability_disables_unexpected_feature_count(monkeypatch):
+    monkeypatch.setattr(prob.feature_builder_mod, "build_features", lambda *args, **kwargs: [0.1] * 9)
+    monkeypatch.setattr(
+        prob.large_move_probability_mod,
+        "large_move_probability",
+        lambda *args, **kwargs: 0.52,
+        raising=False,
+    )
+
+    state = _market_state_template()
+    out = prob._compute_probability_state_impl(
+        df=None,
+        spot=22000.0,
+        symbol="NIFTY",
+        market_state=state,
+        day_high=22100.0,
+        day_low=21900.0,
+        day_open=22010.0,
+        prev_close=21980.0,
+        lookback_avg_range_pct=1.2,
+        global_context={},
+        _force_rule_only=True,
+    )
+
+    assert out["model_features"] is None
+    contract = out["components"]["model_feature_contract"]
+    assert contract["status"] == "unexpected_feature_count"
+    assert contract["feature_count"] == 9

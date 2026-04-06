@@ -46,7 +46,7 @@ class LiveEnginePolicyTests(unittest.TestCase):
         self.assertTrue(pd.api.types.is_numeric_dtype(normalized["openInterest"]))
 
     def test_weighted_direction_policy_accepts_aligned_call(self):
-        direction, source, bull_prob, bear_prob = decide_direction(
+        direction, source, bull_prob, bear_prob, *_ = decide_direction(
             final_flow_signal="BULLISH_FLOW",
             dealer_pos="Short Gamma",
             vol_regime="VOL_EXPANSION",
@@ -63,7 +63,7 @@ class LiveEnginePolicyTests(unittest.TestCase):
         self.assertIn("HEDGING_BIAS", source)
 
     def test_weighted_direction_policy_rejects_conflicted_setup(self):
-        direction, source, bull_prob, bear_prob = decide_direction(
+        direction, source, bull_prob, bear_prob, *_ = decide_direction(
             final_flow_signal="BULLISH_FLOW",
             dealer_pos="Short Gamma",
             vol_regime="NORMAL_VOL",
@@ -79,7 +79,7 @@ class LiveEnginePolicyTests(unittest.TestCase):
         self.assertIsNone(source)
 
     def test_direction_policy_uses_rr_oi_pcr_and_flip_drift_votes(self):
-        direction, source, bull_prob, bear_prob = decide_direction(
+        direction, source, bull_prob, bear_prob, *_ = decide_direction(
             final_flow_signal=None,
             dealer_pos=None,
             vol_regime=None,
@@ -111,7 +111,7 @@ class LiveEnginePolicyTests(unittest.TestCase):
                 "trade_strength.runtime_thresholds.gamma_flip_drift_pts_vote_on": 1,
             },
         ):
-            direction, source, bull_prob, bear_prob = decide_direction(
+            direction, source, bull_prob, bear_prob, *_ = decide_direction(
                 final_flow_signal=None,
                 dealer_pos=None,
                 vol_regime=None,

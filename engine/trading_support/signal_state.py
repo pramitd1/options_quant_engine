@@ -25,6 +25,7 @@ from config.signal_policy import (
 from config.symbol_microstructure import get_microstructure_config
 from engine.runtime_metadata import empty_confirmation_state, empty_scoring_breakdown
 from strategy.confirmation_filters import compute_confirmation_filters
+from strategy.direction_probability_head import compute_direction_probability_head
 from strategy.trade_strength import compute_trade_strength
 
 from .common import _clip, _normalize_validation_dict, _safe_float
@@ -384,6 +385,11 @@ def decide_direction(
     hybrid_move_probability=None,
     macro_news_state=None,
     global_risk_state=None,
+    provider_health_summary=None,
+    provider_health_blocking_status=None,
+    core_effective_priced_ratio=None,
+    core_one_sided_quote_ratio=None,
+    core_quote_integrity_health=None,
 ):
     """
     Purpose:
@@ -652,6 +658,53 @@ def decide_direction(
 
     bullish_score = round(sum(weight for _, weight in bullish_votes), 2)
     bearish_score = round(sum(weight for _, weight in bearish_votes), 2)
+
+    # Execution microstructure friction directly reduces directional conviction
+    # when quote integrity and near-the-money marketability degrade.
+    microstructure_penalty = 0.0
+    microstructure_penalty_reasons: list[str] = []
+
+    provider_summary = str(provider_health_summary or "").upper().strip()
+    provider_block_status = str(provider_health_blocking_status or "").upper().strip()
+    quote_integrity = str(core_quote_integrity_health or "").upper().strip()
+    one_sided_ratio = _safe_float(core_one_sided_quote_ratio, None)
+    effective_priced_ratio = _safe_float(core_effective_priced_ratio, None)
+
+    if provider_summary == "CAUTION":
+        microstructure_penalty += _safe_float(runtime_thresholds.get("direction_microstructure_penalty_provider_caution"), 0.15)
+        microstructure_penalty_reasons.append("provider_caution")
+    elif provider_summary == "WEAK":
+        microstructure_penalty += _safe_float(runtime_thresholds.get("direction_microstructure_penalty_provider_weak"), 0.30)
+        microstructure_penalty_reasons.append("provider_weak")
+
+    if provider_block_status == "BLOCK":
+        microstructure_penalty += _safe_float(runtime_thresholds.get("direction_microstructure_penalty_provider_block"), 0.40)
+        microstructure_penalty_reasons.append("provider_block")
+
+    if quote_integrity == "WEAK":
+        microstructure_penalty += _safe_float(runtime_thresholds.get("direction_microstructure_penalty_quote_integrity_weak"), 0.25)
+        microstructure_penalty_reasons.append("quote_integrity_weak")
+
+    one_sided_soft = _safe_float(runtime_thresholds.get("direction_microstructure_one_sided_soft"), 0.20)
+    one_sided_hard = _safe_float(runtime_thresholds.get("direction_microstructure_one_sided_hard"), 0.45)
+    if one_sided_ratio is not None:
+        if one_sided_ratio >= one_sided_hard:
+            microstructure_penalty += _safe_float(runtime_thresholds.get("direction_microstructure_penalty_one_sided_hard"), 0.25)
+            microstructure_penalty_reasons.append("one_sided_quote_hard")
+        elif one_sided_ratio >= one_sided_soft:
+            microstructure_penalty += _safe_float(runtime_thresholds.get("direction_microstructure_penalty_one_sided_soft"), 0.12)
+            microstructure_penalty_reasons.append("one_sided_quote_soft")
+
+    priced_ratio_floor = _safe_float(runtime_thresholds.get("direction_microstructure_priced_ratio_floor"), 0.55)
+    priced_ratio_penalty_cap = _safe_float(runtime_thresholds.get("direction_microstructure_penalty_priced_ratio_max"), 0.30)
+    if effective_priced_ratio is not None and effective_priced_ratio < priced_ratio_floor:
+        gap = _clip((priced_ratio_floor - effective_priced_ratio) / max(priced_ratio_floor, 1e-6), 0.0, 1.0)
+        microstructure_penalty += priced_ratio_penalty_cap * gap
+        microstructure_penalty_reasons.append("effective_priced_ratio_below_floor")
+
+    if microstructure_penalty > 0:
+        bullish_score = round(max(0.0, bullish_score - microstructure_penalty), 2)
+        bearish_score = round(max(0.0, bearish_score - microstructure_penalty), 2)
     
     # Apply regime-aware weighting: in elevated volatility, boost bearish (PUT) advantage
     # to prevent extreme call bias in risk-off environments (fix for 6.55:1 call/put ratio)
@@ -760,14 +813,20 @@ def decide_direction(
         and bullish_score > bearish_score
         and score_margin >= call_min_margin
     ):
-        return "CALL", build_source(bullish_votes), bull_probability, bear_probability, expansion_mode, expansion_direction, round(breakout_evidence, 3)
+        source = build_source(bullish_votes)
+        if microstructure_penalty > 0:
+            source = f"{source}+MICROSTRUCTURE_FRICTION" if source else "MICROSTRUCTURE_FRICTION"
+        return "CALL", source, bull_probability, bear_probability, expansion_mode, expansion_direction, round(breakout_evidence, 3)
 
     if (
         bearish_score >= put_min_score
         and bearish_score > bullish_score
         and score_margin >= put_min_margin
     ):
-        return "PUT", build_source(bearish_votes), bull_probability, bear_probability, expansion_mode, expansion_direction, round(breakout_evidence, 3)
+        source = build_source(bearish_votes)
+        if microstructure_penalty > 0:
+            source = f"{source}+MICROSTRUCTURE_FRICTION" if source else "MICROSTRUCTURE_FRICTION"
+        return "PUT", source, bull_probability, bear_probability, expansion_mode, expansion_direction, round(breakout_evidence, 3)
 
     return None, None, 0.5, 0.5, expansion_mode, expansion_direction, round(breakout_evidence, 3)
 
@@ -784,6 +843,7 @@ def _compute_signal_state(
     backtest_mode,
     market_state,
     probability_state,
+    option_chain_validation=None,
     macro_news_state=None,
     global_risk_state=None,
 ):
@@ -810,7 +870,11 @@ def _compute_signal_state(
     Notes:
         Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
     """
-    direction, direction_source, bull_probability, bear_probability, expansion_mode, expansion_direction, breakout_evidence = decide_direction(
+    provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
+    if not isinstance(provider_health, dict):
+        provider_health = {}
+
+    vote_direction, vote_direction_source, vote_bull_probability, vote_bear_probability, expansion_mode, expansion_direction, breakout_evidence = decide_direction(
         final_flow_signal=market_state["final_flow_signal"],
         dealer_pos=market_state["dealer_pos"],
         vol_regime=market_state["vol_regime"],
@@ -838,7 +902,77 @@ def _compute_signal_state(
         hybrid_move_probability=probability_state["hybrid_move_probability"],
         macro_news_state=macro_news_state,
         global_risk_state=global_risk_state,
+        provider_health_summary=provider_health.get("summary_status"),
+        provider_health_blocking_status=provider_health.get("trade_blocking_status"),
+        core_effective_priced_ratio=provider_health.get("core_effective_priced_ratio"),
+        core_one_sided_quote_ratio=provider_health.get("core_one_sided_quote_ratio"),
+        core_quote_integrity_health=provider_health.get("core_quote_integrity_health"),
     )
+
+    provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
+    if not isinstance(provider_health, dict):
+        provider_health = {}
+
+    runtime_thresholds = get_trade_runtime_thresholds()
+    direction_head_enabled = str(runtime_thresholds.get("enable_probabilistic_direction_head", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    direction_head_call_threshold = _safe_float(runtime_thresholds.get("direction_head_call_threshold"), 0.53)
+    direction_head_put_threshold = _safe_float(runtime_thresholds.get("direction_head_put_threshold"), 0.47)
+    direction_head_min_confidence = _safe_float(runtime_thresholds.get("direction_head_min_confidence"), 0.57)
+    direction_head_allow_vote_override = str(runtime_thresholds.get("direction_head_allow_vote_override", 1)).strip().lower() not in {"0", "false", "no", "off"}
+    direction_head_override_min_confidence = _safe_float(runtime_thresholds.get("direction_head_override_min_confidence"), 0.66)
+
+    direction_head = compute_direction_probability_head(
+        final_flow_signal=market_state["final_flow_signal"],
+        spot_vs_flip=market_state["spot_vs_flip"],
+        hedging_bias=market_state["hedging_bias"],
+        gamma_event=market_state["gamma_event"],
+        gamma_regime=market_state["gamma_regime"],
+        oi_velocity_score=market_state.get("oi_velocity_score"),
+        rr_value=market_state.get("rr_value"),
+        rr_momentum=market_state.get("rr_momentum"),
+        volume_pcr_atm=market_state.get("volume_pcr_atm"),
+        gamma_flip_drift=market_state.get("gamma_flip_drift"),
+        hybrid_move_probability=probability_state.get("hybrid_move_probability"),
+        vote_bull_probability=vote_bull_probability,
+        provider_health_summary=provider_health.get("summary_status"),
+        provider_health_blocking_status=provider_health.get("trade_blocking_status"),
+        core_effective_priced_ratio=provider_health.get("core_effective_priced_ratio"),
+        core_one_sided_quote_ratio=provider_health.get("core_one_sided_quote_ratio"),
+        core_quote_integrity_health=provider_health.get("core_quote_integrity_health"),
+        calibrator_path=runtime_thresholds.get("direction_probability_calibrator_path"),
+        apply_calibration=True,
+    )
+
+    head_probability_up = _safe_float(direction_head.get("probability_up"), 0.5)
+    head_confidence = _safe_float(direction_head.get("confidence"), 0.5)
+    if head_probability_up >= direction_head_call_threshold:
+        head_direction = "CALL"
+    elif head_probability_up <= direction_head_put_threshold:
+        head_direction = "PUT"
+    else:
+        head_direction = None
+
+    direction = vote_direction
+    direction_source = vote_direction_source
+    direction_head_used_for_final = False
+    if direction_head_enabled and head_direction in {"CALL", "PUT"} and head_confidence is not None:
+        if direction is None and head_confidence >= direction_head_min_confidence:
+            direction = head_direction
+            direction_source = "DIRECTION_HEAD"
+            direction_head_used_for_final = True
+        elif direction is not None and direction_head_allow_vote_override and head_direction != direction and head_confidence >= direction_head_override_min_confidence:
+            direction = head_direction
+            direction_source = f"{vote_direction_source}+DIRECTION_HEAD_OVERRIDE" if vote_direction_source else "DIRECTION_HEAD_OVERRIDE"
+            direction_head_used_for_final = True
+        elif direction is not None and head_direction == direction and head_confidence >= direction_head_min_confidence:
+            direction_source = f"{vote_direction_source}+DIRECTION_HEAD" if vote_direction_source else "DIRECTION_HEAD"
+            direction_head_used_for_final = True
+
+    final_call_probability = vote_bull_probability
+    final_put_probability = vote_bear_probability
+    if direction_head_enabled:
+        final_call_probability = _safe_float(direction_head.get("probability_up"), vote_bull_probability)
+        final_put_probability = _safe_float(direction_head.get("probability_down"), vote_bear_probability)
 
     if direction is None:
         return {
@@ -848,8 +982,22 @@ def _compute_signal_state(
             "expansion_mode": bool(expansion_mode),
             "expansion_direction": expansion_direction,
             "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
-            "bull_probability": 0.5,
-            "bear_probability": 0.5,
+            "bull_probability": final_call_probability,
+            "bear_probability": final_put_probability,
+            "direction_vote_shadow": vote_direction,
+            "direction_source_vote": vote_direction_source,
+            "direction_vote_call_probability": vote_bull_probability,
+            "direction_vote_put_probability": vote_bear_probability,
+            "direction_head_enabled": direction_head_enabled,
+            "direction_head_direction": head_direction,
+            "direction_head_probability_up": direction_head.get("probability_up"),
+            "direction_head_probability_up_raw": direction_head.get("probability_up_raw"),
+            "direction_head_uncertainty": direction_head.get("uncertainty"),
+            "direction_head_confidence": direction_head.get("confidence"),
+            "direction_head_disagreement_with_vote": direction_head.get("disagreement_with_vote"),
+            "direction_head_microstructure_friction_score": direction_head.get("microstructure_friction_score"),
+            "direction_head_calibration_applied": direction_head.get("calibration_applied"),
+            "direction_head_used_for_final": direction_head_used_for_final,
             "trade_strength": 0,
             "scoring_breakdown": empty_scoring_breakdown(),
             "confirmation": empty_confirmation_state(),
@@ -913,12 +1061,12 @@ def _compute_signal_state(
     # chosen direction.  A thin base (e.g. 2 sources) indicates that fewer
     # independent market mechanisms are aligned, which downstream consumers
     # can use to temper sizing or urgency.
-    direction_vote_count = len(direction_source.split("+")) if direction_source else 0
+    direction_vote_count = len(vote_direction_source.split("+")) if vote_direction_source else 0
 
     runtime_thresholds = get_trade_runtime_thresholds()
     previous_direction_clean = str(previous_direction or "").strip().upper()
     reversal_context = previous_direction_clean in {"CALL", "PUT"} and previous_direction_clean != direction
-    source_tokens = {token.strip().upper() for token in (direction_source or "").split("+") if token}
+    source_tokens = {token.strip().upper() for token in (vote_direction_source or "").split("+") if token}
     breakout_vote_count = sum(1 for token in source_tokens if token in {"BREAKOUT_STRUCTURE", "RANGE_EXPANSION"})
     min_vote_count = max(1, int(_safe_float(runtime_thresholds.get("reversal_stage_min_vote_count"), 3.0)))
     min_breakout_votes = max(0, int(_safe_float(runtime_thresholds.get("reversal_stage_min_breakout_votes"), 1.0)))
@@ -941,14 +1089,28 @@ def _compute_signal_state(
         "direction": direction,
         "direction_source": direction_source,
         "direction_vote_count": direction_vote_count,
+        "direction_vote_shadow": vote_direction,
+        "direction_source_vote": vote_direction_source,
+        "direction_vote_call_probability": vote_bull_probability,
+        "direction_vote_put_probability": vote_bear_probability,
+        "direction_head_enabled": direction_head_enabled,
+        "direction_head_direction": head_direction,
+        "direction_head_probability_up": direction_head.get("probability_up"),
+        "direction_head_probability_up_raw": direction_head.get("probability_up_raw"),
+        "direction_head_uncertainty": direction_head.get("uncertainty"),
+        "direction_head_confidence": direction_head.get("confidence"),
+        "direction_head_disagreement_with_vote": direction_head.get("disagreement_with_vote"),
+        "direction_head_microstructure_friction_score": direction_head.get("microstructure_friction_score"),
+        "direction_head_calibration_applied": direction_head.get("calibration_applied"),
+        "direction_head_used_for_final": direction_head_used_for_final,
         "expansion_mode": bool(expansion_mode),
         "expansion_direction": expansion_direction,
         "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
         "reversal_context": reversal_context,
         "reversal_stage": reversal_stage,
         "breakout_vote_count": int(breakout_vote_count),
-        "bull_probability": bull_probability,
-        "bear_probability": bear_probability,
+        "bull_probability": final_call_probability,
+        "bear_probability": final_put_probability,
         "trade_strength": trade_strength,
         "scoring_breakdown": scoring_breakdown,
         "confirmation": confirmation,

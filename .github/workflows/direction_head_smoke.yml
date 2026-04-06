@@ -1,0 +1,61 @@
+name: Direction Head Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  direction-head-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run direction-head unit tests
+        run: |
+          pytest -q tests/test_direction_probability_head.py tests/test_signal_state_direction_head.py
+
+      - name: Run short uplift smoke
+        run: |
+          python scripts/ops/run_direction_head_uplift_governance.py \
+            --replay-limit 10 \
+            --override-min-trade-strength 52 \
+            --override-min-composite-score 48 \
+            --allow-zero-direction-changes
+
+      - name: Assert uplift summary keys
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("research/reviews/direction_head_uplift_governance")
+          latest = sorted([p for p in root.iterdir() if p.is_dir()])[-1]
+          summary = json.loads((latest / "summary.json").read_text(encoding="utf-8"))
+          required = ["run_id", "overall", "scenario_diff", "artifacts", "replay_rows"]
+          missing = [k for k in required if k not in summary]
+          if missing:
+              raise SystemExit(f"Missing required summary keys: {missing}")
+          diff = summary.get("scenario_diff", {})
+          for key in ["matched_rows", "direction_changed_rows", "direction_source_changed_rows"]:
+              if key not in diff:
+                  raise SystemExit(f"Missing scenario_diff key: {key}")
+          print("Summary schema assertion passed")
+          PY
+
+      - name: Verify guardrail without bypass
+        run: |
+          python scripts/ops/run_direction_head_uplift_governance.py --replay-limit 20

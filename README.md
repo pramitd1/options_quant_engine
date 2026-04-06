@@ -20,6 +20,14 @@ The system is designed as a layered trade engine, not a single-factor signal scr
 
 The current repository does not contain a live order-routing engine. Broker integrations here are used for market data access, not for automatic execution.
 
+## Direction Head Governance Note
+
+Direction-head promotion governance in this repository is currently signal-quality-first by design.
+
+- Promotion gates are evaluated on directional signal quality metrics (for example directional accuracy delta and directional return delta).
+- Trade-level confirmation is optional for this engine objective because the system is intended to generate high-quality decision signals for discretionary use, not to auto-route execution.
+- The policy is encoded in the promotion matrix runner and CI workflow defaults.
+
 ## Quick Start
 
 ### Environment

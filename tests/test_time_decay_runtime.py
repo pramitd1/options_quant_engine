@@ -210,6 +210,8 @@ def test_generate_trade_exposes_score_calibration_metadata():
     assert "score_calibration_applied" in trade
     assert trade.get("score_calibration_backend") == "isotonic"
     assert trade.get("score_calibration_artifact_path")
+    assert "score_calibration_segment_key" in trade
+    assert "score_calibration_segment_context" in trade
     assert "time_decay_enabled" in trade
     assert "time_decay_applied" in trade
     assert "time_decay_fallback_used" in trade
