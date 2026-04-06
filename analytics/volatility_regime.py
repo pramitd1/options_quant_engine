@@ -21,23 +21,29 @@ from config.analytics_feature_policy import get_volatility_regime_policy_config
 from utils.regime_normalization import normalize_iv_decimal
 
 
-def compute_realized_volatility(option_chain):
-
+def compute_atm_iv_level(option_chain):
     """
-    Purpose:
-        Compute realized volatility from the supplied inputs.
-    
-    Context:
-        Public function within the analytics layer. It exposes a reusable step in this module's workflow.
-    
-    Inputs:
-        option_chain (Any): Input associated with option chain.
-    
-    Returns:
-        Any: Computed value returned by the helper.
-    
-    Notes:
-        Keeping this step explicit makes it easier to audit how the final feature, score, or trade decision was assembled.
+    Estimate the current implied-volatility level from a single option-chain
+    snapshot.
+
+    Implementation note
+    -------------------
+    This function works on a **single cross-sectional snapshot**, not on a
+    time-series of underlying returns.  It therefore returns the **median
+    implied volatility** across all strikes in the chain (normalized to
+    decimal form), which is a robust, stale-IV-resistant proxy for the current
+    vol level.
+
+    This is intentionally *not* historical realized volatility (which would
+    require ``std(log_returns) * sqrt(252)`` over a return series).  The name
+    ``compute_realized_volatility`` that appeared in earlier versions of this
+    module was misleading and has been corrected.
+
+    Returns
+    -------
+    float
+        Median IV in decimal units (e.g. 0.14 for 14 % annualized vol).
+        Returns 0 when the chain is empty or all IV values are invalid.
     """
     if option_chain.empty:
         return 0
@@ -83,7 +89,7 @@ def detect_volatility_regime(option_chain):
     """
     cfg = get_volatility_regime_policy_config()
 
-    vol = compute_realized_volatility(option_chain)
+    vol = compute_atm_iv_level(option_chain)
 
     if vol < cfg.low_vol_threshold:
         return "LOW_VOL"

@@ -179,18 +179,30 @@ def compute_risk_reversal(option_chain, spot: float, delta_target: float = 0.25)
 
         t_years = _infer_tte_years(side_df)
         atm_iv_decimal = normalize_iv_decimal(atm_vol(df, spot), default=None)
-        if atm_iv_decimal is not None and atm_iv_decimal > 0:
+        if atm_iv_decimal is not None and atm_iv_decimal > 0 and t_years > 0:
             target_abs_delta = max(min(float(delta_target), 0.49), 0.01)
-            deltas = []
-            for _, row in side_df.iterrows():
-                d = _bs_delta(option_type, float(row["STRIKE_PR"]), float(atm_iv_decimal), t_years)
-                if d is None:
-                    deltas.append(np.nan)
+
+            # Vectorised Black-Scholes delta path (replaces iterrows hot path).
+            sigma = float(atm_iv_decimal)
+            sqrt_t = math.sqrt(float(t_years))
+            denom = max(sigma * sqrt_t, 1e-9)
+
+            strikes = side_df["STRIKE_PR"].to_numpy(dtype=float)
+            valid_strike_mask = strikes > 0.0
+            abs_delta = np.full_like(strikes, np.nan, dtype=float)
+            if valid_strike_mask.any() and spot > 0:
+                d1 = (np.log(float(spot) / strikes[valid_strike_mask]) + 0.5 * sigma * sigma * float(t_years)) / denom
+                call_delta = np.vectorize(_norm_cdf, otypes=[float])(d1)
+                if option_type == "CE":
+                    deltas = call_delta
                 else:
-                    deltas.append(abs(float(d)))
-            side_df["_abs_delta"] = deltas
+                    deltas = call_delta - 1.0
+                abs_delta[valid_strike_mask] = np.abs(deltas)
+
+            side_df["_abs_delta"] = abs_delta
             valid = side_df.dropna(subset=["_abs_delta"])
             if not valid.empty:
+                valid = valid.copy()
                 valid["_delta_dist"] = (valid["_abs_delta"] - target_abs_delta).abs()
                 nearest = valid.sort_values(["_delta_dist", "STRIKE_PR"]).iloc[0]
                 iv_val = float(nearest["IV"])
@@ -219,6 +231,13 @@ def compute_risk_reversal(option_chain, spot: float, delta_target: float = 0.25)
     # thresholds (e.g., +/-0.5 vol points).
     put_iv_points = put_iv * 100.0
     call_iv_points = call_iv * 100.0
+    # Convention used throughout this codebase:
+    #   rr = IV(25d put) − IV(25d call)
+    # Positive RR → put skew dominates (hedging demand / downside fear)
+    # Negative RR → call skew dominates (upside demand / melt-up)
+    # Note: this is the inverse of the Bloomberg/dealer convention
+    # (call − put), which reports positive RR for call skew.
+    # The direction_probability_head inversion (-rr) corrects for this.
     rr = round(put_iv_points - call_iv_points, 4)
     result["rr_value"] = rr
     result["put_iv_25d"] = round(put_iv_points, 4)

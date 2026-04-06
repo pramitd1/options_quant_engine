@@ -154,6 +154,16 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
 
 @lru_cache(maxsize=2048)
 def _parse_expiry_timestamp_cached(expiry_value: str):
+    """Parse and cache a string expiry value to a UTC pd.Timestamp.
+
+    The ``@lru_cache`` decorator requires a hashable argument.  The caller
+    ``_parse_expiry_years`` guards this function with ``isinstance(expiry_value,
+    str)`` so only strings reach it, but we add an explicit assertion here to
+    make that contract visible and to fail loudly if the guard is ever relaxed.
+    """
+    assert isinstance(expiry_value, str), (
+        f"_parse_expiry_timestamp_cached expects a str, got {type(expiry_value).__name__!r}"
+    )
     parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
     if pd.isna(parsed):
         parsed = pd.to_datetime(expiry_value, errors="coerce", dayfirst=True, utc=True)
