@@ -45,9 +45,28 @@ def calculate_exit(
         The function applies percentage-based exits only; it does not model path
         dependence or dynamic trailing behavior.
     """
-    target = entry_price * (1 + target_profit_percent / 100)
+    target_pct = float(target_profit_percent)
+    stop_pct = float(stop_loss_percent)
 
-    stop = entry_price * (1 - stop_loss_percent / 100)
+    # Guard against the common mistake of passing a decimal (e.g. 0.15) instead
+    # of a percentage (e.g. 15).  For option premiums a stop of 0.15 % is
+    # effectively no protection; raise immediately so the misconfiguration is
+    # discovered at the call site rather than silently producing wrong prices.
+    if not (1.0 <= stop_pct <= 100.0):
+        raise ValueError(
+            f"stop_loss_percent must be in the range [1, 100] (percentage units); "
+            f"got {stop_pct!r}.  Did you pass a decimal (e.g. 0.15) instead of a "
+            f"percentage (e.g. 15)?"
+        )
+    if not (1.0 <= target_pct <= 500.0):
+        raise ValueError(
+            f"target_profit_percent must be in the range [1, 500] (percentage units); "
+            f"got {target_pct!r}.  Did you pass a decimal (e.g. 0.50) instead of a "
+            f"percentage (e.g. 50)?"
+        )
+
+    target = entry_price * (1 + target_pct / 100)
+    stop = entry_price * (1 - stop_pct / 100)
 
     return target, stop
 

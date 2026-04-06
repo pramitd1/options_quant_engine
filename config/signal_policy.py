@@ -250,6 +250,7 @@ TRADE_RUNTIME_THRESHOLDS = {
     # Reversal grace can be bypassed only on high-conviction breakout evidence.
     "reversal_breakout_override_move_probability_floor": 0.55,
     "reversal_breakout_override_range_pct_floor": 0.25,
+    "reversal_breakout_override_enabled": 0,
     "reversal_breakout_override_requires_flow": 0,
     "reversal_breakout_override_requires_hedging": 0,
     "reversal_breakout_override_min_signals": 2,

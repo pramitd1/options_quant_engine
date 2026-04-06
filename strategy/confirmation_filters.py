@@ -522,6 +522,10 @@ def compute_confirmation_filters(
         if age is not None and 0 <= age < veto_steps:
             computed_status = _sign_label(total, cfg)
             if computed_status in {"STRONG_CONFIRMATION", "CONFIRMED"}:
+                breakout_override_enabled = str(
+                    rt.get("reversal_breakout_override_enabled", 0)
+                ).strip().lower() in {"1", "true", "yes", "on"}
+
                 override_prob_floor = _safe_float(rt.get("reversal_breakout_override_move_probability_floor"), 0.62)
                 override_range_floor = _safe_float(rt.get("reversal_breakout_override_range_pct_floor"), 0.35)
                 require_directional_flow = str(rt.get("reversal_breakout_override_requires_flow", 1)).strip().lower() not in {"0", "false", "no", "off"}
@@ -546,6 +550,11 @@ def compute_confirmation_filters(
                     override_allowed = override_allowed and directional_flow_ok
                 if require_hedging_alignment:
                     override_allowed = override_allowed and hedging_ok
+
+                # The grace-period veto is the default safety behavior.
+                # Breakout bypass must be explicitly enabled by runtime policy.
+                if not breakout_override_enabled:
+                    override_allowed = False
 
                 if not override_allowed:
                     reasons.append("reversal_grace_period_active")

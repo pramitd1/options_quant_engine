@@ -17,6 +17,7 @@ from strategy.score_calibration import ScoreCalibrator
 
 _DEFAULT_CALIBRATOR_PATH = Path("models_store") / "direction_probability_calibrator.json"
 _CALIBRATOR_CACHE: dict[str, tuple[float, ScoreCalibrator]] = {}
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
@@ -162,7 +163,9 @@ def _microstructure_friction(
 def _load_calibrator(calibrator_path: str | None) -> ScoreCalibrator | None:
     path = Path(calibrator_path or _DEFAULT_CALIBRATOR_PATH)
     if not path.is_absolute():
-        path = Path.cwd() / path
+        # Resolve relative to repository root (stable across launch contexts),
+        # not process CWD which depends on how the app was started.
+        path = _REPO_ROOT / path
     if not path.exists():
         return None
 
@@ -252,7 +255,13 @@ def compute_direction_probability_head(
 
     disagreement = abs(probability_up - vote_up)
     entropy = _binary_entropy(probability_up)
-    uncertainty = _clip(0.55 * entropy + 0.30 * disagreement + 0.30 * friction, 0.0, 1.0)
+    # Weights are normalised to sum exactly to 1.0:
+    #   entropy      → 0.4783  (≈ 55/115)
+    #   disagreement → 0.2609  (≈ 30/115)
+    #   friction     → 0.2609  (≈ 30/115)
+    # This prevents the composite from saturating at 1.0 and masking
+    # individual component contributions in the output diagnostics.
+    uncertainty = _clip(0.4783 * entropy + 0.2609 * disagreement + 0.2609 * friction, 0.0, 1.0)
 
     return {
         "probability_up_raw": round(float(probability_up_raw), 6),

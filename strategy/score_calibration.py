@@ -302,67 +302,77 @@ class IsotonicCalibrator:
 class TemperatureScaler:
     """
     Temperature scaling: scale logits/scores before softmax.
-    
-    Formula:
+
+    Formula
+    -------
         calibrated_score = 50 + (raw_score - 50) / T
-    
-    where T is learned to minimize calibration error.
+
+    where T is learned to minimise the row-level Brier score (mean squared
+    error between scaled-score-as-probability and binary hit flags).
+
+    Implementation
+    --------------
+    A 31-point grid search over T in [0.5, 2.0] with step 0.05.  Gradient
+    descent is not used because the Brier-score surface over a single scalar
+    parameter is unimodal and cheap to brute-force at this resolution.
     """
-    
+
     def __init__(self):
         self.temperature = 1.0
         self.is_fitted = False
-    
-    def fit(
-        self,
-        raw_scores: np.ndarray,
-        hit_flags: np.ndarray,
-        learning_rate: float = 0.01,
-        max_iter: int = 100
-    ) -> Dict:
+
+    def fit(self, raw_scores: np.ndarray, hit_flags: np.ndarray) -> Dict:
         """
-        Learn optimal temperature parameter via gradient descent.
-        
-        Objective: minimize calibration error (expected - actual)^2
+        Learn the optimal temperature parameter.
+
+        Objective: minimise the Brier score
+            E[(scaled_score/100 - hit_flag)^2]
+        over a grid of 31 candidate temperatures in [0.5, 2.0].
+
+        Parameters
+        ----------
+        raw_scores : np.ndarray
+            Raw composite scores in [0, 100].
+        hit_flags : np.ndarray
+            Binary outcome flags (1 = target hit, 0 = miss).
+
+        Returns
+        -------
+        dict: Fit report with keys status, temperature, best_brier_score,
+              temperature_search_range, temperature_search_steps, losses.
         """
         if len(raw_scores) == 0:
             return {"status": "skipped", "reason": "empty_data"}
-        
+
         raw_scores = np.asarray(raw_scores, dtype=float)
         hit_flags = np.asarray(hit_flags, dtype=float)
-        
+
         best_temp = 1.0
-        best_error = float('inf')
+        best_error = float("inf")
         losses = []
-        
-        # Grid search + refinement
+
         for temp in np.linspace(0.5, 2.0, 31):
-            # Scale scores
             scaled = 50.0 + (raw_scores - 50.0) / max(temp, 0.1)
             scaled = np.clip(scaled, 0.0, 100.0)
-            
-            # Compute calibration bins
-            expected_hit_rates = scaled / 100.0
-            actual_hit_rates = hit_flags
-            
-            # MSE between expected and actual
-            mse = np.mean((expected_hit_rates - actual_hit_rates) ** 2)
-            losses.append(mse)
-            
-            if mse < best_error:
-                best_error = mse
+
+            # Brier score: MSE between predicted probability and binary outcome.
+            brier = float(np.mean((scaled / 100.0 - hit_flags) ** 2))
+            losses.append(brier)
+
+            if brier < best_error:
+                best_error = brier
                 best_temp = temp
-        
+
         self.temperature = best_temp
         self.is_fitted = True
-        
+
         return {
             "status": "fitted",
             "temperature": float(self.temperature),
-            "best_calibration_mse": float(best_error),
+            "best_brier_score": float(best_error),
             "temperature_search_range": [0.5, 2.0],
             "temperature_search_steps": 31,
-            "losses": [float(l) for l in losses]
+            "losses": [float(l) for l in losses],
         }
     
     def calibrate(self, raw_score: float) -> float:
