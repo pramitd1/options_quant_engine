@@ -920,6 +920,9 @@ def _compute_signal_state(
     direction_head_min_confidence = _safe_float(runtime_thresholds.get("direction_head_min_confidence"), 0.57)
     direction_head_allow_vote_override = str(runtime_thresholds.get("direction_head_allow_vote_override", 1)).strip().lower() not in {"0", "false", "no", "off"}
     direction_head_override_min_confidence = _safe_float(runtime_thresholds.get("direction_head_override_min_confidence"), 0.66)
+    direction_head_metrics_log_every_n = int(
+        max(0, _safe_float(runtime_thresholds.get("direction_head_calibration_metrics_log_every_n"), 250.0) or 0.0)
+    )
 
     direction_head = compute_direction_probability_head(
         final_flow_signal=market_state["final_flow_signal"],
@@ -927,6 +930,8 @@ def _compute_signal_state(
         hedging_bias=market_state["hedging_bias"],
         gamma_event=market_state["gamma_event"],
         gamma_regime=market_state["gamma_regime"],
+        macro_regime=market_state.get("macro_regime"),
+        volatility_regime=market_state.get("vol_regime"),
         oi_velocity_score=market_state.get("oi_velocity_score"),
         rr_value=market_state.get("rr_value"),
         rr_momentum=market_state.get("rr_momentum"),
@@ -940,6 +945,8 @@ def _compute_signal_state(
         core_one_sided_quote_ratio=provider_health.get("core_one_sided_quote_ratio"),
         core_quote_integrity_health=provider_health.get("core_quote_integrity_health"),
         calibrator_path=runtime_thresholds.get("direction_probability_calibrator_path"),
+        segmented_calibrator_path=runtime_thresholds.get("direction_probability_segmented_calibrator_path"),
+        calibration_metrics_log_every_n=direction_head_metrics_log_every_n,
         apply_calibration=True,
     )
 
@@ -997,6 +1004,7 @@ def _compute_signal_state(
             "direction_head_disagreement_with_vote": direction_head.get("disagreement_with_vote"),
             "direction_head_microstructure_friction_score": direction_head.get("microstructure_friction_score"),
             "direction_head_calibration_applied": direction_head.get("calibration_applied"),
+            "direction_head_calibration_segment": direction_head.get("calibration_segment"),
             "direction_head_used_for_final": direction_head_used_for_final,
             "trade_strength": 0,
             "scoring_breakdown": empty_scoring_breakdown(),
@@ -1102,6 +1110,7 @@ def _compute_signal_state(
         "direction_head_disagreement_with_vote": direction_head.get("disagreement_with_vote"),
         "direction_head_microstructure_friction_score": direction_head.get("microstructure_friction_score"),
         "direction_head_calibration_applied": direction_head.get("calibration_applied"),
+        "direction_head_calibration_segment": direction_head.get("calibration_segment"),
         "direction_head_used_for_final": direction_head_used_for_final,
         "expansion_mode": bool(expansion_mode),
         "expansion_direction": expansion_direction,

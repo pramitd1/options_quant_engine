@@ -474,12 +474,14 @@ def summarize_greek_exposures(option_chain: pd.DataFrame):
 
     greek_names = ["DELTA", "GAMMA", "THETA", "VEGA", "RHO", "VANNA", "CHARM"]
     greek_columns = {}
+    missing_greek_columns = []
     for name in greek_names:
         raw = df.get(name)
         if isinstance(raw, pd.Series):
             greek_columns[name] = pd.to_numeric(raw, errors="coerce").fillna(0.0)
         else:
             greek_columns[name] = pd.Series(0.0, index=df.index, dtype=float)
+            missing_greek_columns.append(name)
 
     weighted_exposures = {
         name: float((series * oi).sum())
@@ -505,6 +507,12 @@ def summarize_greek_exposures(option_chain: pd.DataFrame):
         "rho_exposure": round(rho_exposure, 2),
         "vanna_exposure": round(vanna_exposure, 4),
         "charm_exposure": round(charm_exposure, 4),
+        "missing_greek_columns": missing_greek_columns,
+        "greeks_data_warning": (
+            "missing_greek_columns"
+            if missing_greek_columns
+            else None
+        ),
         "vanna_regime": _exposure_regime(
             vanna_exposure,
             gross_vanna,

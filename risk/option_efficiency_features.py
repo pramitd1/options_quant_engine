@@ -177,6 +177,26 @@ def _effective_delta(delta):
     return _clip(value, cfg.min_effective_delta, cfg.max_effective_delta)
 
 
+def _delta_from_moneyness_proxy(direction, strike, spot):
+    cfg = get_option_efficiency_policy_config()
+    strike_value = _safe_float(strike, None)
+    spot_value = _safe_float(spot, None)
+    if strike_value is None or spot_value in (None, 0):
+        return None
+
+    direction = str(direction or "").upper().strip()
+    distance_ratio = abs(strike_value - spot_value) / max(abs(spot_value), 1e-6)
+    scale = max(distance_ratio * 8.0, 0.0)
+    call_delta = 1.0 / (1.0 + math.exp(scale))
+
+    if direction == "CALL" and strike_value < spot_value:
+        call_delta = 1.0 - call_delta
+    if direction == "PUT" and strike_value > spot_value:
+        call_delta = 1.0 - call_delta
+
+    return _clip(call_delta, cfg.min_effective_delta, cfg.max_effective_delta)
+
+
 def _strike_moneyness_bucket(direction, strike, spot):
     """
     Purpose:
@@ -351,9 +371,20 @@ def build_option_efficiency_features(
         expected_move_points = round(spot_value * iv_decimal * math.sqrt(dte_years), 2)
         expected_move_pct = round((expected_move_points / spot_value) * 100.0, 4)
 
-    effective_delta = _effective_delta(delta)
+    raw_effective_delta = _effective_delta(delta)
+    effective_delta_source = "CHAIN_DELTA"
+    effective_delta = raw_effective_delta
     if effective_delta is None:
-        effective_delta = cfg.fallback_delta
+        proxy_delta = _delta_from_moneyness_proxy(direction, strike, spot)
+        if proxy_delta is not None:
+            effective_delta = max(
+                cfg.fallback_delta,
+                min(proxy_delta, cfg.fallback_delta + 0.08),
+            )
+            effective_delta_source = "MONEYNESS_PROXY"
+        else:
+            effective_delta = cfg.fallback_delta
+            effective_delta_source = "FALLBACK_DELTA"
     option_gain_target = None
     target_distance_points = None
     target_distance_pct = None
@@ -422,7 +453,7 @@ def build_option_efficiency_features(
         warnings.append("india_vix_used")
     elif iv_source == "FALLBACK_IV":
         warnings.append("fallback_iv_used")
-    if _effective_delta(delta) is None:
+    if raw_effective_delta is None:
         warnings.append("fallback_delta_used")
 
     return {
@@ -450,6 +481,7 @@ def build_option_efficiency_features(
         "target_distance_pct": target_distance_pct,
         "expected_move_coverage_ratio": expected_move_coverage_ratio,
         "effective_delta": effective_delta,
+        "effective_delta_source": effective_delta_source,
         "option_gain_target": option_gain_target,
         "expected_option_move_value": expected_option_move_value,
         "premium_coverage_ratio": premium_coverage_ratio,

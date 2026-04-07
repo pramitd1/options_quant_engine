@@ -17,6 +17,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -370,6 +371,11 @@ def build_signal_evaluation_row(
         "strike_efficiency_score": trade.get("strike_efficiency_score"),
         "option_efficiency_score": trade.get("option_efficiency_score"),
         "option_efficiency_adjustment_score": trade.get("option_efficiency_adjustment_score"),
+        "consistency_check_status": trade.get("consistency_check_status"),
+        "consistency_check_issue_count": trade.get("consistency_check_issue_count"),
+        "consistency_check_critical_issue_count": trade.get("consistency_check_critical_issue_count"),
+        "consistency_check_escalated": trade.get("consistency_check_escalated"),
+        "consistency_check_findings": json.dumps(trade.get("consistency_check_findings") or [], sort_keys=True),
         "dealer_position": trade.get("dealer_position"),
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
         "volatility_regime": trade.get("volatility_regime"),
@@ -826,7 +832,8 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
 
     path["timestamp"] = path["timestamp"].map(_coerce_ts)
     path["spot"] = pd.to_numeric(path["spot"], errors="coerce")
-    path = path.dropna(subset=["timestamp", "spot"]).sort_values("timestamp").reset_index(drop=True)
+    path = path.dropna(subset=["timestamp", "spot"])
+    path = path[path["spot"] > 0].sort_values("timestamp").reset_index(drop=True)
     if path.empty:
         updated["outcome_status"] = "PENDING"
         return updated

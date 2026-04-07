@@ -796,7 +796,10 @@ def compute_trade_strength(
             rr_score += 1 if direction == "PUT" else -1
         elif rr_m == "FALLING_PUT_SKEW":
             rr_score += 1 if direction == "CALL" else -1
-        breakdown["rr_score_component"] = int(_clip(rr_score, -4, 4))
+        rr_component = int(_clip(rr_score, -4, 4))
+        breakdown["rr_score_component"] = rr_component
+        if rr_component == 0:
+            breakdown["rr_score_reason"] = "rr_neutral_under_current_thresholds"
 
     pcr = _safe_float(volume_pcr_atm, None)
     if use_pcr and pcr is not None:

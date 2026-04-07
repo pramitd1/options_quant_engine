@@ -22,6 +22,7 @@ from getpass import getpass
 from pathlib import Path
 
 import pandas as pd
+from pandas.errors import ParserError
 
 from urllib3.exceptions import NotOpenSSLWarning
 
@@ -166,6 +167,23 @@ def _safe_ratio(value):
         return None
 
 
+def _load_gate_dataset_csv(dataset_path: Path):
+    """Load gate dataset CSV robustly and tolerate malformed rows.
+
+    Primary path uses the C engine for speed. If tokenization fails due to a
+    malformed row, fallback to Python engine with bad-line skipping so live
+    runtime remains available.
+    """
+    try:
+        return pd.read_csv(dataset_path, low_memory=False)
+    except ParserError:
+        return pd.read_csv(
+            dataset_path,
+            engine="python",
+            on_bad_lines="skip",
+        )
+
+
 def _compute_stickiness_gate_verdict(
     *,
     dataset_path: Path,
@@ -185,7 +203,7 @@ def _compute_stickiness_gate_verdict(
     if cache_state.get("last_mtime") == mtime and cache_state.get("last_result") is not None:
         return cache_state["last_result"]
 
-    frame = pd.read_csv(dataset_path, low_memory=False)
+    frame = _load_gate_dataset_csv(dataset_path)
     if "direction" not in frame.columns:
         return {
             "ok": False,
@@ -296,7 +314,7 @@ def _compute_calibration_gate_verdict(
     if cache_state.get("cache_key") == cache_key and cache_state.get("last_result") is not None:
         return cache_state["last_result"]
 
-    frame = pd.read_csv(dataset_path, low_memory=False)
+    frame = _load_gate_dataset_csv(dataset_path)
     required_columns = {"trade_status", "correct_60m", "hybrid_move_probability"}
     missing_columns = sorted(col for col in required_columns if col not in frame.columns)
     if missing_columns:
@@ -1336,6 +1354,8 @@ def main():
                 holding_profile="AUTO",
                 headline_service=headline_service,
                 data_router=data_router,
+                live_calibration_gate=calibration_gate,
+                live_directional_gate=gate,
             )
 
             if not result.get("ok"):

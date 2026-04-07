@@ -1,0 +1,34 @@
+{
+  "name": "caution_conditional_shadow_v1_moderate",
+  "version": "1.0.0",
+  "description": "Shadow-only moderate conditional caution override. Keeps BLOCK strict, enables CAUTION-path override with high-conviction but less restrictive microstructure thresholds.",
+  "parent": "baseline_v1",
+  "tags": [
+    "shadow_only",
+    "caution_gate",
+    "provider_health",
+    "moderate"
+  ],
+  "metadata": {
+    "state": "shadow_only",
+    "owner": "research",
+    "activation": "explicit_shadow_pack_only",
+    "created_for": "replay_impact_calibration"
+  },
+  "overrides": {
+    "trade_strength.runtime_thresholds.enable_provider_health_degraded_override": 1,
+    "trade_strength.runtime_thresholds.provider_health_caution_blocks_trade": 1,
+    "trade_strength.runtime_thresholds.provider_health_override_allow_block_status": 0,
+    "trade_strength.runtime_thresholds.provider_health_override_allowed_summary_statuses": ["WEAK", "CAUTION"],
+    "trade_strength.runtime_thresholds.provider_health_override_allowed_data_quality_statuses": ["CAUTION", "GOOD", "STRONG"],
+    "trade_strength.runtime_thresholds.provider_health_override_require_strong_confirmation": 1,
+    "trade_strength.runtime_thresholds.provider_health_override_min_strength_buffer": 10,
+    "trade_strength.runtime_thresholds.provider_health_override_min_composite_buffer": 6,
+    "trade_strength.runtime_thresholds.provider_health_override_min_effective_priced_ratio": 0.45,
+    "trade_strength.runtime_thresholds.provider_health_override_max_proxy_ratio": 0.80,
+    "trade_strength.runtime_thresholds.provider_health_override_one_sided_quote_ratio_max": 1.0,
+    "trade_strength.runtime_thresholds.provider_health_override_size_cap": 0.20,
+    "trade_strength.runtime_thresholds.provider_health_override_hold_cap_minutes": 20,
+    "trade_strength.runtime_thresholds.provider_health_override_dte_max": 1.0
+  }
+}

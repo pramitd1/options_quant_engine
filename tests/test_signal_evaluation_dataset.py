@@ -96,6 +96,11 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "strike_efficiency_score": 78,
                 "option_efficiency_score": 77,
                 "option_efficiency_adjustment_score": 4,
+                "consistency_check_status": "PASS",
+                "consistency_check_issue_count": 0,
+                "consistency_check_critical_issue_count": 0,
+                "consistency_check_escalated": False,
+                "consistency_check_findings": [],
                 "oil_shock_score": 0.7,
                 "commodity_risk_score": 0.53,
                 "market_volatility_shock_score": 0.7,
@@ -146,6 +151,10 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(row_a["strike_efficiency_score"], 78)
         self.assertEqual(row_a["option_efficiency_score"], 77)
         self.assertEqual(row_a["option_efficiency_adjustment_score"], 4)
+        self.assertEqual(row_a["consistency_check_status"], "PASS")
+        self.assertEqual(row_a["consistency_check_issue_count"], 0)
+        self.assertEqual(row_a["consistency_check_critical_issue_count"], 0)
+        self.assertEqual(row_a["consistency_check_escalated"], False)
         self.assertEqual(row_a["oil_shock_score"], 0.7)
         self.assertEqual(row_a["commodity_risk_score"], 0.53)
         self.assertEqual(row_a["volatility_shock_score"], 0.7)
@@ -193,6 +202,11 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("strike_efficiency_score", frame.columns)
             self.assertIn("option_efficiency_score", frame.columns)
             self.assertIn("option_efficiency_adjustment_score", frame.columns)
+            self.assertIn("consistency_check_status", frame.columns)
+            self.assertIn("consistency_check_issue_count", frame.columns)
+            self.assertIn("consistency_check_critical_issue_count", frame.columns)
+            self.assertIn("consistency_check_escalated", frame.columns)
+            self.assertIn("consistency_check_findings", frame.columns)
             self.assertIn("oil_shock_score", frame.columns)
             self.assertIn("commodity_risk_score", frame.columns)
             self.assertIn("volatility_shock_score", frame.columns)

@@ -231,6 +231,8 @@ TRADE_RUNTIME_THRESHOLDS = {
     # Probabilistic direction head (calibrated P(up|X)) integration controls.
     "enable_probabilistic_direction_head": 1,
     "direction_probability_calibrator_path": "models_store/direction_probability_calibrator.json",
+    "direction_probability_segmented_calibrator_path": "models_store/direction_probability_calibrator_gamma_regime_segments.json",
+    "direction_head_calibration_metrics_log_every_n": 250,
     "direction_head_call_threshold": 0.53,
     "direction_head_put_threshold": 0.47,
     "direction_head_min_confidence": 0.57,

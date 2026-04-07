@@ -8,15 +8,28 @@ uncertainty score used by runtime decision logic.
 
 from __future__ import annotations
 
+import json
+import logging
 import math
+import threading
 from pathlib import Path
 from typing import Any
 
 from strategy.score_calibration import ScoreCalibrator
 
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_CALIBRATOR_PATH = Path("models_store") / "direction_probability_calibrator.json"
+_DEFAULT_METRICS_LOG_EVERY_N = 250
 _CALIBRATOR_CACHE: dict[str, tuple[float, ScoreCalibrator]] = {}
+_SEGMENTED_CALIBRATOR_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CALIBRATION_SEGMENT_METRICS: dict[str, int] = {
+    "total": 0,
+    "segment_hits": 0,
+    "fallback_hits": 0,
+}
+_CALIBRATION_SEGMENT_METRICS_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -184,6 +197,145 @@ def _load_calibrator(calibrator_path: str | None) -> ScoreCalibrator | None:
     return calibrator
 
 
+def _resolve_segmented_calibrator_path(calibrator_path: str | None, segmented_calibrator_path: str | None) -> Path | None:
+    if segmented_calibrator_path:
+        path = Path(segmented_calibrator_path)
+        if not path.is_absolute():
+            path = _REPO_ROOT / path
+        return path if path.exists() else None
+
+    base = Path(calibrator_path or _DEFAULT_CALIBRATOR_PATH)
+    if not base.is_absolute():
+        base = _REPO_ROOT / base
+    if not base.exists():
+        return None
+
+    parent = base.parent
+    stem = base.stem
+    candidates = sorted(parent.glob(f"{stem}_*_segments.json"))
+    if not candidates:
+        return None
+
+    # Deterministic preference so the default runtime behavior is predictable.
+    priority = ["gamma_regime", "macro_regime", "volatility_regime"]
+    for key in priority:
+        for candidate in candidates:
+            if f"_{key}_segments.json" in candidate.name:
+                return candidate
+    return candidates[0]
+
+
+def _load_segmented_calibrator_bundle(calibrator_path: str | None, segmented_calibrator_path: str | None) -> dict[str, Any] | None:
+    resolved = _resolve_segmented_calibrator_path(calibrator_path, segmented_calibrator_path)
+    if resolved is None:
+        return None
+
+    key = str(resolved.resolve())
+    mtime = float(resolved.stat().st_mtime)
+    cached = _SEGMENTED_CALIBRATOR_CACHE.get(key)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict) or not isinstance(groups, dict):
+        return None
+
+    segment_calibrators: dict[str, ScoreCalibrator] = {}
+    for group_name, state in groups.items():
+        if not isinstance(state, dict):
+            continue
+        try:
+            segment_calibrators[str(group_name)] = ScoreCalibrator.from_state(state)
+        except Exception:
+            continue
+
+    if not segment_calibrators:
+        return None
+
+    bundle = {
+        "path": str(resolved),
+        "regime_column": str(meta.get("regime_column") or "").strip(),
+        "segments": segment_calibrators,
+    }
+    _SEGMENTED_CALIBRATOR_CACHE[key] = (mtime, bundle)
+    return bundle
+
+
+def _record_calibration_segment_metric(*, segment_selected: bool) -> None:
+    with _CALIBRATION_SEGMENT_METRICS_LOCK:
+        _CALIBRATION_SEGMENT_METRICS["total"] = int(_CALIBRATION_SEGMENT_METRICS.get("total", 0)) + 1
+        key = "segment_hits" if segment_selected else "fallback_hits"
+        _CALIBRATION_SEGMENT_METRICS[key] = int(_CALIBRATION_SEGMENT_METRICS.get(key, 0)) + 1
+
+
+def reset_direction_head_calibration_metrics() -> None:
+    with _CALIBRATION_SEGMENT_METRICS_LOCK:
+        _CALIBRATION_SEGMENT_METRICS["total"] = 0
+        _CALIBRATION_SEGMENT_METRICS["segment_hits"] = 0
+        _CALIBRATION_SEGMENT_METRICS["fallback_hits"] = 0
+
+
+def get_direction_head_calibration_metrics() -> dict[str, float]:
+    with _CALIBRATION_SEGMENT_METRICS_LOCK:
+        total = int(_CALIBRATION_SEGMENT_METRICS.get("total", 0))
+        segment_hits = int(_CALIBRATION_SEGMENT_METRICS.get("segment_hits", 0))
+        fallback_hits = int(_CALIBRATION_SEGMENT_METRICS.get("fallback_hits", 0))
+    segment_hit_rate = (segment_hits / total) if total > 0 else 0.0
+    fallback_rate = (fallback_hits / total) if total > 0 else 0.0
+    return {
+        "total": total,
+        "segment_hits": segment_hits,
+        "fallback_hits": fallback_hits,
+        "segment_hit_rate": round(float(segment_hit_rate), 6),
+        "fallback_rate": round(float(fallback_rate), 6),
+    }
+
+
+def _maybe_log_calibration_segment_metrics(log_every_n: int) -> None:
+    if log_every_n <= 0:
+        return
+    metrics = get_direction_head_calibration_metrics()
+    total = int(metrics.get("total", 0))
+    if total <= 0 or (total % log_every_n) != 0:
+        return
+    logger.info(
+        "Direction head calibration routing: total=%d segment_hits=%d fallback_hits=%d segment_hit_rate=%.3f fallback_rate=%.3f",
+        total,
+        int(metrics.get("segment_hits", 0)),
+        int(metrics.get("fallback_hits", 0)),
+        float(metrics.get("segment_hit_rate", 0.0)),
+        float(metrics.get("fallback_rate", 0.0)),
+    )
+
+
+def _select_segment_key(
+    regime_column: str,
+    *,
+    gamma_regime: Any,
+    macro_regime: Any,
+    volatility_regime: Any,
+) -> str | None:
+    col = str(regime_column or "").strip().lower()
+    if not col:
+        return None
+    if col == "gamma_regime":
+        candidate = _as_upper(gamma_regime)
+        return candidate or None
+    if col == "macro_regime":
+        candidate = _as_upper(macro_regime)
+        return candidate or None
+    if col in {"volatility_regime", "vol_regime"}:
+        candidate = _as_upper(volatility_regime)
+        return candidate or None
+    return None
+
+
 def compute_direction_probability_head(
     *,
     final_flow_signal: Any,
@@ -191,6 +343,8 @@ def compute_direction_probability_head(
     hedging_bias: Any,
     gamma_event: Any,
     gamma_regime: Any,
+    macro_regime: Any = None,
+    volatility_regime: Any = None,
     oi_velocity_score: Any = None,
     rr_value: Any = None,
     rr_momentum: Any = None,
@@ -204,6 +358,8 @@ def compute_direction_probability_head(
     core_one_sided_quote_ratio: Any = None,
     core_quote_integrity_health: Any = None,
     calibrator_path: str | None = None,
+    segmented_calibrator_path: str | None = None,
+    calibration_metrics_log_every_n: Any = None,
     apply_calibration: bool = True,
 ) -> dict[str, Any]:
     directional_bias = _directional_signal_bias(
@@ -244,8 +400,37 @@ def compute_direction_probability_head(
     calibrator_loaded = False
 
     calibrator = _load_calibrator(calibrator_path)
+    selected_segment = None
+    segmented_bundle = _load_segmented_calibrator_bundle(calibrator_path, segmented_calibrator_path)
+    if apply_calibration and segmented_bundle is not None:
+        regime_column = str(segmented_bundle.get("regime_column") or "")
+        selected_key = _select_segment_key(
+            regime_column,
+            gamma_regime=gamma_regime,
+            macro_regime=macro_regime,
+            volatility_regime=volatility_regime,
+        )
+        segment_calibrator = None
+        if selected_key:
+            segment_calibrator = segmented_bundle.get("segments", {}).get(selected_key)
+        if segment_calibrator is not None:
+            calibrator = segment_calibrator
+            selected_segment = selected_key
+
     if apply_calibration and calibrator is not None:
         calibrator_loaded = True
+        _record_calibration_segment_metric(segment_selected=selected_segment is not None)
+        log_every_n = int(
+            max(
+                0,
+                _safe_float(
+                    calibration_metrics_log_every_n,
+                    float(_DEFAULT_METRICS_LOG_EVERY_N),
+                )
+                or 0.0,
+            )
+        )
+        _maybe_log_calibration_segment_metrics(log_every_n)
         try:
             calibrated_score = calibrator.calibrate(float(probability_up_raw * 100.0))
             probability_up = _clip(float(calibrated_score) / 100.0, 0.0, 1.0)
@@ -275,4 +460,6 @@ def compute_direction_probability_head(
         "confidence": round(float(1.0 - uncertainty), 6),
         "calibrator_loaded": bool(calibrator_loaded),
         "calibration_applied": bool(calibration_applied),
+        "calibration_segment": selected_segment,
+        "calibration_segment_metrics": get_direction_head_calibration_metrics(),
     }

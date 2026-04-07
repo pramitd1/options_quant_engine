@@ -20,6 +20,15 @@ The system is designed as a layered trade engine, not a single-factor signal scr
 
 The current repository does not contain a live order-routing engine. Broker integrations here are used for market data access, not for automatic execution.
 
+## Operational Doctrine
+
+Use this repository as a governed signal and research engine.
+
+- Keep the workflow signal-first, evaluation-first, and policy-governed.
+- Treat this system as a signal engine, not an execution router.
+- Change runtime behavior through parameter packs first, not ad-hoc code edits.
+- Base promotion decisions on signal-evaluation evidence, not discretionary trade anecdotes.
+
 ## Direction Head Governance Note
 
 Direction-head promotion governance in this repository is currently signal-quality-first by design.
@@ -27,6 +36,17 @@ Direction-head promotion governance in this repository is currently signal-quali
 - Promotion gates are evaluated on directional signal quality metrics (for example directional accuracy delta and directional return delta).
 - Trade-level confirmation is optional for this engine objective because the system is intended to generate high-quality decision signals for discretionary use, not to auto-route execution.
 - The policy is encoded in the promotion matrix runner and CI workflow defaults.
+
+## Compact Table Of Contents
+
+- [Quick Start](#quick-start)
+- [10-Minute Runbook](#10-minute-runbook)
+- [Main Workflows](#main-workflows)
+- [Parameter Packs](#parameter-packs)
+- [Promotion And Shadow Mode](#promotion-and-shadow-mode)
+- [Tuning Workflow](#tuning-workflow)
+- [Testing](#testing)
+- [Configuration](#configuration)
 
 ## Quick Start
 
@@ -97,6 +117,7 @@ The Structure tab now includes four market-structure charts plus a new ATM-cente
 5. **Put-Call OI Ratio (ATM-Centered)** — Line chart of PE/CE OI ratio focused around At-The-Money (ATM) with adjustable ±N strikes window for intraday actionability
 
 The PCR chart:
+
 - Auto-anchors to ATM using median underlying value when available, or highest combined OI as fallback
 - Includes slider to zoom in/out (±1 to ±20 strikes, default ±8)
 - Shows only the focused window for cleaner intraday reads
@@ -145,6 +166,50 @@ python scripts/run_multiyear_backtest.py
 python scripts/build_model_registry.py
 ```
 
+## 10-Minute Runbook
+
+This is the fastest practical onboarding path for a new operator.
+
+1. Set up local dev runtime (2-3 minutes)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python main.py
+```
+
+Expected outcome: start the engine and confirm it prints a structured snapshot without execution routing.
+
+1. Run replay smoke check (2-3 minutes)
+
+```bash
+python main.py --replay
+```
+
+Expected outcome: confirm the deterministic snapshot evaluation path runs end-to-end.
+
+1. Run governance sanity checks (2-3 minutes)
+
+```bash
+python scripts/parameter_governance.py evaluate-current
+python scripts/parameter_governance.py tune --group trade_strength --group option_efficiency
+```
+
+Expected outcome: confirm governed comparison artifacts and candidate deltas are generated under `research/parameter_tuning/`.
+
+1. Rehearse promotion flow (2 minutes)
+
+```bash
+python scripts/parameter_governance.py approve-candidate --reviewer your_name
+python scripts/parameter_governance.py promote-candidate --approved-by your_name
+```
+
+Expected outcome: confirm promotion state and ledger update with an auditable trail, without requiring ad-hoc code edits.
+
+If you only have 10 minutes, run steps 1 and 2 first, then run steps 3 and 4 before any production-facing policy change.
+
 ## Repo Hygiene Policy
 
 To keep the repository maintainable and reproducible, use these artifact path conventions.
@@ -156,6 +221,7 @@ To keep the repository maintainable and reproducible, use these artifact path co
 - One-off analysis outputs from ad-hoc scripts: store under `research/` with a date-stamped subfolder.
 - Audit reports, deployment reviews, and ad-hoc docs snapshots: store in the local docs archive (intentionally excluded from git).
 - Avoid writing generated artifacts to repository root.
+- For unused-candidate archival governance, follow `research/reviews/archive_unused_candidates_runbook_2026-04-07.md`.
 
 Commit hygiene:
 
@@ -187,6 +253,17 @@ The engine now has five important overlay packages plus a dedicated research-gov
 These layers are intentionally modifiers and filters. They do not replace the core directional engine.
 
 ## Main Workflows
+
+### Canonical Script Map
+
+- Live engine loop: `python main.py`
+- Replay snapshot run: `python main.py --replay`
+- Daily+cumulative signal reports: `python scripts/reports/run_signal_evaluation_reports.py`
+- Signal-report PDFs (canonical): `python scripts/reports/generate_professional_pdfs.py`
+- Watchlist second-pass scheduler: `python scripts/schedule_watchlist_second_pass.py --target-date YYYY-MM-DD`
+- Watchlist realized evaluation (scheduler target): `python scripts/watchlist_realized_evaluation.py`
+- Parameter governance and tuning: `python scripts/parameter_governance.py ...`
+- Offline replay pack suite: `python scripts/ops/run_offline_replay_pack_suite.py ...`
 
 ### 1. Live Signal Generation
 
@@ -355,7 +432,7 @@ The engine now supports multiple prediction methods for move direction and magni
 ### Available Prediction Methods
 
 | Method | Type | AUC (test) | Best For |
-|--------|------|-----------|----------|
+| --- | --- | --- | --- |
 | `blended` (default) | Hybrid | N/A | Production: balances interpretability with performance |
 | `pure_ml` | ML only | 0.65 | Research: isolate ML contribution |
 | `pure_rule` | Rule only | N/A | Research: validate heuristic baselines |
@@ -389,7 +466,7 @@ All trained ML models are version-controlled in the registry under `models_store
 Trained on 60-minute directional accuracy (`correct_60m_all` target, 2,701 samples):
 
 | Model | AUC | ECE | Criteria | Notes |
-|-------|-----|-----|----------|-------|
+| --- | --- | --- | --- | --- |
 | `GBT_shallow_v1` | **0.6525** | 0.1235 | 3/4 | Highest AUC; requires calibration |
 | `GBT_shallow_platt_v1` | 0.6637 | 0.1094 | 3/4 | GBT + Platt calibration |
 | `LogReg_ElasticNet_v1` ★ | 0.6295 | **0.0818** | **4/4 ALL** | Best calibration; passes all criteria |
@@ -433,7 +510,7 @@ Signals can be evaluated under configurable decision policies for filtering or d
 ### Policy Performance (7,404 signals)
 
 | Method | Signals | Hit Rate 60m | Avg Return 60m | vs Baseline |
-|--------|---------|--------------|-----------------|------------|
+| --- | --- | --- | --- | --- |
 | Baseline (all) | 100% | 50.35% | -2.60 bps | — |
 | Research Dual-Model | 54.6% | 67.48% | +10.92 bps | +17.13pp |
 | **Dual Threshold Policy** | **48.6%** | **74.12%** | **+18.98 bps** | **+23.77pp** |
@@ -452,7 +529,7 @@ See the local developer guide section on the decision policy layer for implement
 Recent optimizations achieve **31-45x speedup** over baseline engine (warm runs):
 
 | Component | Baseline | Optimized | Improvement |
-|-----------|----------|-----------|-------------|
+| --- | --- | --- | --- |
 | Full engine | 1,250-1,810ms | **~40ms** | **31-45x** |
 | Total analytics | ~46ms | **25ms** | 1.8x |
 | Greeks enrichment | 21.8ms | **1.9ms** | 11.5x |
@@ -508,23 +585,15 @@ The compare script prints delta tables and writes a comparison artifact:
 
 Recent production-hardening updates focused on evaluation correctness, regime semantics, and hot-path efficiency:
 
-1. **Strict `as_of` gating in signal evaluation**
-  - Outcome enrichment now hard-limits realized paths to the requested `as_of` timestamp.
-  - Prevents accidental forward leakage when running partial backfills.
+1. **Strict `as_of` gating in signal evaluation**: Outcome enrichment now hard-limits realized paths to the requested `as_of` timestamp and prevents accidental forward leakage when running partial backfills.
 
-2. **Regime-conditional threshold defaults aligned to intent**
-  - `POSITIVE_GAMMA`: looser thresholds, longer holds, larger sizing multiplier.
-  - `NEGATIVE_GAMMA`: tighter thresholds, shorter holds, smaller sizing multiplier.
+1. **Regime-conditional threshold defaults aligned to intent**: `POSITIVE_GAMMA` uses looser thresholds, longer holds, and a larger sizing multiplier, while `NEGATIVE_GAMMA` uses tighter thresholds, shorter holds, and a smaller sizing multiplier.
 
-3. **Volume PCR edge-case handling**
-  - Zero-call / positive-put volume is now treated as an extreme put-dominant reading rather than `UNAVAILABLE`.
+1. **Volume PCR edge-case handling**: Zero-call / positive-put volume is now treated as an extreme put-dominant reading rather than `UNAVAILABLE`.
 
-4. **ML predictor hot-reload behavior**
-  - Probability predictor now reloads when `ACTIVE_MODEL` or registry artifact signature changes.
-  - Avoids stale-model behavior in long-running sessions.
+1. **ML predictor hot-reload behavior**: Probability predictor now reloads when `ACTIVE_MODEL` or registry artifact signature changes, avoiding stale-model behavior in long-running sessions.
 
-5. **Gamma normalization consistency**
-  - Fallback gamma-exposure distance now uses spot-normalized moneyness scaling for consistency across gamma analytics paths.
+1. **Gamma normalization consistency**: Fallback gamma-exposure distance now uses spot-normalized moneyness scaling for consistency across gamma analytics paths.
 
 Validation snapshot:
 
@@ -545,9 +614,9 @@ python tuning/search.py --param signal_policy.trade_strength_floor --min 50 --ma
 Optimal thresholds on 7,404-signal backtest dataset:
 
 | Parameter | Optimal Value | Holdout HR | Signal Count |
-|-----------|---------------|-----------|--------------|
+| --- | --- | --- | --- |
 | `trade_strength_floor` | 60 | 100% | 25 |
-| `composite_score_floor` | 75 | — | —  |
+| `composite_score_floor` | 75 | — | — |
 | `tradeability_floor` | 65 | — | — |
 | `move_probability_floor` | 0.60 | — | — |
 | `option_efficiency_floor` | 40 | — | — |
@@ -624,13 +693,14 @@ All flip-zone weights are tunable via `TRADE_STRENGTH_WEIGHTS` and `CONFIRMATION
 ### Direction Confirmation Stickiness & Reversal Control
 
 #### Problem
+
 Historical analysis revealed that confirmation status exhibits high persistence across direction reversals: when the engine reverses its directional bias (CALL → PUT or vice versa), the new direction frequently inherits a STRONG_CONFIRMATION or CONFIRMED status even at the reversal snapshot itself. This "stickiness" creates false confidence in direction changes and can lead to whipsaws.
 
 #### Solution: Three-Tier Reversal Control
 
 The engine now provides three complementary mechanisms to manage reversal stickiness, all tunable via `CONFIRMATION_FILTER_CONFIG` in `config/signal_policy.py`:
 
-**1. Reversal Veto (recommended, default: 1 step)**
+#### 1. Reversal Veto (recommended, default: 1 step)
 
 The most effective mechanism. Forces newly-reversed directions to MIXED status for a configurable grace period (0−6 steps):
 
@@ -641,6 +711,7 @@ The most effective mechanism. Forces newly-reversed directions to MIXED status f
 **Sweep Results** (from live NIFTY dataset): a 1-step veto eliminates 100% of reversal stickiness (flip_persist_ratio: 1.0 → 0.0) while maintaining overall self-transition rate at 0.63.
 
 **Usage in Live/Replay:**
+
 ```python
 # In app/engine_runner.py, pass reversal_age to generate_trade():
 signal = generate_trade(
@@ -650,23 +721,26 @@ signal = generate_trade(
 )
 ```
 
-**2. Direction-Change Penalty (bounded: 0−6 points)**
+#### 2. Direction-Change Penalty (bounded: 0−6 points)
 
 Applies a one-time deduction to confirmation score only at the reversal snapshot (reversal_age=0):
+
 - `direction_change_penalty = 0.0`: No penalty
 - `direction_change_penalty = 1.0−6.0`: Scales confirmation score downward by fixed amount
 
 Note: Single-penalty alone is insufficient to break stickiness on this dataset (reversal scores: 8.27−13.54). Useful for fine-tuning in combination with veto.
 
-**3. Post-Reversal Decay Model (advanced)**
+#### 3. Post-Reversal Decay Model (advanced)
 
 Extends the penalty across N snapshots post-reversal with geometric decay:
+
 - `direction_change_decay_steps`: window length (0−20)
 - `direction_change_decay_factor`: decay multiplier per step (0.0−1.0, default 0.5)
 
 Effective penalty at step k: `base_penalty × (decay_factor ^ k)`
 
 Example: penalty=4.0, factor=0.5, steps=3
+
 - Step 0 (reversal): -4.0
 - Step 1: -2.0
 - Step 2: -1.0
@@ -676,6 +750,7 @@ Example: penalty=4.0, factor=0.5, steps=3
 #### Configuration & Tuning
 
 Within `config/signal_policy.py` → `CONFIRMATION_FILTER_CONFIG`:
+
 ```python
 "reversal_veto_steps": 1,                               # NEW (recommended: 1)
 "direction_change_penalty": 0.0,                         # NEW
@@ -684,6 +759,7 @@ Within `config/signal_policy.py` → `CONFIRMATION_FILTER_CONFIG`:
 ```
 
 All are automatically exposed in the tuning registry under `confirmation_filter.core.*` and can be searched/swept:
+
 ```bash
 python tuning/search.py --param confirmation_filter.core.reversal_veto_steps \
   --min 0 --max 6 --step 1 --objective flip_persist_ratio
@@ -692,16 +768,19 @@ python tuning/search.py --param confirmation_filter.core.reversal_veto_steps \
 #### Analysis & Artifacts
 
 Comprehensive sweep analysis available:
+
 - `research/reviews/direction_confirmation_stickiness_2026-03-23/reversal_veto_sweep.csv` — full 1D veto sweep
 - `research/reviews/direction_confirmation_stickiness_2026-03-23/direction_change_decay_sweep.csv` — 2D decay model sweep
 - `research/reviews/direction_confirmation_stickiness_2026-03-23/direction_confirmation_stickiness_memo.md` — detailed findings
 
 Run fresh analysis:
+
 ```bash
 python scripts/analyze_direction_confirmation_stickiness.py
 ```
 
 This generates CSV artifacts plus detailed markdown memo covering:
+
 - Baseline confirmation stickiness metrics
 - Reversal persistence analysis
 - Sweep results for all three mechanisms
@@ -718,6 +797,7 @@ This generates CSV artifacts plus detailed markdown memo covering:
 #### Test Coverage
 
 All three mechanisms are unit-tested:
+
 ```bash
 python -m pytest tests/test_confirmation_filters.py::test_reversal_veto_forces_mixed_on_reversal_snapshot -v
 python -m pytest tests/test_confirmation_filters.py::test_direction_change_penalty_reduces_confirmation_score_on_reversal -v
@@ -766,7 +846,7 @@ options_quant_engine/
 ├── risk/               # overlay layers and regime models
 ├── scripts/            # operational helpers, historical-data download, ML research, model registry builder, daily reports, multiyear backtest
 ├── strategy/           # confirmation, strike selection, enhanced scoring, exits, sizing, trade strength
-├── tests/              # regression and scenario coverage (238 tests)
+├── tests/              # regression and scenario coverage
 ├── tuning/             # registry, packs, experiments, search, validation, promotion code
 ├── utils/              # centralized numerics, math helpers, timestamp utilities
 ├── main.py
@@ -852,9 +932,9 @@ Generate/update Zerodha access token in one command (auto-writes `.env`):
 https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 ```
 
-2. Either copy the `request_token` from the redirect URL, or keep the full redirect URL.
+1. Either copy the `request_token` from the redirect URL, or keep the full redirect URL.
 
-3. Run:
+1. Run:
 
 ```bash
 .venv/bin/python config/generate_token.py \
@@ -931,6 +1011,54 @@ The governed tuning surface now extends well beyond the original threshold packs
 
 The parameter registry now covers the main engine and research groups end to end, so tuning campaigns can act on a materially broader but still auditable surface instead of leaving the overlay math buried in code.
 
+### Consistency Escalation Policy Tuning (No Code Changes)
+
+The signal engine supports regime-aware consistency escalation through policy config.
+
+Policy module:
+
+- `config/signal_consistency_policy.py`
+
+Parameter-pack keys:
+
+- `signal_engine.consistency.default_trade_escalation_min_severity`
+- `signal_engine.consistency.trade_escalation_regime_map`
+
+Severity ordering used by escalation:
+
+- `NONE < LOW < MEDIUM < HIGH < CRITICAL`
+
+Condition grammar for `trade_escalation_regime_map` keys:
+
+- `gamma=...;global_risk=...;vol=...;confirmation=...`
+- supported condition keys are `gamma`, `global_risk`, `vol`, `confirmation`
+- matching is exact after normalization
+- most specific rule wins (more conditions = higher priority)
+
+Example parameter pack override:
+
+```json
+{
+  "name": "consistency_governance_v1",
+  "parent": "baseline_v1",
+  "overrides": {
+    "signal_engine.consistency.default_trade_escalation_min_severity": "HIGH",
+    "signal_engine.consistency.trade_escalation_regime_map": {
+      "gamma=NEGATIVE_GAMMA;global_risk=RISK_OFF": "MEDIUM",
+      "gamma=NEGATIVE_GAMMA;vol=VOL_EXPANSION": "MEDIUM",
+      "vol=NORMAL_VOL;confirmation=CONFIRMED": "HIGH",
+      "vol=NORMAL_VOL;confirmation=STRONG_CONFIRMATION": "HIGH"
+    }
+  }
+}
+```
+
+Practical guidance:
+
+- Make stressed regimes stricter by lowering threshold (for example `MEDIUM`).
+- Keep benign, confirmed regimes less sensitive with a higher threshold (for example `HIGH`).
+- Apply changes via packs, run replay/backtests, then promote through governance workflow.
+
 ## Promotion And Shadow Mode
 
 The production-governance layer now supports four explicit pack roles:
@@ -1004,7 +1132,7 @@ Targeted regression:
 pytest -q tests/test_live_engine_policy.py tests/test_signal_evaluation_dataset.py
 ```
 
-Full suite (238 tests):
+Full suite:
 
 ```bash
 pytest -q
@@ -1026,7 +1154,8 @@ Notes:
 
 - `pytest.ini` keeps the urllib3 allowlist explicit and narrow
 - model deserialization version-mismatch warnings (for example sklearn `InconsistentVersionWarning`) are treated as actionable risk and should be resolved by model/runtime version alignment
-- report-generation numeric summaries guard empty/all-NaN slices to avoid silent invalid-statistics warnings- data integrity tests (`test_live_data_anomaly_detection.py`) validate option chain consistency, IV anomalies, and spot price jumps
+- report-generation numeric summaries guard empty/all-NaN slices to avoid silent invalid-statistics warnings
+- data integrity tests (`test_live_data_anomaly_detection.py`) validate option chain consistency, IV anomalies, and spot price jumps
 - macro integration tests (`test_historical_macro_parity.py`) verify historical and live parity for event-based signals
 Parameter tuning framework:
 
@@ -1067,125 +1196,19 @@ campaign = run_group_tuning_campaign(
 )
 ```
 
-## Pluggable Predictor Architecture
+## Extended Notes
 
-The probability stack uses a pluggable predictor architecture under `engine/predictors/`. The active prediction method is selected via config and can be overridden per-run in backtests or at runtime.
+Canonical topic sections are kept earlier in this README. Use these links for the primary operator-facing definitions:
 
-### Available Prediction Methods
+- Predictor architecture: [Pluggable Predictor Architecture](#pluggable-predictor-architecture)
+- Model registry: [ML Model Registry and Selection](#ml-model-registry-and-selection)
+- Decision policies: [Decision Policy Layer](#decision-policy-layer)
 
-| Method | Description |
-|---|---|
-| `blended` | **Default.** Production pipeline — weighted blend of rule + ML legs |
-| `pure_ml` | ML leg only — rule leg suppressed |
-| `pure_rule` | Rule leg only — ML leg suppressed |
-| `research_dual_model` | Research dual-model — GBT ranking + LogReg calibration |
-| `research_decision_policy` | Decision-policy layer — dual-model + ALLOW/BLOCK/DOWNGRADE policies |
-| `ev_sizing` | EV-based sizing — uses conditional return tables to compute per-signal expected value; blocks negative-EV, scales positive-EV proportionally |
+For deeper implementation details:
 
-### Switching Prediction Method
-
-Set `OQE_PREDICTION_METHOD` in `.env` or as an environment variable:
-
-```bash
-OQE_PREDICTION_METHOD=pure_ml python main.py
-```
-
-Or override per backtest run without changing the global setting:
-
-```python
-result = run_holistic_backtest(
-    "NIFTY",
-    start_date="2024-01-01",
-    prediction_method="pure_ml",
-)
-```
-
-Or use the context manager for ad-hoc overrides:
-
-```python
-from engine.predictors import prediction_method_override
-
-with prediction_method_override("research_dual_model"):
-    result = run_preloaded_engine_snapshot(...)
-```
-
-### Key Modules
-
-- `engine/predictors/protocol.py` — `MovePredictor` Protocol and `PredictionResult` dataclass
-- `engine/predictors/factory.py` — singleton factory with registry-based resolution
-- `engine/predictors/builtin_predictors.py` — built-in predictors (blended, pure_ml, pure_rule)
-- `engine/predictors/research_predictor.py` — research dual-model predictor (GBT + LogReg)
-- `engine/predictors/decision_policy_predictor.py` — decision-policy predictor (dual-model + policy overlay)
-- `engine/predictors/ev_sizing_predictor.py` — EV-based sizing predictor (conditional return tables + expected value)
-- `research/decision_policy/` — policy definitions, engine, evaluation, and configuration
-
-### Registering Custom Predictors
-
-```python
-from engine.predictors.factory import register_predictor
-
-register_predictor("my_custom", MyCustomPredictor)
-```
-
-Custom predictors must implement the `MovePredictor` protocol (a `name` property and a `predict(market_ctx)` method returning `PredictionResult`).
-
-## ML Model Registry
-
-The probability stack supports both a rule-based heuristic and trained ML models. The model registry lives under `models_store/registry/` (git-ignored; regenerable).
-
-### Building the Registry
-
-```bash
-python scripts/build_model_registry.py
-```
-
-This trains and serializes all research models from the backtest dataset. Each model gets a versioned directory with `model.joblib` and `meta.json`.
-
-### Activating an ML Model
-
-Set `ACTIVE_MODEL` in `config/settings.py` or via environment variable:
-
-```bash
-OQE_ACTIVE_MODEL=GBT_shallow_v1 python main.py
-```
-
-When `ACTIVE_MODEL` is set, the feature builder produces 33-feature expanded vectors (via `models/expanded_feature_builder.py`) and the probability stack loads the corresponding registry model. When unset, the system falls back to the 7-feature rule-based heuristic.
-
-Note: `ACTIVE_MODEL` controls which trained model the ML leg uses internally. `PREDICTION_METHOD` controls which prediction strategy (blended, pure_ml, pure_rule, research_dual_model, research_decision_policy, ev_sizing) composes the final `hybrid_move_probability`. Both settings are independent and composable.
-
-### Research Scripts
-
-- `scripts/ml_signal_research.py` — multi-model comparison pipeline (AUC, Brier, ECE, stability)
-- `scripts/ml_calibration_research.py` — calibration analysis (Platt scaling, isotonic, reliability curves)
-- `scripts/build_model_registry.py` — serialize research models into production registry
-
-### Key Classes
-
-- `models/ml_move_predictor.py::MLMovePredictor` — production ML prediction wrapper
-- `models/trained_predictor.py::TrainedMovePredictor` — shared class for registry serialization
-- `models/feature_builder.py` — routes between 7-feature heuristic and 33-feature ML paths
-- `models/expanded_feature_builder.py` — 33-feature extraction for ML models
-
-## Decision Policy Layer
-
-The decision-policy layer sits on top of the dual-model probability stack and applies explicit ALLOW / BLOCK / DOWNGRADE decisions to each signal before it reaches execution. Policies are defined in `research/decision_policy/` and exposed as a predictor via `engine/predictors/decision_policy_predictor.py`.
-
-### Policy Definitions
-
-| Policy | Description |
-|---|---|
-| `dual_threshold` | ALLOW when both GBT rank ≥ threshold AND LogReg confidence ≥ threshold |
-| `agreement_only` | ALLOW only when both models agree on direction |
-| `rank_filter_bottom_20pct` | Block bottom 20% by GBT rank score |
-| `rank_filter_bottom_30pct` | Block bottom 30% by GBT rank score |
-| `rank_filter_bottom_40pct` | Block bottom 40% by GBT rank score |
-
-### Key Modules
-
-- `research/decision_policy/policy_definitions.py` — core policy gate definitions
-- `research/decision_policy/policy_engine.py` — policy evaluation engine
-- `research/decision_policy/policy_evaluation.py` — metrics computation (hit rate, returns, Sharpe)
-- `research/decision_policy/policy_config.py` — configuration constants and thresholds
+- Predictor modules: `engine/predictors/`
+- Decision-policy research package: `research/decision_policy/`
+- ML research/evaluation package: `research/ml_evaluation/`
 
 ## ML Research Evaluation Framework
 
@@ -1223,7 +1246,7 @@ Runner: `research/ml_evaluation/predictor_comparison/predictor_comparison_runner
 Head-to-head evaluation of the original 5 predictor methods on both cumulative (279 rows) and backtest (7,404 rows) datasets (the `ev_sizing` method was added later — see cross-method comparison in `research/ml_evaluation/ev_and_regime_policy/`):
 
 | Predictor | Hit Rate | Avg Return (bps) | Sharpe | Retention |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | **decision_policy** | **0.74** | **18.98** | **0.348** | **40.91%** |
 | research_dual | 0.67 | 10.92 | 0.172 | 46.8% |
 | pure_ml | 0.58 | 5.03 | 0.078 | 59.35% |
@@ -1266,7 +1289,7 @@ The `research/ml_evaluation/` root directory also contains:
 The trade payload uses explicit names to avoid ambiguity:
 
 | Payload Key | Source | Description |
-|---|---|---|
+| --- | --- | --- |
 | `hybrid_move_probability` | active predictor (`engine/predictors/`) | Final probability output from the active prediction method |
 | `rule_move_probability` | `models/large_move_probability.py` | Rule-based heuristic probability |
 | `ml_move_probability` | `models/ml_move_predictor.py` | ML model probability (when active) |

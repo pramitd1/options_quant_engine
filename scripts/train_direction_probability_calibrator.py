@@ -72,6 +72,8 @@ def _build_head_probability_frame(df: pd.DataFrame) -> pd.DataFrame:
             hedging_bias=row.get("hedging_bias"),
             gamma_event=row.get("gamma_event"),
             gamma_regime=row.get("gamma_regime"),
+            macro_regime=row.get("macro_regime"),
+            volatility_regime=row.get("volatility_regime") or row.get("vol_regime"),
             oi_velocity_score=row.get("oi_velocity_score"),
             rr_value=row.get("rr_value"),
             rr_momentum=row.get("rr_momentum"),
@@ -92,6 +94,7 @@ def _build_head_probability_frame(df: pd.DataFrame) -> pd.DataFrame:
                 "index": idx,
                 "signal_id": row.get("signal_id"),
                 "source": row.get("source"),
+                "macro_regime": row.get("macro_regime"),
                 "gamma_regime": row.get("gamma_regime"),
                 "volatility_regime": row.get("volatility_regime") or row.get("vol_regime"),
                 "target_up": float(_safe_float(target.get(idx), 0.0) or 0.0),
@@ -114,6 +117,18 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Calibrator output JSON path")
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR, help="Report output directory")
     parser.add_argument("--min-samples", type=int, default=500, help="Minimum rows required for fitting")
+    parser.add_argument(
+        "--regime-column",
+        type=str,
+        default="",
+        help="Optional column name for segmented calibration (e.g., macro_regime, gamma_regime, volatility_regime)",
+    )
+    parser.add_argument(
+        "--min-group-samples",
+        type=int,
+        default=300,
+        help="Minimum rows per regime segment when --regime-column is used",
+    )
     args = parser.parse_args()
 
     df = load_signals_dataset(args.dataset)
@@ -178,6 +193,77 @@ def main() -> int:
         "fit_report": fit_report,
         "by_source": by_source.to_dict(orient="records"),
     }
+
+    regime_column = str(args.regime_column or "").strip()
+    if regime_column:
+        segmented = {
+            "regime_column": regime_column,
+            "min_group_samples": int(args.min_group_samples),
+            "groups_trained": 0,
+            "groups_skipped": 0,
+            "groups": [],
+        }
+
+        grouped_states: dict[str, dict] = {
+            "meta": {
+                "method": "isotonic",
+                "n_bins": 10,
+                "regime_column": regime_column,
+                "min_group_samples": int(args.min_group_samples),
+                "fallback_global_calibrator": str(args.output),
+            },
+            "groups": {},
+        }
+
+        if regime_column not in work.columns:
+            segmented["error"] = f"regime column not found: {regime_column}"
+        else:
+            for regime_value, group in work.groupby(regime_column, dropna=False):
+                group_name = str(regime_value) if pd.notna(regime_value) else "UNKNOWN"
+                n = int(len(group))
+                if n < int(args.min_group_samples):
+                    segmented["groups_skipped"] += 1
+                    segmented["groups"].append(
+                        {
+                            "group": group_name,
+                            "samples": n,
+                            "trained": False,
+                            "reason": "insufficient_samples",
+                        }
+                    )
+                    continue
+
+                grp_raw = np.clip(group["probability_up_raw"].to_numpy(dtype=float), 0.0, 1.0)
+                grp_y = np.clip(group["target_up"].to_numpy(dtype=float), 0.0, 1.0)
+                grp_cal = ScoreCalibrator(method="isotonic", n_bins=10)
+                grp_fit = grp_cal.fit((grp_raw * 100.0).tolist(), grp_y.tolist())
+                grp_calibrated = np.clip(
+                    np.asarray(grp_cal.calibrate_batch((grp_raw * 100.0).tolist()), dtype=float) / 100.0,
+                    0.0,
+                    1.0,
+                )
+                grp_pre = _brier(grp_y, grp_raw)
+                grp_post = _brier(grp_y, grp_calibrated)
+
+                grouped_states["groups"][group_name] = grp_cal.to_state()
+                segmented["groups_trained"] += 1
+                segmented["groups"].append(
+                    {
+                        "group": group_name,
+                        "samples": n,
+                        "trained": True,
+                        "pre_brier": round(grp_pre, 8),
+                        "post_brier": round(grp_post, 8),
+                        "brier_improvement": round(grp_pre - grp_post, 8),
+                        "fit_report": grp_fit,
+                    }
+                )
+
+            grouped_output = args.output.with_name(f"{args.output.stem}_{regime_column}_segments.json")
+            grouped_output.write_text(json.dumps(grouped_states, indent=2, sort_keys=True), encoding="utf-8")
+            segmented["grouped_calibrator_output_path"] = str(grouped_output)
+
+        report["segmented_calibration"] = segmented
 
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 

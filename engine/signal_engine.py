@@ -61,6 +61,7 @@ from strategy.exit_model import calculate_exit, compute_exit_timing
 from strategy.strike_selector import select_best_strike
 from engine.decision_journal import append_decision as _journal_append_decision
 from utils.regime_normalization import canonical_gamma_regime
+from utils.consistency_checks import collect_trade_consistency_findings, select_trade_escalation_findings
 from strategy.score_calibration import initialize_calibrator, apply_score_calibration, get_calibrator_runtime_metadata
 from strategy.time_decay_model import initialize_time_decay, apply_time_decay
 from strategy.path_aware_filtering import PathAwareFilter, PathPatternLibrary
@@ -645,17 +646,36 @@ def _collect_neutralization_states(payload):
 
     option_efficiency_status = "AVAILABLE"
     option_efficiency_reason = "features_available"
-    if (
-        option_efficiency_features.get("neutral_fallback")
+    option_efficiency_warnings = option_efficiency_diagnostics.get("warnings")
+    option_efficiency_warnings = option_efficiency_warnings if isinstance(option_efficiency_warnings, list) else []
+    option_efficiency_quality = _as_upper(option_efficiency_features.get("expected_move_quality"))
+    option_efficiency_expected_move_points = option_efficiency_features.get("expected_move_points")
+    option_efficiency_features_missing = not bool(option_efficiency_features)
+
+    option_efficiency_unavailable = (
+        option_efficiency_features_missing
+        or option_efficiency_features.get("neutral_fallback")
         or "option_efficiency_neutral_fallback" in option_efficiency_reasons
-        or payload.get("expected_move_points") is None
-    ):
+        or option_efficiency_quality == "UNAVAILABLE"
+        or any(_as_upper(item) == "EXPECTED_MOVE_UNAVAILABLE" for item in option_efficiency_warnings)
+        or (
+            option_efficiency_quality in {"DIRECT", "FALLBACK"}
+            and option_efficiency_expected_move_points is None
+        )
+    )
+
+    if option_efficiency_unavailable:
         option_efficiency_status = "UNAVAILABLE_NEUTRALIZED"
-        warnings = option_efficiency_diagnostics.get("warnings")
-        if isinstance(warnings, list) and warnings:
-            option_efficiency_reason = str(warnings[0])
-        else:
+        if option_efficiency_features_missing:
+            option_efficiency_reason = "option_efficiency_features_missing"
+        elif option_efficiency_warnings:
+            option_efficiency_reason = str(option_efficiency_warnings[0])
+        elif option_efficiency_quality == "UNAVAILABLE":
+            option_efficiency_reason = "expected_move_unavailable"
+        elif option_efficiency_expected_move_points is None:
             option_efficiency_reason = "expected_move_not_computable"
+        else:
+            option_efficiency_reason = "option_efficiency_neutral_fallback"
 
     global_risk_status = "ACTIVE"
     global_risk_reason = "global_risk_features_available"
@@ -911,6 +931,8 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
     support_wall = payload.get("support_wall")
     resistance_wall = payload.get("resistance_wall")
     gamma_flip = payload.get("gamma_flip")
+    live_calibration_gate = payload.get("live_calibration_gate") if isinstance(payload.get("live_calibration_gate"), dict) else {}
+    live_directional_gate = payload.get("live_directional_gate") if isinstance(payload.get("live_directional_gate"), dict) else {}
 
     activation_score = 0
     acfg = get_activation_score_policy_config()
@@ -1240,6 +1262,26 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
         no_trade_reason_code = "SIGNAL_SCORE_BELOW_THRESHOLD"
         no_trade_reason = "Setup has not met the minimum execution bar"
 
+    # Surface runtime quality gates explicitly in explainability so operators
+    # can distinguish model-health blocks from pure market-structure blocks.
+    if _as_upper(live_calibration_gate.get("verdict")) == "BLOCK":
+        blocked_by.append("live_calibration_gate")
+        reason_details.append("secondary_blocker: live calibration gate blocked (miscalibrated recent outcomes)")
+    if _as_upper(live_directional_gate.get("verdict")) == "BLOCK":
+        blocked_by.append("live_directional_gate")
+        reason_details.append("secondary_blocker: live directional gate blocked (stickiness/imbalance/flip-lag)")
+
+    dealer_liquidity_map = payload.get("dealer_liquidity_map") if isinstance(payload.get("dealer_liquidity_map"), dict) else {}
+    band_reason = _as_upper(dealer_liquidity_map.get("band_reason"))
+    if direction == "CALL" and band_reason == "MOVE_TO_SUPPORT":
+        missing_requirements.append("dealer_liquidity_band_conflicts_with_call")
+        reason_details.append("secondary_blocker: dealer liquidity map expects move to support")
+        setup_upgrade_conditions.append("resolve dealer band conflict with a move toward resistance")
+    elif direction == "PUT" and band_reason == "MOVE_TO_RESISTANCE":
+        missing_requirements.append("dealer_liquidity_band_conflicts_with_put")
+        reason_details.append("secondary_blocker: dealer liquidity map expects move to resistance")
+        setup_upgrade_conditions.append("resolve dealer band conflict with a move toward support")
+
     # Preserve upstream reason code/reason when they were already set by earlier layers.
     if incoming_no_trade_reason_code:
         no_trade_reason_code = incoming_no_trade_reason_code
@@ -1311,6 +1353,17 @@ def _estimate_days_to_expiry(option_chain_validation, valuation_time):
         import pandas as _pd
         expiry_ts = _pd.Timestamp(selected)
         val_ts = _pd.Timestamp(valuation_time)
+
+        # Date-only expiries parse as midnight and can incorrectly look expired
+        # intraday; normalize them to exchange close for same-day contracts.
+        selected_str = str(selected)
+        if len(selected_str) <= 10:
+            expiry_ts = _pd.Timestamp(f"{expiry_ts.date()} 15:30:00", tz="Asia/Kolkata")
+        if expiry_ts.tzinfo is None:
+            expiry_ts = expiry_ts.tz_localize("Asia/Kolkata")
+        if val_ts.tzinfo is None:
+            val_ts = val_ts.tz_localize("Asia/Kolkata")
+
         delta = (expiry_ts - val_ts).total_seconds() / 86400.0
         return max(delta, 0.0)
     except Exception:
@@ -1340,6 +1393,8 @@ def generate_trade(
     macro_news_state=None,
     global_risk_state=None,
     pre_market_context=None,
+    live_calibration_gate=None,
+    live_directional_gate=None,
     holding_profile="AUTO",
     valuation_time=None,
     target_profit_percent=TARGET_PROFIT_PERCENT,
@@ -1390,6 +1445,11 @@ def generate_trade(
 
     days_to_expiry = _estimate_days_to_expiry(option_chain_validation, valuation_time)
 
+    # Build global context fields early so market-state fan-out can consume
+    # volatility fallbacks (e.g., India VIX when provider IV is unavailable).
+    _grs = global_risk_state if isinstance(global_risk_state, dict) else {}
+    _grf = _grs.get("global_risk_features", {}) if isinstance(_grs.get("global_risk_features"), dict) else {}
+
     # Normalize provider-specific column names and enrich missing Greeks once so
     # every downstream model works off a consistent option-chain schema.
     df = normalize_option_chain(option_chain, spot=spot, valuation_time=valuation_time)
@@ -1397,17 +1457,26 @@ def generate_trade(
         normalize_option_chain(previous_chain, spot=spot, valuation_time=valuation_time)
         if previous_chain is not None else None
     )
-    market_state = _collect_market_state(
-        df,
-        spot,
-        symbol=symbol,
-        prev_df=prev_df,
-        days_to_expiry=days_to_expiry,
-    )
+    try:
+        market_state = _collect_market_state(
+            df,
+            spot,
+            symbol=symbol,
+            prev_df=prev_df,
+            days_to_expiry=days_to_expiry,
+            india_vix_level=_grf.get("india_vix_level"),
+            fallback_iv=option_chain_validation.get("fallback_iv") if isinstance(option_chain_validation, dict) else None,
+        )
+    except TypeError:
+        market_state = _collect_market_state(
+            df,
+            spot,
+            symbol=symbol,
+            prev_df=prev_df,
+            days_to_expiry=days_to_expiry,
+        )
 
     # Build global context for v2 ML model features (available before probability).
-    _grs = global_risk_state if isinstance(global_risk_state, dict) else {}
-    _grf = _grs.get("global_risk_features", {}) if isinstance(_grs.get("global_risk_features"), dict) else {}
     _mes = macro_event_state if isinstance(macro_event_state, dict) else {}
     _mns = macro_news_state if isinstance(macro_news_state, dict) else {}
     _global_ctx = {
@@ -1608,13 +1677,16 @@ def generate_trade(
 
     confirmation["score_adjustment"] += macro_news_adjustments["macro_confirmation_adjustment"]
 
-    scoring_breakdown["confirmation_filter_score"] = confirmation["score_adjustment"]
-    scoring_breakdown["macro_event_score"] = macro_event_score_adjustment
-    scoring_breakdown["macro_news_score"] = macro_news_adjustments["macro_adjustment_score"]
-    scoring_breakdown["event_overlay_score"] = _safe_float(
+    event_overlay_score = _safe_float(
         macro_news_adjustments.get("event_overlay_score_adjustment"),
         0.0,
     )
+    macro_news_total_score = _safe_float(macro_news_adjustments.get("macro_adjustment_score"), 0.0)
+    macro_news_core_score = macro_news_total_score - event_overlay_score
+    scoring_breakdown["confirmation_filter_score"] = confirmation["score_adjustment"]
+    scoring_breakdown["macro_event_score"] = macro_event_score_adjustment
+    scoring_breakdown["macro_news_score"] = macro_news_core_score
+    scoring_breakdown["event_overlay_score"] = event_overlay_score
     global_risk_trade_modifiers = derive_global_risk_trade_modifiers(global_risk_state)
     global_risk_adjustment_score = global_risk_trade_modifiers["effective_adjustment_score"]
     scoring_breakdown["global_risk_base_adjustment_score"] = global_risk_trade_modifiers["base_adjustment_score"]
@@ -1623,6 +1695,19 @@ def generate_trade(
 
     # Each overlay returns both diagnostics and a score contribution so the
     # engine can explain not just the decision, but why the decision changed.
+    macro_news_shock_norm = _clip(_safe_float(macro_news_adjustments.get("volatility_shock_score"), 0.0) / 100.0, 0.0, 1.0)
+    global_risk_shock_norm = _clip(
+        _safe_float(
+            global_risk_state.get("global_risk_features", {}).get("volatility_shock_score")
+            if isinstance(global_risk_state, dict)
+            else 0.0,
+            0.0,
+        ),
+        0.0,
+        1.0,
+    )
+    blended_volatility_shock_score = max(macro_news_shock_norm, global_risk_shock_norm)
+
     gamma_vol_state = build_gamma_vol_acceleration_state(
         gamma_regime=market_state["gamma_regime"],
         spot_vs_flip=market_state["spot_vs_flip"],
@@ -1635,11 +1720,7 @@ def generate_trade(
             if isinstance(global_risk_state, dict)
             else 0.0
         ),
-        volatility_shock_score=(
-            global_risk_state.get("global_risk_features", {}).get("volatility_shock_score")
-            if isinstance(global_risk_state, dict)
-            else 0.0
-        ),
+        volatility_shock_score=blended_volatility_shock_score,
         macro_event_risk_score=macro_event_risk_score,
         global_risk_state=global_risk_state,
         volatility_explosion_probability=(
@@ -1708,7 +1789,8 @@ def generate_trade(
             trade_strength
             + confirmation["score_adjustment"]
             + macro_event_score_adjustment
-            + macro_news_adjustments["macro_adjustment_score"],
+            + macro_news_core_score
+            + event_overlay_score,
             0,
             100,
         )
@@ -1864,6 +1946,8 @@ def generate_trade(
         "charm_exposure": market_state["greek_exposures"].get("charm_exposure"),
         "vanna_regime": market_state["greek_exposures"].get("vanna_regime"),
         "charm_regime": market_state["greek_exposures"].get("charm_regime"),
+        "greeks_data_warning": market_state["greek_exposures"].get("greeks_data_warning"),
+        "missing_greek_columns": market_state["greek_exposures"].get("missing_greek_columns", []),
         "dealer_position": market_state["dealer_pos"],
         "dealer_inventory_basis": market_state["dealer_metrics"].get("basis"),
         "call_oi_change": market_state["dealer_metrics"].get("call_oi_change"),
@@ -2075,6 +2159,8 @@ def generate_trade(
         "runtime_composite_score": None,
         "time_decay_elapsed_minutes": None,
         "time_decay_factor": None,
+        "live_calibration_gate": live_calibration_gate if isinstance(live_calibration_gate, dict) else {},
+        "live_directional_gate": live_directional_gate if isinstance(live_directional_gate, dict) else {},
         "backtest_mode": backtest_mode,
     }
 
@@ -2192,6 +2278,20 @@ def generate_trade(
         }
     )
 
+    # Expiry-day contracts should not be marked overnight-holdable.
+    expiry_day_contract = False
+    try:
+        if valuation_time is not None and selected_expiry is not None:
+            expiry_day_contract = pd.Timestamp(selected_expiry).date() == pd.Timestamp(valuation_time).date()
+    except Exception:
+        expiry_day_contract = bool(_safe_float(days_to_expiry, None) == 0.0)
+
+    base_payload["expiry_day_contract"] = expiry_day_contract
+    if expiry_day_contract:
+        base_payload["overnight_hold_allowed"] = False
+        base_payload["overnight_trade_block"] = True
+        base_payload["overnight_hold_reason"] = "expiry_day_contract_roll_required"
+
     def _finalize(payload, trade_status, message):
         """
         Purpose:
@@ -2216,21 +2316,44 @@ def generate_trade(
             Centralizing this bookkeeping keeps decision branches focused on why
             the trade changed state rather than how the payload is shaped.
         """
-        payload["message"] = message
-        payload["trade_status"] = trade_status
+        consistency_findings = collect_trade_consistency_findings(payload)
+        consistency_issue_count = len(consistency_findings)
+        escalation_state = select_trade_escalation_findings(payload, consistency_findings)
+        consistency_escalation_findings = escalation_state["matched_findings"]
+        payload["consistency_check_findings"] = consistency_findings
+        payload["consistency_check_issue_count"] = consistency_issue_count
+        payload["consistency_check_critical_issue_count"] = len(consistency_escalation_findings)
+        payload["consistency_check_status"] = "WARN" if consistency_issue_count else "PASS"
+        payload["consistency_check_policy"] = escalation_state["policy"]
+
+        final_trade_status = trade_status
+        final_message = message
+        payload["consistency_check_escalated"] = False
+        if trade_status == "TRADE" and consistency_escalation_findings:
+            first_critical = consistency_escalation_findings[0]
+            first_message = str(first_critical.get("message") or "consistency warning")
+            final_trade_status = "WATCHLIST"
+            final_message = f"Consistency check warning: {first_message}"
+            payload["consistency_check_escalated"] = True
+            payload["consistency_check_escalation_reason"] = first_message
+            payload["no_trade_reason_code"] = "CONSISTENCY_CHECK_WARN"
+            payload["no_trade_reason"] = first_message
+
+        payload["message"] = final_message
+        payload["trade_status"] = final_trade_status
         execution_size_multiplier = min(
             _safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0),
             _safe_float(global_risk.get("global_risk_size_cap"), 1.0),
         )
         payload["execution_regime"] = classify_execution_regime(
-            trade_status=trade_status,
+            trade_status=final_trade_status,
             signal_regime=signal_regime,
             data_quality_score=data_quality["score"],
             macro_position_size_multiplier=execution_size_multiplier,
         )
         explainability = _build_decision_explainability(
             payload,
-            trade_status=trade_status,
+            trade_status=final_trade_status,
             min_trade_strength=int(_safe_float(payload.get("effective_min_trade_strength_threshold"), min_trade_strength)),
         )
         payload.update(explainability)
@@ -2358,7 +2481,9 @@ def generate_trade(
             dealer_hedging_bias=market_state["hedging_bias"],
             gamma_flip_distance_pct=probability_state["components"].get("gamma_flip_distance_pct"),
             atm_iv=market_state["atm_iv"],
+            india_vix_level=india_vix_level,
             days_to_expiry=days_to_expiry,
+            max_pain=market_state.get("max_pain"),
             vol_surface_regime=market_state["surface_regime"],
             volatility_shock_score=market_state.get("volatility_shock_score", 0.0),
             directional_call_probability=bull_probability,
@@ -2427,6 +2552,18 @@ def generate_trade(
 
     option_row_dict = option_row.iloc[0].to_dict()
 
+    ranked_candidate = None
+    for candidate in ranked_strikes or []:
+        if (
+            _safe_float(candidate.get("strike"), None) == _safe_float(strike, None)
+            and str(candidate.get("option_type") or "").upper().strip() == option_type
+        ):
+            ranked_candidate = candidate
+            break
+    resolved_delta_input = option_row_dict.get("DELTA")
+    if _safe_float(resolved_delta_input, None) in (None, 0.0) and isinstance(ranked_candidate, dict):
+        resolved_delta_input = ranked_candidate.get("delta")
+
     # Once a specific contract is chosen, recompute option-efficiency metrics
     # with contract-level Greeks, expiry, and payoff geometry.
     option_efficiency_state = build_option_efficiency_state(
@@ -2462,7 +2599,7 @@ def generate_trade(
         liquidity_vacuum_state=market_state["vacuum_state"],
         support_wall=market_state["support_wall"],
         resistance_wall=market_state["resistance_wall"],
-        delta=option_row_dict.get("DELTA"),
+        delta=resolved_delta_input,
         holding_profile=holding_profile,
     )
     option_efficiency_trade_modifiers = derive_option_efficiency_trade_modifiers(option_efficiency_state)
@@ -2515,6 +2652,11 @@ def generate_trade(
         "option_efficiency_reasons": option_efficiency_state.get("option_efficiency_reasons", []),
         "option_efficiency_features": option_efficiency_state.get("option_efficiency_features", {}),
         "option_efficiency_diagnostics": option_efficiency_state.get("option_efficiency_diagnostics", {}),
+        "option_efficiency_delta_source": (
+            "RANKED_CANDIDATE_FALLBACK"
+            if _safe_float(option_row_dict.get("DELTA"), None) in (None, 0.0) and _safe_float(resolved_delta_input, None) not in (None, 0.0)
+            else "CHAIN_DELTA"
+        ),
     })
     if base_payload.get("expected_move_pct") is None:
         base_payload["expected_move_pct"] = base_payload.get("expected_move_pct_model")

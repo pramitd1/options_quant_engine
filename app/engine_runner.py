@@ -1000,6 +1000,8 @@ def _evaluate_snapshot_for_pack(
     backtest_mode: bool = False,
     mode: Optional[str] = None,
     pre_market_context: Optional[dict] = None,
+    live_calibration_gate: Optional[dict] = None,
+    live_directional_gate: Optional[dict] = None,
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
 ):
@@ -1145,6 +1147,8 @@ def _evaluate_snapshot_for_pack(
                 macro_news_state=macro_news_state,
                 global_risk_state=global_risk_state,
                 pre_market_context=pre_market_context,
+                live_calibration_gate=live_calibration_gate,
+                live_directional_gate=live_directional_gate,
                 holding_profile=holding_profile,
                 valuation_time=spot_timestamp,
                 target_profit_percent=target_profit_percent,
@@ -1190,6 +1194,8 @@ def run_preloaded_engine_snapshot(
     macro_event_state: Optional[dict] = None,
     headline_state=None,
     global_market_snapshot: Optional[dict] = None,
+    live_calibration_gate: Optional[dict] = None,
+    live_directional_gate: Optional[dict] = None,
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
 ) -> Dict[str, object]:
@@ -1326,6 +1332,8 @@ def run_preloaded_engine_snapshot(
             backtest_mode=backtest_mode,
             mode=mode,
             pre_market_context=pre_market_context,
+            live_calibration_gate=live_calibration_gate,
+            live_directional_gate=live_directional_gate,
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
         )
@@ -1446,6 +1454,8 @@ def run_engine_snapshot(
     signal_capture_sink: Optional[SignalCaptureSink] = None,
     shadow_evaluation_sink: Optional[ShadowEvaluationSink] = None,
     global_market_snapshot: Optional[dict] = None,
+    live_calibration_gate: Optional[dict] = None,
+    live_directional_gate: Optional[dict] = None,
     target_profit_percent: float = TARGET_PROFIT_PERCENT,
     stop_loss_percent: float = STOP_LOSS_PERCENT,
 ) -> Dict[str, object]:
@@ -1639,6 +1649,8 @@ def run_engine_snapshot(
             replay_paths=replay_paths,
             saved_paths=saved_paths,
             global_market_snapshot=global_market_snapshot,
+            live_calibration_gate=live_calibration_gate,
+            live_directional_gate=live_directional_gate,
             target_profit_percent=target_profit_percent,
             stop_loss_percent=stop_loss_percent,
         )

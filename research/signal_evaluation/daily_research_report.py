@@ -98,7 +98,7 @@ def _load_dataset(path: Path) -> pd.DataFrame:
     """Load the signals dataset CSV."""
     df = pd.read_csv(path)
     if "signal_timestamp" in df.columns:
-        df["signal_timestamp"] = pd.to_datetime(df["signal_timestamp"], errors="coerce")
+        df["signal_timestamp"] = pd.to_datetime(df["signal_timestamp"], errors="coerce", format="mixed")
     return df
 
 
@@ -114,12 +114,317 @@ def _numeric(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series, errors="coerce")
 
 
+def _positive_numeric(series: pd.Series) -> pd.Series:
+    vals = _numeric(series)
+    return vals[vals > 0]
+
+
 def _directional_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Return rows that have an explicit directional call (CALL/PUT)."""
     if "direction" not in df.columns:
         return df.iloc[0:0]
     has_direction = df["direction"].astype(str).str.upper().isin(["CALL", "PUT"])
     return df.loc[has_direction].copy()
+
+
+def _parse_markdown_table(table_lines: list[str]) -> dict[str, Any] | None:
+    """Convert a markdown table into a structured payload.
+
+    The output is intentionally simple and JSON-friendly so it can be passed to
+    the narrative LLM without exposing raw markdown formatting.
+    """
+    if len(table_lines) < 2:
+        return None
+
+    def _cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    headers = _cells(table_lines[0])
+    if not headers:
+        return None
+
+    rows: list[dict[str, str]] = []
+    for line in table_lines[2:]:
+        values = _cells(line)
+        if len(values) != len(headers):
+            continue
+        rows.append({headers[idx]: values[idx] for idx in range(len(headers))})
+
+    return {
+        "headers": headers,
+        "rows": rows,
+    }
+
+
+def _build_structured_section_payload(
+    section_title: str,
+    section_lines: list[str],
+    fallback_summary: str,
+) -> dict[str, Any]:
+    """Build a structured, markdown-free metrics payload for AI interpretation."""
+    payload: dict[str, Any] = {
+        "section_title": section_title,
+        "ground_truth_summary": fallback_summary,
+        "subsections": [],
+        "tables": [],
+        "bullets": [],
+        "notes": [],
+    }
+
+    current_subsection: str | None = None
+    current_table: list[str] = []
+
+    def _flush_table() -> None:
+        nonlocal current_table
+        if not current_table:
+            return
+        parsed = _parse_markdown_table(current_table)
+        if parsed is not None:
+            payload["tables"].append(
+                {
+                    "subsection": current_subsection,
+                    "table": parsed,
+                }
+            )
+        current_table = []
+
+    for line in section_lines:
+        stripped = line.strip()
+        if not stripped:
+            _flush_table()
+            continue
+        if stripped.startswith("## "):
+            _flush_table()
+            continue
+        if stripped.startswith("### "):
+            _flush_table()
+            current_subsection = stripped[4:].strip()
+            payload["subsections"].append(current_subsection)
+            continue
+        if stripped.startswith("|"):
+            current_table.append(stripped)
+            continue
+
+        _flush_table()
+        if stripped.startswith(("- ", "* ")):
+            payload["bullets"].append(
+                {
+                    "subsection": current_subsection,
+                    "text": stripped[2:].strip(),
+                }
+            )
+            continue
+        if stripped[:3].isdigit() and ". " in stripped[:5]:
+            payload["bullets"].append(
+                {
+                    "subsection": current_subsection,
+                    "text": stripped.split(". ", 1)[1].strip(),
+                }
+            )
+            continue
+        if not stripped.startswith("> **Summary:**"):
+            payload["notes"].append(
+                {
+                    "subsection": current_subsection,
+                    "text": stripped,
+                }
+            )
+
+    _flush_table()
+    return payload
+
+
+def _safe_float_from_text(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if text in {"", "—", "-"}:
+        return None
+    if text.endswith("%"):
+        text = text[:-1]
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _find_table_rows(payload: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in payload.get("tables", []):
+        table = item.get("table") or {}
+        rows.extend(table.get("rows") or [])
+    return rows
+
+
+def _find_metric_value(payload: dict[str, Any], metric_name: str) -> float | None:
+    for row in _find_table_rows(payload):
+        metric = row.get("Metric") or row.get("Indicator") or row.get("Feature")
+        if str(metric).strip() != metric_name:
+            continue
+        for key, value in row.items():
+            if key == "Metric":
+                continue
+            parsed = _safe_float_from_text(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _score_bucket_hit_rates(payload: dict[str, Any]) -> list[float]:
+    hit_rates: list[float] = []
+    for row in _find_table_rows(payload):
+        if "Hit Rate 60m" not in row:
+            continue
+        parsed = _safe_float_from_text(row.get("Hit Rate 60m"))
+        if parsed is not None:
+            hit_rates.append(parsed)
+    return hit_rates
+
+
+def _horizon_rows(payload: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in _find_table_rows(payload):
+        if "Horizon" in row and "Hit Rate" in row:
+            rows.append(row)
+    return rows
+
+
+def _regime_count_rows(payload: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in _find_table_rows(payload):
+        if "N" in row and any(key != "N" and "% of Total" not in key for key in row):
+            rows.append(row)
+    return rows
+
+
+def _interpretation_conflicts_with_kpis(
+    section_title: str,
+    ai_text: str,
+    payload: dict[str, Any],
+    fallback_summary: str,
+) -> bool:
+    """Return True when an AI interpretation clearly contradicts computed KPIs."""
+    text = str(ai_text or "").lower()
+    summary = str(fallback_summary or "").lower()
+
+    def _has_any(*phrases: str) -> bool:
+        return any(phrase in text for phrase in phrases)
+
+    if "overconfident" in summary and _has_any("underconfident", "under-estimates", "underestimates"):
+        return True
+    if "underconfident" in summary and _has_any("overconfident", "over-estimates", "overestimates"):
+        return True
+    if "well-calibrated" in summary and _has_any("overconfident", "underconfident"):
+        return True
+    if "non-monotonic" in summary and _has_any("monotonic", "correctly ranks signal quality", "well calibrated"):
+        return True
+    if "monotonic hit-rate ordering" in summary and _has_any("non-monotonic", "calibration failure"):
+        return True
+    if "no positive alpha horizon identified" in summary and _has_any(
+        "longer holds viable",
+        "persists through close",
+        "remained positive",
+        "positive alpha",
+    ):
+        return True
+    if "substantial profit erosion" in summary and _has_any("largely sustained", "durable alpha", "through session close remain viable"):
+        return True
+    if "moderate peak-to-close decay" in summary and _has_any("substantial profit erosion", "transient alpha"):
+        return True
+
+    if section_title == "Score Calibration":
+        hit_rates = _score_bucket_hit_rates(payload)
+        monotonic = len(hit_rates) >= 2 and all(hit_rates[i] >= hit_rates[i + 1] for i in range(len(hit_rates) - 1))
+        if monotonic and _has_any("non-monotonic", "calibration failure"):
+            return True
+        if (not monotonic) and _has_any("monotonic", "correctly ranks signal quality"):
+            return True
+
+    if section_title == "Reversal Diagnostics":
+        decay = _find_metric_value(payload, "Avg Peak-to-Close Decay (bps)")
+        if decay is not None:
+            if decay > 20.0 and _has_any("largely sustained", "durable alpha", "through session close remain viable"):
+                return True
+            if decay <= 20.0 and _has_any("substantial profit erosion", "transient alpha"):
+                return True
+
+    if section_title == "Exit Horizon Diagnostic":
+        peak_alpha = _find_metric_value(payload, "Peak alpha (bps)")
+        if peak_alpha is not None and peak_alpha <= 0.0 and _has_any(
+            "longer holds viable",
+            "persists through close",
+            "capture more alpha",
+        ):
+            return True
+
+    if section_title == "Horizon Performance":
+        horizon_rows = _horizon_rows(payload)
+        parsed_rows: list[tuple[str, float | None, float | None]] = []
+        for row in horizon_rows:
+            label = str(row.get("Horizon", "")).strip()
+            hit_rate = _safe_float_from_text(row.get("Hit Rate"))
+            signed_return = _safe_float_from_text(row.get("Avg Signed Return (bps)"))
+            if label:
+                parsed_rows.append((label, hit_rate, signed_return))
+
+        valid_hit_rates = [(label, hit_rate) for label, hit_rate, _ in parsed_rows if hit_rate is not None]
+        if valid_hit_rates:
+            best_label, _ = max(valid_hit_rates, key=lambda item: item[1])
+            short_horizon = {"5m", "10m", "15m", "30m"}
+            long_horizon = {"60m", "120m", "session_close"}
+            if best_label in short_horizon and _has_any(
+                "longer horizons indicate durable edge",
+                "durable informational edge",
+                "persists through close",
+            ):
+                return True
+            if best_label in long_horizon and _has_any(
+                "short-lived alpha",
+                "transient microstructure-driven alpha",
+                "fades quickly",
+            ):
+                return True
+
+        close_row = next((row for row in parsed_rows if row[0] == "session_close"), None)
+        if close_row is not None:
+            close_signed = close_row[2]
+            if close_signed is not None and close_signed < 0 and _has_any(
+                "remained positive by close",
+                "persisted through close",
+                "held its gains into the close",
+            ):
+                return True
+            if close_signed is not None and close_signed > 0 and _has_any(
+                "reversed by close",
+                "negative by the close",
+                "late-session reversal erased the edge",
+            ):
+                return True
+
+    if section_title == "Regime Coverage Tracker":
+        regime_rows = _regime_count_rows(payload)
+        counts = []
+        for row in regime_rows:
+            count = _safe_float_from_text(row.get("N"))
+            if count is not None:
+                counts.append(count)
+        if counts:
+            min_count = min(counts)
+            if min_count < 10 and _has_any(
+                "broad regime coverage",
+                "statistically reliable regime estimates",
+                "ample regime coverage",
+                "well covered across regimes",
+            ):
+                return True
+            if min_count >= 10 and _has_any(
+                "single regime",
+                "sparse coverage",
+                "insufficient regime coverage",
+            ):
+                return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -306,14 +611,18 @@ def _section_market_structure(day_df: pd.DataFrame) -> list[str]:
                 else:
                     lines.append(f"| {label} | {mode} |")
 
-    # Support / resistance from spot data
+    # Support / resistance from spot data (exclude non-positive values)
     if "day_high" in day_df.columns and "day_low" in day_df.columns:
-        high = _numeric(day_df["day_high"]).max()
-        low = _numeric(day_df["day_low"]).min()
+        highs = _positive_numeric(day_df["day_high"])
+        lows = _positive_numeric(day_df["day_low"])
+        high = highs.max() if highs.notna().any() else None
+        low = lows.min() if lows.notna().any() else None
         if pd.notna(high) and pd.notna(low):
             lines.append(f"| Session High | {_r(high, 2)} |")
             lines.append(f"| Session Low | {_r(low, 2)} |")
             lines.append(f"| Session Range | {_r(high - low, 2)} pts |")
+        else:
+            lines.append("| Session Range | — (insufficient valid spot extremes) |")
 
     lines.append("")
     return lines
@@ -357,6 +666,98 @@ def _section_signal_generation(day_df: pd.DataFrame) -> list[str]:
             for d, c in dir_counts.items():
                 lines.append(f"- {d}: {c}")
             lines.append("")
+
+            directional_total = int(dir_counts.sum())
+            if directional_total > 0:
+                dominant_direction = str(dir_counts.index[0])
+                dominant_count = int(dir_counts.iloc[0])
+                dominant_share = dominant_count / directional_total
+                lines.append("**Directional concentration diagnostic:**")
+                lines.append("")
+                lines.append("| Metric | Value |")
+                lines.append("| --- | ---: |")
+                lines.append(f"| Dominant direction | {dominant_direction} |")
+                lines.append(f"| Dominant share of directional signals | {_pct(dominant_share)} |")
+                lines.append(f"| Directional diversity (unique directions) | {int(dir_counts.size)} |")
+                lines.append("")
+                if dominant_share >= 0.85:
+                    lines.append(
+                        "Cautionary note: directional concentration is elevated. "
+                        "Use this as an operator warning in output interpretation; "
+                        "do not auto-downweight decisions that are already confirmed by other signal parameters."
+                    )
+                    lines.append("")
+
+    return lines
+
+
+def _section_gate_suppression_diagnostics(day_df: pd.DataFrame) -> list[str]:
+    status = day_df.get("trade_status", pd.Series(index=day_df.index, dtype=str)).astype(str).str.upper()
+    directional = _directional_rows(day_df)
+    directional_n = len(directional)
+    directional_trade = int((directional.get("trade_status", pd.Series(index=directional.index, dtype=str)).astype(str).str.upper() == "TRADE").sum())
+    directional_suppressed = max(directional_n - directional_trade, 0)
+    suppression_rate = (directional_suppressed / directional_n) if directional_n > 0 else None
+
+    lines = [
+        "## 5. Gate Suppression Diagnostics",
+        "",
+        "*This section quantifies how often directional signals were suppressed by routing and quality gates. "
+        "It is a signal-governance diagnostic, not an execution metric. The focus is directional coverage, "
+        "gate concentration, and policy-side caution flags.*",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+        f"| Directional signals | {directional_n} |",
+        f"| Directional routed to TRADE | {directional_trade} |",
+        f"| Directional suppressed (non-TRADE) | {directional_suppressed} |",
+        f"| Suppression rate on directional signals | {_pct(suppression_rate)} |" if suppression_rate is not None else "| Suppression rate on directional signals | — |",
+        "",
+    ]
+
+    if not directional.empty:
+        reason_col = "no_trade_reason_code" if "no_trade_reason_code" in directional.columns else None
+        if reason_col:
+            reasons = directional.loc[
+                directional.get("trade_status", pd.Series(index=directional.index, dtype=str)).astype(str).str.upper() != "TRADE",
+                reason_col,
+            ].dropna()
+            if not reasons.empty:
+                reason_counts = reasons.astype(str).value_counts().head(5)
+                lines.extend([
+                    "Top suppression reasons (directional non-TRADE rows):",
+                    "",
+                    "| Reason Code | Count |",
+                    "| --- | ---: |",
+                ])
+                for code, cnt in reason_counts.items():
+                    lines.append(f"| {code} | {int(cnt)} |")
+                lines.append("")
+
+        if "provider_health_status" in directional.columns or "data_quality_status" in directional.columns:
+            ph = directional.get("provider_health_status", pd.Series(index=directional.index, dtype=str)).fillna("UNKNOWN").astype(str)
+            dq = directional.get("data_quality_status", pd.Series(index=directional.index, dtype=str)).fillna("UNKNOWN").astype(str)
+            grouped = (
+                pd.DataFrame({"provider_health_status": ph, "data_quality_status": dq})
+                .groupby(["provider_health_status", "data_quality_status"], dropna=False)
+                .size()
+                .reset_index(name="count")
+                .sort_values("count", ascending=False)
+                .head(8)
+            )
+            if not grouped.empty:
+                lines.extend([
+                    "Gate concentration by provider/data-quality state (directional rows):",
+                    "",
+                    "| Provider Health | Data Quality | Count | Share of Directional |",
+                    "| --- | --- | ---: | ---: |",
+                ])
+                for _, row in grouped.iterrows():
+                    share = (float(row["count"]) / directional_n) if directional_n > 0 else None
+                    lines.append(
+                        f"| {row['provider_health_status']} | {row['data_quality_status']} | {int(row['count'])} | {_pct(share)} |"
+                    )
+                lines.append("")
 
     return lines
 
@@ -1024,6 +1425,40 @@ def _section_research_actions(day_df: pd.DataFrame) -> list[str]:
                 actions.append(f"**Recalibrate probability model** — calibration gap of {_r(gap, 2)} "
                                f"exceeds 15% threshold.")
 
+    # Suppression-governance KPI
+    if not dir_rows.empty and "trade_status" in dir_rows.columns:
+        dir_status = dir_rows["trade_status"].astype(str).str.upper()
+        dir_trade = int((dir_status == "TRADE").sum())
+        dir_total = int(len(dir_rows))
+        if dir_total > 0:
+            suppression_rate = (dir_total - dir_trade) / dir_total
+            if suppression_rate > 0.70:
+                actions.append(
+                    f"**Review caution-gate suppression** — directional suppression rate is {_pct(suppression_rate)}. "
+                    "Track suppression by gate reason and provider/data-quality state to recalibrate thresholds."
+                )
+
+    # Directional concentration caution (no auto-downweighting)
+    if "direction" in dir_rows.columns and not dir_rows.empty:
+        dir_counts = dir_rows["direction"].value_counts()
+        if not dir_counts.empty:
+            dominant_share = float(dir_counts.iloc[0]) / float(len(dir_rows))
+            dominant_direction = str(dir_counts.index[0])
+            if dominant_share >= 0.85:
+                actions.append(
+                    f"**Add directional concentration caution note** — {dominant_direction} share is {_pct(dominant_share)}. "
+                    "Emit a cautionary output note for operator interpretation, while preserving full-parameter confirmation logic."
+                )
+
+    # Regime-segmented calibration
+    if "macro_regime" in day_df.columns and "correct_60m" in day_df.columns:
+        unique_regimes = day_df["macro_regime"].dropna().astype(str).nunique()
+        if unique_regimes >= 2:
+            actions.append(
+                "**Train segmented probability calibration** — fit regime-aware calibrators "
+                "(for example by macro_regime or gamma_regime) with global fallback for sparse segments."
+            )
+
     # Score monotonicity
     cs = _numeric(day_df.get("composite_signal_score", pd.Series()))
     if cs.notna().any() and cs.std() < 5:
@@ -1042,9 +1477,9 @@ def _section_research_actions(day_df: pd.DataFrame) -> list[str]:
     signed_close = _numeric(dir_rows.get("signed_return_session_close_bps", pd.Series()))
     if signed_60.notna().any() and signed_close.notna().any():
         if signed_60.mean() > 0 and signed_close.mean() < 0:
-            actions.append("**Investigate late-session reversals** — signals profitable at 60m "
-                           "but negative by close. Consider shorter holding periods or "
-                           "session-time-weighted exit logic.")
+            actions.append("**Investigate late-session reversals** — directional edge at 60m "
+                           "reversed by close. Evaluate horizon-specific signal quality policy and "
+                           "time-decay aware diagnostics.")
 
     if not actions:
         actions.append("No urgent research actions identified. Continue data collection and periodic review.")
@@ -1444,8 +1879,9 @@ def _section_feature_variance(day_df: pd.DataFrame) -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Data-driven session summaries — one per section, always present in reports.
-# When --narrative is used and an LLM is available, these are replaced by
-# AI-generated commentary; otherwise the rule-based version appears.
+# When --narrative is used and an LLM is available, an additional AI-generated
+# interpretation may be appended, but the rule-based summary remains the source
+# of truth.
 # ---------------------------------------------------------------------------
 
 
@@ -1517,8 +1953,8 @@ def _summarize_market_structure(day_df: pd.DataFrame) -> str:
         dealer_val = day_df["dealer_position"].mode().iloc[0] if not day_df["dealer_position"].mode().empty else "unknown"
         parts.append(f"dealers were {dealer_val}")
     if "day_high" in day_df.columns and "day_low" in day_df.columns:
-        high = _numeric(day_df["day_high"]).max()
-        low = _numeric(day_df["day_low"]).min()
+        high = _positive_numeric(day_df["day_high"]).max()
+        low = _positive_numeric(day_df["day_low"]).min()
         if pd.notna(high) and pd.notna(low):
             parts.append(f"session range {_r(high - low, 1)} pts ({_r(low, 1)}–{_r(high, 1)})")
     if gamma_val and "POSITIVE" in str(gamma_val).upper():
@@ -1575,10 +2011,42 @@ def _summarize_signal_generation(day_df: pd.DataFrame) -> str:
     if len(dir_rows) > 0 and dir_rows["direction"].nunique() == 1:
         uni_note = (
             " Unidirectional signal concentration — all directional signals pointed in the same "
-            "direction, indicating dominant order-flow imbalance. While this can reflect genuine "
-            "market conviction, it also reduces diversification of the signal set."
+            "direction, indicating dominant order-flow imbalance. Treat this as a cautionary "
+            "interpretation flag in output review; keep final routing dependent on the full "
+            "parameter stack rather than automatic directional downweighting."
         )
     return f"Of {total} snapshots, {trade} ({ratio}) qualified as trades.{dir_breakdown} {sel_note}{uni_note}"
+
+
+def _summarize_gate_suppression(day_df: pd.DataFrame) -> str:
+    directional = _directional_rows(day_df)
+    if directional.empty:
+        return "No directional rows available for gate suppression diagnostics."
+
+    status = directional.get("trade_status", pd.Series(index=directional.index, dtype=str)).astype(str).str.upper()
+    trade_n = int((status == "TRADE").sum())
+    total_n = int(len(directional))
+    suppressed_n = max(total_n - trade_n, 0)
+    suppression_rate = suppressed_n / total_n if total_n > 0 else None
+
+    note = ""
+    if "direction" in directional.columns and total_n > 0:
+        counts = directional["direction"].value_counts()
+        if not counts.empty:
+            dom_dir = str(counts.index[0])
+            dom_share = float(counts.iloc[0]) / float(total_n)
+            if dom_share >= 0.85:
+                note = (
+                    f" Directional concentration is high ({dom_dir} at {_pct(dom_share)}), "
+                    "so include a cautionary note in operator output while preserving full-parameter "
+                    "confirmation logic."
+                )
+
+    return (
+        f"Directional suppression rate was {_pct(suppression_rate)} ({suppressed_n}/{total_n}). "
+        "Use this KPI for gate-governance tracking and calibrate caution gates when suppression "
+        "remains elevated across repeated sessions." + note
+    )
 
 
 def _summarize_horizon_performance(day_df: pd.DataFrame) -> str:
@@ -1633,6 +2101,13 @@ def _summarize_alpha_decay(day_df: pd.DataFrame) -> str:
     if peak_val is None:
         return "Insufficient horizon return data for alpha decay analysis."
     close_val = _numeric(dir_rows.get("signed_return_session_close_bps", pd.Series())).mean()
+    if peak_val <= 0:
+        return (
+            f"No positive alpha horizon identified. Best horizon was {peak_label} "
+            f"({_r(peak_val, 1)} bps) and session close was {_r(close_val, 1)} bps. "
+            f"Realized edge remained negative across measured horizons, so entry criteria, "
+            f"signal direction filters, or holding-period assumptions should be reviewed."
+        )
     reversal = "reversed to negative" if pd.notna(close_val) and close_val < 0 and peak_val > 0 else "remained positive"
     if pd.notna(close_val) and close_val < 0 and peak_val > 0:
         note = (
@@ -1877,22 +2352,15 @@ def _summarize_probability_calibration(day_df: pd.DataFrame) -> str:
         return (
             f"Probability well-calibrated: predicted {_pct(pred)} vs realized {_pct(real)} "
             f"(gap: {_r(abs(gap), 3)}). The model's probability estimates closely match observed "
-            f"outcomes, meaning they can be reliably used for position sizing, risk assessment, "
-            f"and expected-value calculations. This calibration quality indicates the model's "
-            f"uncertainty estimates are trustworthy."
+            f"outcomes, indicating reliable uncertainty estimates for signal-quality interpretation."
         )
     cal_note = (
-        "The model is overconfident — it systematically overestimates the probability of favorable "
-        "outcomes. This means it 'believes' its signals are more reliable than they actually are, "
-        "which creates risk of over-allocation (taking positions that are too large relative to "
-        "actual edge). Probability estimates should be deflated or the model retrained with "
-        "calibration-aware loss functions."
+        "The model is overconfident — it systematically overestimates probability quality. "
+        "Probability estimates should be deflated or retrained with calibration-aware loss functions."
         if gap > 0
-        else "The model is underconfident — it systematically underestimates its own predictive skill. "
-        "Realized hit rates exceed predicted probabilities, meaning alpha is being left on the table. "
-        "The model has more skill than it 'believes', and position sizes could be increased to "
-        "capture the full available edge. Consider recalibrating with isotonic regression or "
-        "Platt scaling."
+        else "The model is underconfident — it systematically underestimates predictive skill. "
+        "Realized hit rates exceed predicted probabilities, so calibration mapping should be updated "
+        "(for example isotonic regression or Platt scaling)."
     )
     return (
         f"Predicted {_pct(pred)} vs realized {_pct(real)} — {severity} {direction} "
@@ -1917,17 +2385,11 @@ def _summarize_reversal(day_df: pd.DataFrame) -> str:
                 rate = flip.mean()
                 parts.append(f"sign-flip rate {_pct(rate)}")
         note = (
-            f"Substantial profit erosion ({_r(decay, 1)} bps from peak to close) — a significant "
-            f"portion of the signal's initial favorable excursion was surrendered by session end. "
-            f"This pattern suggests the alpha source is transient, and time-based exits at or near "
-            f"the peak horizon would capture substantially more profit. Late-session profit erosion "
-            f"often results from institutional rebalancing flows, mean-reversion forces, or the "
-            f"gradual incorporation of the signal's information by other market participants."
+            f"Substantial peak-to-close erosion ({_r(decay, 1)} bps) indicates transient signal edge "
+            f"where early favorable excursion was not sustained into close."
             if decay > 20
-            else "Moderate peak-to-close decay — the initial favorable move was largely sustained "
-            "through session close. This indicates the signal's alpha source is relatively durable "
-            "and the market did not significantly reverse the initial directional move. Standard "
-            "holding periods through session close remain viable."
+            else "Moderate peak-to-close decay indicates the initial favorable move was largely "
+            "sustained through session close, consistent with a more durable signal profile."
         )
         return f"Reversal diagnostics: {', '.join(parts)}. {note}"
     return "Insufficient data for reversal analysis."
@@ -1963,10 +2425,9 @@ def _summarize_regime_performance(day_df: pd.DataFrame) -> str:
         )
     return (
         f"Best regime: {best[0]} at {_pct(best[1])} (N={best[2]}). "
-        f"Regime-conditional analysis reveals that signal quality varies meaningfully across market "
-        f"environments. Consider increasing signal weight and position sizing under {best[0]} "
-        f"conditions, while reducing exposure in regimes with sub-50% hit rates. This regime-aware "
-        f"approach exploits the model's strengths while limiting drawdowns in unfavorable conditions."
+        f"Regime-conditional analysis reveals meaningful variation in signal quality across market "
+        f"environments. Emphasize diagnostics from {best[0]} and de-emphasize regimes with sub-50% "
+        f"hit rates when assessing model robustness."
     )
 
 
@@ -2062,6 +2523,16 @@ def _summarize_research_actions(day_df: pd.DataFrame) -> str:
             "diversity, the model cannot learn regime-specific behavior patterns. Prioritize data "
             "collection across different market conditions."
         )
+    prob_col = "hybrid_move_probability" if "hybrid_move_probability" in day_df.columns else "move_probability"
+    if prob_col in day_df.columns and "correct_60m" in day_df.columns:
+        pred = _numeric(day_df[prob_col]).mean()
+        real = _numeric(day_df["correct_60m"]).mean()
+        if pd.notna(pred) and pd.notna(real) and abs(pred - real) > 0.15:
+            actions.append(
+                f"Recalibrate probability model — predicted probability {_pct(pred)} diverges from "
+                f"realized hit rate {_pct(real)} by {_r(abs(pred - real), 3)}. This is large enough "
+                f"to distort sizing and expected-value estimates."
+            )
     signed_60 = _numeric(dir_rows.get("signed_return_60m_bps", pd.Series()))
     close = _numeric(dir_rows.get("signed_return_session_close_bps", pd.Series()))
     if signed_60.notna().any() and close.notna().any() and signed_60.mean() > 0 and close.mean() < 0:
@@ -2070,6 +2541,11 @@ def _summarize_research_actions(day_df: pd.DataFrame) -> str:
             "session close. Investigate time-decay exit strategies (closing positions at the peak "
             "alpha horizon) or trailing-stop mechanisms that lock in intermediate profits before "
             "the late-session reversal erodes gains."
+        )
+    elif close.notna().any() and close.mean() < 0:
+        actions.append(
+            f"Session-close edge remains negative ({_r(close.mean(), 1)} bps average). Tighten entry "
+            f"criteria or shorten default holding periods until cumulative close-out performance turns positive."
         )
     if not actions:
         actions.append(
@@ -2260,6 +2736,11 @@ SECTION_THEORY_CONTEXT: dict[str, str] = {
         "concentration suggests dominant order-flow imbalance and trend persistence. "
         "Reference: information asymmetry theory, order-flow analysis."
     ),
+    "Gate Suppression Diagnostics": (
+        "Suppression diagnostics quantify policy-gate concentration and directional coverage loss. "
+        "Persistent high suppression under specific provider-health/data-quality states indicates "
+        "threshold miscalibration rather than directional-model failure."
+    ),
     "Horizon Performance": (
         "The optimal holding horizon reveals the characteristic time-scale of the alpha "
         "source: microstructure alpha (order-flow) decays in minutes; event-driven alpha "
@@ -2396,21 +2877,43 @@ def _append_summary(lines: list[str], section_title: str, section_lines: list[st
                     fallback_summary: str, narrative: bool) -> None:
     """Append a data-driven summary to the section.
 
-    When *narrative* is True and an LLM is reachable, use AI-generated
-    commentary with theory context.  Otherwise fall back to the rule-based summary.
+    The rule-based summary is always emitted as the authoritative source of
+    truth because it is computed directly from the report data.  When
+    *narrative* is True and an LLM is reachable, append an additional
+    interpretation paragraph that is explicitly grounded to the computed
+    summary and the section tables.
     """
-    if narrative:
-        theory = SECTION_THEORY_CONTEXT.get(section_title)
-        ai_text = _ai_narrative(
-            section_title, "\n".join(section_lines), theory_context=theory)
-        if ai_text:
-            lines.append(f"> **Summary:** {ai_text}")
-            lines.append("")
-            return
-    # Rule-based fallback (always available)
     if fallback_summary:
         lines.append(f"> **Summary:** {fallback_summary}")
         lines.append("")
+
+    if narrative:
+        theory = SECTION_THEORY_CONTEXT.get(section_title)
+        structured_payload = _build_structured_section_payload(
+            section_title,
+            section_lines,
+            fallback_summary,
+        )
+        ai_text = _ai_narrative(
+            section_title,
+            theory_context=theory,
+            ground_truth_summary=fallback_summary,
+            structured_metrics=structured_payload,
+        )
+        if ai_text:
+            if _interpretation_conflicts_with_kpis(
+                section_title,
+                ai_text,
+                structured_payload,
+                fallback_summary,
+            ):
+                logger.warning(
+                    "Suppressed AI interpretation for section '%s' due to KPI consistency conflict.",
+                    section_title,
+                )
+            else:
+                lines.append(f"> **Interpretation:** {ai_text}")
+                lines.append("")
 
 
 def generate_daily_report(
@@ -2482,8 +2985,10 @@ def generate_daily_report(
         logger.warning("No signals found for %s — generating report with empty data.", report_date)
 
     # In cumulative mode the analysis data is the full dataset.
+    # In daily mode, enforce strict day-only scope across *all* sections.
     is_cumulative = mode == "cumulative"
     analysis_df = df if is_cumulative else day_df
+    scope_df = df if is_cumulative else analysis_df
 
     # Determine date range for cumulative reports
     if is_cumulative and "signal_timestamp" in df.columns:
@@ -2550,15 +3055,16 @@ def generate_daily_report(
 
     # All sections — each with a data-driven summary (rule-based fallback
     # always present; LLM-generated when --narrative is used and available).
-    # In cumulative mode, analysis_df (== df) is passed everywhere day_df
-    # would normally go so that every metric spans the full dataset.
+    # Sections that display a "Full Dataset | Today" dual column always receive
+    # the real full df and the real day_df so that the two columns are distinct
+    # in both daily and cumulative modes.
     _sections = [
         ("Executive Summary",
-         _section_executive_summary(df, analysis_df, report_date),
-         _summarize_executive(df, analysis_df, report_date)),
+         _section_executive_summary(scope_df, analysis_df, report_date),
+         _summarize_executive(scope_df, analysis_df, report_date)),
         ("Signal Dataset Summary",
-         _section_dataset_summary(df, analysis_df),
-         _summarize_dataset_summary(df, analysis_df)),
+         _section_dataset_summary(df, day_df),
+         _summarize_dataset_summary(df, day_df)),
         ("Macroeconomic Environment",
          _section_macro_environment(analysis_df),
          _summarize_macro(analysis_df)),
@@ -2568,6 +3074,9 @@ def generate_daily_report(
         ("Signal Generation Summary",
          _section_signal_generation(analysis_df),
          _summarize_signal_generation(analysis_df)),
+        ("Gate Suppression Diagnostics",
+         _section_gate_suppression_diagnostics(analysis_df),
+         _summarize_gate_suppression(analysis_df)),
         ("Horizon Performance",
          _section_horizon_performance(analysis_df),
          _summarize_horizon_performance(analysis_df)),
@@ -2602,14 +3111,14 @@ def generate_daily_report(
          _section_regime_performance(analysis_df),
          _summarize_regime_performance(analysis_df)),
         ("Information Coefficient",
-         _section_information_coefficient(df, analysis_df),
-         _summarize_information_coefficient(df, analysis_df)),
+         _section_information_coefficient(df, day_df),
+         _summarize_information_coefficient(df, day_df)),
         ("Signal Edge Distribution",
          _section_edge_distribution(analysis_df),
          _summarize_edge_distribution(analysis_df)),
         ("Signal Stability Metrics",
-         _section_signal_stability(df, analysis_df),
-         _summarize_signal_stability(df, analysis_df)),
+         _section_signal_stability(df, day_df),
+         _summarize_signal_stability(df, day_df)),
         ("Exit Horizon Diagnostic",
          _section_exit_horizon(analysis_df),
          _summarize_exit_horizon(analysis_df)),

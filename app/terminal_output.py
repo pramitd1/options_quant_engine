@@ -29,6 +29,7 @@ from pathlib import Path
 from analytics.greeks_engine import compute_option_greeks, _parse_expiry_years
 from analytics.signal_confidence import compute_signal_confidence
 from engine.runtime_metadata import TRADER_VIEW_KEYS
+from utils.consistency_checks import collect_trade_consistency_findings
 from utils.regime_normalization import canonical_gamma_regime
 
 
@@ -386,6 +387,38 @@ def _print_section(title, fields):
         if value is None:
             continue
         print(f"{key:26}: {_fmt(value)}")
+
+
+def _collect_compact_consistency_checks(trade, *, call_oi=None, put_oi=None):
+    """Return compact-mode consistency warnings assembled from displayed fields."""
+    if not isinstance(trade, dict):
+        return []
+
+    findings = [
+        str(item.get("message"))
+        for item in collect_trade_consistency_findings(trade)
+        if isinstance(item, dict) and item.get("message")
+    ]
+
+    oi_rows = list(call_oi or []) + list(put_oi or [])
+    if oi_rows:
+        try:
+            all_flat = all(abs(float(row[2] or 0.0)) < 1e-9 for row in oi_rows if len(row) > 2)
+        except Exception:
+            all_flat = False
+
+        # Tuple shape from _resolve_top_oi_levels:
+        # (level, oi, chg_oi, inference, uses_snapshot_proxy, confidence, reason_code, ...)
+        all_proxy_only = all(len(row) > 6 and str(row[6]).upper().strip() == "PROXY_ONLY" for row in oi_rows)
+        all_oi_flat = all(len(row) > 3 and str(row[3]).upper().strip() == "OI_FLAT" for row in oi_rows)
+        all_snapshot_proxy = all(len(row) > 4 and bool(row[4]) for row in oi_rows)
+
+        if all_flat and (all_snapshot_proxy or (all_proxy_only and all_oi_flat)):
+            findings.append(
+                "all top OI deltas are flat proxy signals; directional OI inference confidence is limited"
+            )
+
+    return findings
 
 
 def _build_trade_for_oi_inference(*, trade, result, spot_summary):
@@ -2900,6 +2933,23 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         risk_fields["no_trade_reason"] = no_trade
     _print_section("RISK SUMMARY", risk_fields)
 
+    # ── 6b. CONSISTENCY CHECK ───────────────────────────────────────────
+    consistency_findings = _collect_compact_consistency_checks(
+        trade,
+        call_oi=_top_call_oi_levels,
+        put_oi=_top_put_oi_levels,
+    )
+    _print_section(
+        "CONSISTENCY CHECK",
+        {
+            "status": "WARN" if consistency_findings else "PASS",
+            "issues": len(consistency_findings),
+        },
+    )
+    if consistency_findings:
+        for finding in consistency_findings:
+            print(f"  • {finding}")
+
     # ── 7. BREAKOUT PROBABILITY (POINTS) ───────────────────────────────
     breakout_rows, breakout_has_direction = _compute_breakout_probability_rows(trade)
     if breakout_rows:
@@ -3106,6 +3156,8 @@ _DEALER_DASHBOARD_KEYS = [
     ("Rho Exposure", "rho_exposure"),
     ("Vanna Exposure", "vanna_exposure"),
     ("Charm Exposure", "charm_exposure"),
+    ("Greeks Data Warning", "greeks_data_warning"),
+    ("Missing Greek Columns", "missing_greek_columns"),
     ("Gamma Flip Level", "gamma_flip"),
     ("Gamma Flip Drift", "gamma_flip_drift"),
     ("Spot vs Flip", "spot_vs_flip"),
@@ -3197,6 +3249,10 @@ _DIAGNOSTIC_KEYS = [
     "option_efficiency_features",
     "no_trade_reason_details",
     "blocked_by",
+    "live_calibration_gate",
+    "live_directional_gate",
+    "greeks_data_warning",
+    "missing_greek_columns",
     "missing_confirmations",
     "signal_promotion_requirements",
     "setup_upgrade_path",
@@ -3407,7 +3463,21 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         "overnight_hold_allowed": global_risk_state.get("overnight_hold_allowed"),
         "overnight_hold_reason": global_risk_state.get("overnight_hold_reason"),
         "overnight_risk_penalty": global_risk_state.get("overnight_risk_penalty"),
-        "global_risk_adjustment_score": global_risk_state.get("global_risk_adjustment_score"),
+        "global_risk_adjustment_score": (
+            trade.get("global_risk_adjustment_score")
+            if isinstance(trade, dict) and trade.get("global_risk_adjustment_score") is not None
+            else global_risk_state.get("global_risk_adjustment_score")
+        ),
+        "global_risk_base_adjustment_score": (
+            ((trade.get("scoring_breakdown") or {}).get("global_risk_base_adjustment_score"))
+            if isinstance(trade, dict)
+            else None
+        ),
+        "global_risk_feature_adjustment_score": (
+            ((trade.get("scoring_breakdown") or {}).get("global_risk_feature_adjustment_score"))
+            if isinstance(trade, dict)
+            else None
+        ),
         "global_risk_state_reasons": trade.get("global_risk_state_reasons") if trade else global_risk_state.get("global_risk_reasons"),
         "global_risk_overlay_reasons": trade.get("global_risk_overlay_reasons") if trade else None,
     })

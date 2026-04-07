@@ -124,7 +124,15 @@ def _summarize_market_gamma(market_gex):
     return market_gex
 
 
-def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=None):
+def _collect_market_state(
+    df,
+    spot,
+    symbol=None,
+    prev_df=None,
+    days_to_expiry=None,
+    india_vix_level=None,
+    fallback_iv=None,
+):
     """
     Purpose:
         Collect the cross-analytic market state for the current option-chain
@@ -205,6 +213,8 @@ def _collect_market_state(df, spot, symbol=None, prev_df=None, days_to_expiry=No
         volatility_regime_mod,
         ["detect_volatility_regime", "volatility_regime"],
         df,
+        india_vix_level=india_vix_level,
+        fallback_iv=fallback_iv,
         default="UNKNOWN",
     )
 

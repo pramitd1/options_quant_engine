@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from engine.signal_engine import _build_decision_explainability
+from engine.signal_engine import _build_decision_explainability, _collect_neutralization_states
 
 
 def test_directionless_two_sided_setup_is_explicitly_ambiguous_watchlist():
@@ -248,3 +248,35 @@ def test_preserves_preexisting_no_trade_reason_code_and_reason_from_payload():
 
     assert explainability["no_trade_reason_code"] == "UPSTREAM_REASON_CODE"
     assert explainability["no_trade_reason"] == "Upstream policy vetoed this trade"
+
+
+def test_option_efficiency_neutralization_uses_feature_state_not_payload_field():
+    payload = {
+        "expected_move_points": None,
+        "option_efficiency_features": {
+            "neutral_fallback": False,
+            "expected_move_quality": "DIRECT",
+            "expected_move_points": 142.7,
+        },
+        "option_efficiency_diagnostics": {"warnings": []},
+        "option_efficiency_reasons": ["option_efficiency_balanced"],
+    }
+
+    neutralization = _collect_neutralization_states(payload)
+
+    assert neutralization["option_efficiency_status"] == "AVAILABLE"
+    assert neutralization["option_efficiency_reason"] == "features_available"
+
+
+def test_option_efficiency_neutralization_marks_missing_features_unavailable():
+    payload = {
+        "expected_move_points": 115.0,
+        "option_efficiency_features": {},
+        "option_efficiency_diagnostics": {"warnings": []},
+        "option_efficiency_reasons": [],
+    }
+
+    neutralization = _collect_neutralization_states(payload)
+
+    assert neutralization["option_efficiency_status"] == "UNAVAILABLE_NEUTRALIZED"
+    assert neutralization["option_efficiency_reason"] == "option_efficiency_features_missing"

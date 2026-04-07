@@ -1,0 +1,42 @@
+{
+  "groups": {
+    "RISK_OFF": {
+      "bin_edges": [
+        0.0,
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+        50.0,
+        60.0,
+        70.0,
+        80.0,
+        90.0,
+        100.0
+      ],
+      "calibration_mapping": {
+        "15": 0.5919245407909979,
+        "25": 0.5919245407909979,
+        "35": 0.5919245407909979,
+        "45": 0.5919245407909979,
+        "55": 0.5919245407909979,
+        "65": 0.5919245407909979,
+        "75": 0.5919245407909979,
+        "85": 0.5919245407909979
+      },
+      "config": {
+        "method": "isotonic",
+        "n_bins": 10
+      },
+      "method": "isotonic",
+      "n_bins": 10
+    }
+  },
+  "meta": {
+    "fallback_global_calibrator": "/Users/pramitdutta/Desktop/Quant Engines/options_quant_engine/models_store/direction_probability_calibrator.json",
+    "method": "isotonic",
+    "min_group_samples": 250,
+    "n_bins": 10,
+    "regime_column": "macro_regime"
+  }
+}

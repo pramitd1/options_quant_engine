@@ -21,9 +21,11 @@ Configuration (via .env):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Optional, Tuple
+import re
+from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +53,37 @@ Your role:
 - Keep each commentary to 3-5 sentences. Be dense with insight and theory.
 - If the data is insufficient or shows no clear pattern, say so directly.
 - Never fabricate numbers — only reference data explicitly provided to you.
+- Treat the supplied Ground Truth Summary as authoritative. Do not contradict it.
+- Do not introduce any numeric value that does not already appear in the Data or
+    Ground Truth Summary.
 - When theoretical context is provided, use it as a guide but add your own \
   analytical perspective based on the data.
 """
+
+
+_NUMERIC_TOKEN_RE = re.compile(r"(?<!\w)[+-]?\d+(?:\.\d+)?%?")
+
+
+def _extract_numeric_tokens(text: str) -> set[str]:
+    return set(_NUMERIC_TOKEN_RE.findall(text or ""))
+
+
+def _narrative_uses_only_supported_numbers(ai_text: str, allowed_text: str) -> bool:
+    """Reject commentary that invents numeric facts not present in source data.
+
+    This is a lightweight guardrail rather than a full semantic verifier. It
+    prevents the most common failure mode in LLM-authored report prose: quoting
+    unsupported hit rates, returns, or counts that are not in the table or
+    rule-based summary.
+
+    Numeric tokens preserve explicit sign so "-11.0" and "11.0" are treated
+    as different claims.
+    """
+    ai_tokens = _extract_numeric_tokens(ai_text)
+    if not ai_tokens:
+        return True
+    allowed_tokens = _extract_numeric_tokens(allowed_text)
+    return ai_tokens.issubset(allowed_tokens)
 
 # Cache the resolved provider so we don't probe on every section call.
 _cached_provider: Optional[Tuple[object, str, str]] = None  # (client, model, provider_name)
@@ -132,9 +162,10 @@ def _resolve_provider():
 
 def generate_narrative(
     section_title: str,
-    section_data: str,
     model: Optional[str] = None,
     theory_context: Optional[str] = None,
+    ground_truth_summary: Optional[str] = None,
+    structured_metrics: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
     """Generate an AI narrative paragraph for a report section.
 
@@ -144,13 +175,15 @@ def generate_narrative(
     ----------
     section_title : str
         The section heading (e.g., "Horizon Performance").
-    section_data : str
-        The markdown content of the section (tables, bullet points, etc.).
     model : str, optional
         Override the model name.
     theory_context : str, optional
         Theoretical framework hint for this section (e.g., which quant
         finance theories apply).  Helps the LLM ground its commentary.
+    structured_metrics : dict, optional
+        Structured JSON-friendly metrics payload extracted from the section.
+        This is the primary input path and is preferred over raw markdown
+        because it reduces formatting noise and qualitative drift.
 
     Returns
     -------
@@ -173,9 +206,27 @@ def generate_narrative(
             "from this theoretical perspective.\n"
         )
 
+    summary_block = ""
+    if ground_truth_summary:
+        summary_block = (
+            "\nGround Truth Summary (authoritative, computed directly from the data):\n"
+            f"{ground_truth_summary}\n\n"
+            "Your commentary must remain fully consistent with this summary.\n"
+        )
+
+    metrics_block = ""
+    if structured_metrics:
+        metrics_block = (
+            "\nStructured Metrics Payload (authoritative, machine-extracted from the report section):\n"
+            f"{json.dumps(structured_metrics, indent=2, ensure_ascii=True, sort_keys=True)}\n\n"
+            "Use this structured payload as the primary evidence base. Do not infer "
+            "new metrics from formatting. Only reason from the fields explicitly provided.\n"
+        )
+
     user_prompt = (
         f"Section: {section_title}\n\n"
-        f"Data:\n{section_data}\n"
+        f"{metrics_block}"
+        f"{summary_block}"
         f"{theory_block}\n"
         "Write a concise analytical commentary (3-5 sentences) interpreting "
         "this data for the daily signal research report. Ground your analysis "
@@ -196,7 +247,15 @@ def generate_narrative(
         )
         content = response.choices[0].message.content
         if content:
-            return content.strip()
+            content = content.strip()
+            allowed_text = f"{json.dumps(structured_metrics or {}, ensure_ascii=True)}\n{ground_truth_summary or ''}"
+            if _narrative_uses_only_supported_numbers(content, allowed_text):
+                return content
+            logger.warning(
+                "AI narrative rejected for '%s': introduced unsupported numeric claims.",
+                section_title,
+            )
+            return None
         return None
     except Exception as exc:
         logger.warning("AI narrative failed for '%s' via %s: %s", section_title, provider_name, type(exc).__name__)
@@ -234,7 +293,15 @@ def _fallback_to_ollama(section_title: str, user_prompt: str) -> Optional[str]:
             max_tokens=300,
         )
         content = response.choices[0].message.content
-        return content.strip() if content else None
+        if content:
+            content = content.strip()
+            if _narrative_uses_only_supported_numbers(content, user_prompt):
+                return content
+            logger.warning(
+                "Ollama narrative rejected for '%s': introduced unsupported numeric claims.",
+                section_title,
+            )
+        return None
     except Exception as exc:
         logger.warning("Ollama fallback also failed for '%s': %s", section_title, exc)
         return None

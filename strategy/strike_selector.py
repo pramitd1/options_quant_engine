@@ -850,7 +850,9 @@ def rank_strike_candidates(
     gamma_flip_distance_pct=None,
     dealer_gamma_exposure=None,
     atm_iv=None,
+    india_vix_level=None,
     days_to_expiry=None,
+    max_pain=None,
     vol_surface_regime=None,
     volatility_shock_score=None,
     directional_call_probability=None,
@@ -1135,10 +1137,12 @@ def rank_strike_candidates(
             return None
 
         atm_iv_pct = _normalize_iv_pct(atm_iv)
-        if atm_iv_pct is None and iv_anchor_points:
-            atm_iv_pct = float(np.median([pt[1] for pt in iv_anchor_points]))
         if atm_iv_pct is None:
-            atm_iv_pct = 80.0
+            atm_iv_pct = _normalize_iv_pct(india_vix_level)
+        if atm_iv_pct is None and iv_anchor_points:
+            atm_iv_pct = float(np.median([_normalize_iv_pct(pt[1]) for pt in iv_anchor_points if _normalize_iv_pct(pt[1]) is not None]))
+        if atm_iv_pct is None:
+            atm_iv_pct = 25.0
 
         distance_ratio = abs(float(target_strike) - float(spot_safe)) / max(float(spot_safe), 1e-6)
         smile_mult = 1.0 + min(distance_ratio * 8.0, 0.35)
@@ -1149,7 +1153,7 @@ def rank_strike_candidates(
             skew_mult = 1.05
 
         proxy_iv = atm_iv_pct * smile_mult * skew_mult
-        return max(5.0, min(300.0, proxy_iv))
+        return max(5.0, min(150.0, proxy_iv))
 
     def _delta_from_moneyness_proxy(target_strike: float):
         if spot_safe is None or spot_safe <= 0:
@@ -1231,6 +1235,18 @@ def rank_strike_candidates(
         if strike is None:
             continue
 
+        max_pain_distance_pts = None
+        max_pain_proximity_bucket = "UNKNOWN"
+        max_pain_value = _safe_float(max_pain, None)
+        if max_pain_value is not None:
+            max_pain_distance_pts = round(abs(float(strike) - float(max_pain_value)), 2)
+            if max_pain_distance_pts <= 25:
+                max_pain_proximity_bucket = "AT_MAX_PAIN"
+            elif max_pain_distance_pts <= 100:
+                max_pain_proximity_bucket = "NEAR_MAX_PAIN"
+            else:
+                max_pain_proximity_bucket = "AWAY_FROM_MAX_PAIN"
+
         premium = _safe_float(_row_get("_normalized_last_price"), _safe_float(_row_get("lastPrice"), 0.0))
         volume = _safe_float(_row_get("_normalized_volume"), _safe_float(_row_get("totalTradedVolume"), _row_get("VOLUME", 0.0)))
         oi = _safe_float(_row_get("_normalized_open_interest"), _safe_float(_row_get("openInterest"), _row_get("OPEN_INT", 0.0)))
@@ -1269,6 +1285,8 @@ def rank_strike_candidates(
             "gamma_cluster_score": round(_safe_float(_row_get("_gamma_cluster_score", 0.0), 0.0), 2),
             "iv_score": round(_safe_float(_row_get("_iv_score", 0.0), 0.0), 2),
             "ba_spread_score": round(_safe_float(_row_get("_ba_spread_score", 0.0), 0.0), 2),
+            "max_pain_distance_pts": max_pain_distance_pts,
+            "max_pain_proximity_bucket": max_pain_proximity_bucket,
         }
 
         hook_payload = {}
@@ -1356,6 +1374,8 @@ def rank_strike_candidates(
             "iv_is_proxy": bool(iv_proxy_source),
             "delta": round(delta_raw, 4) if delta_raw is not None else None,
             "delta_is_proxy": bool(delta_proxy_source),
+            "max_pain_distance_pts": max_pain_distance_pts,
+            "max_pain_proximity_bucket": max_pain_proximity_bucket,
             "capital_per_lot": round(premium * lot_size, 2) if lot_size is not None else None,
             "score": total_score,
             "score_breakdown": score_breakdown,
@@ -1424,7 +1444,9 @@ def select_best_strike(
     gamma_flip_distance_pct=None,
     dealer_gamma_exposure=None,
     atm_iv=None,
+    india_vix_level=None,
     days_to_expiry=None,
+    max_pain=None,
     vol_surface_regime=None,
     volatility_shock_score=None,
     directional_call_probability=None,
@@ -1473,7 +1495,9 @@ def select_best_strike(
         gamma_flip_distance_pct=gamma_flip_distance_pct,
         dealer_gamma_exposure=dealer_gamma_exposure,
         atm_iv=atm_iv,
+        india_vix_level=india_vix_level,
         days_to_expiry=days_to_expiry,
+        max_pain=max_pain,
         vol_surface_regime=vol_surface_regime,
         volatility_shock_score=volatility_shock_score,
         directional_call_probability=directional_call_probability,

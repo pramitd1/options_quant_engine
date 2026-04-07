@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.terminal_output import render_compact
+from app.terminal_output import _collect_compact_consistency_checks, render_compact
 from analytics.signal_confidence import compute_signal_confidence
 
 
@@ -281,3 +281,98 @@ class TestCompactTradeDecisionBlockRendering:
                 assert len(output) > 0  # Verify output was generated
             except Exception as e:
                 pytest.fail(f"render_compact raised exception: {e}")
+
+    def test_compact_consistency_section_passes_when_no_findings(self):
+        trade = self._create_mock_trade(hybrid_move_probability=0.42)
+        trade.update(
+            {
+                "volatility_regime": "VOL_EXPANSION",
+                "intraday_gamma_state": "VOL_EXPANSION",
+                "option_efficiency_status": "AVAILABLE",
+                "expected_move_quality": "DIRECT",
+                "option_efficiency_features": {
+                    "expected_move_quality": "DIRECT",
+                    "expected_move_points": 120.0,
+                },
+                "atm_straddle_price": 180.0,
+                "expected_move_pct": 0.8,
+            }
+        )
+
+        with patch("app.terminal_output.compute_signal_confidence") as mock_conf:
+            mock_conf.return_value = {
+                "confidence_score": 70,
+                "confidence_level": "HIGH",
+                "confidence_recalibration_guards": [],
+            }
+
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                render_compact(
+                    result={},
+                    trade=trade,
+                    spot_summary={},
+                    macro_event_state={},
+                    global_risk_state={},
+                    execution_trade=None,
+                )
+
+            output = output_buffer.getvalue()
+
+            assert "CONSISTENCY CHECK" in output
+            assert "status                    : PASS" in output
+
+    def test_compact_consistency_section_warns_on_expected_move_mismatch(self):
+        trade = self._create_mock_trade(hybrid_move_probability=0.39)
+        trade.update(
+            {
+                "volatility_regime": "LOW_VOL",
+                "intraday_gamma_state": "VOL_EXPANSION",
+                "option_efficiency_status": "UNAVAILABLE_NEUTRALIZED",
+                "option_efficiency_reason": "expected_move_not_computable",
+                "expected_move_quality": "DIRECT",
+                "option_efficiency_features": {
+                    "expected_move_quality": "DIRECT",
+                    "expected_move_points": 95.0,
+                },
+                "atm_straddle_price": 175.0,
+                "expected_move_pct": 0.72,
+            }
+        )
+
+        with patch("app.terminal_output.compute_signal_confidence") as mock_conf:
+            mock_conf.return_value = {
+                "confidence_score": 44,
+                "confidence_level": "LOW",
+                "confidence_recalibration_guards": [],
+            }
+
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                render_compact(
+                    result={},
+                    trade=trade,
+                    spot_summary={},
+                    macro_event_state={},
+                    global_risk_state={},
+                    execution_trade=None,
+                )
+
+            output = output_buffer.getvalue()
+
+            assert "CONSISTENCY CHECK" in output
+            assert "status                    : WARN" in output
+            assert "option efficiency is marked unavailable while market expected-move fields are populated" in output
+
+    def test_compact_consistency_collects_proxy_only_flat_oi_warning(self):
+        trade = self._create_mock_trade(hybrid_move_probability=0.5)
+        call_oi = [
+            (23000.0, 21_780_000.0, 0.0, "OI_FLAT", False, 0.40, "PROXY_ONLY", "1m:0 3m:0 5m:0", {}),
+        ]
+        put_oi = [
+            (22800.0, 21_860_000.0, 0.0, "OI_FLAT", False, 0.40, "PROXY_ONLY", "1m:0 3m:0 5m:0", {}),
+        ]
+
+        findings = _collect_compact_consistency_checks(trade, call_oi=call_oi, put_oi=put_oi)
+
+        assert any("flat proxy signals" in item for item in findings)

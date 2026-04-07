@@ -41,12 +41,12 @@ def compute_atm_iv_level(option_chain):
 
     Returns
     -------
-    float
+    float | None
         Median IV in decimal units (e.g. 0.14 for 14 % annualized vol).
-        Returns 0 when the chain is empty or all IV values are invalid.
+        Returns None when the chain is empty or all IV values are invalid.
     """
-    if option_chain.empty:
-        return 0
+    if option_chain is None or option_chain.empty:
+        return None
 
     # This module is invoked on single option-chain snapshots, so using
     # cross-strike premium pct-changes is not a valid time-series volatility
@@ -56,21 +56,21 @@ def compute_atm_iv_level(option_chain):
     iv_series = pd.to_numeric(option_chain.get(iv_col), errors="coerce")
     iv_series = iv_series.replace([np.inf, -np.inf], np.nan).dropna()
     if iv_series.empty:
-        return 0
+        return None
 
     normalized = iv_series.apply(lambda value: normalize_iv_decimal(value, default=np.nan))
     normalized = pd.to_numeric(normalized, errors="coerce")
     normalized = normalized.replace([np.inf, -np.inf], np.nan).dropna()
     normalized = normalized[normalized > 0]
     if normalized.empty:
-        return 0
+        return None
 
     # Median is robust to stale/deep-OTM tails and gives a stable per-snapshot
     # volatility level in decimal units.
     return float(normalized.median())
 
 
-def detect_volatility_regime(option_chain):
+def detect_volatility_regime(option_chain, *, india_vix_level=None, fallback_iv=None):
     """
     Purpose:
         Detect the volatility regime from the available market signals.
@@ -90,6 +90,12 @@ def detect_volatility_regime(option_chain):
     cfg = get_volatility_regime_policy_config()
 
     vol = compute_atm_iv_level(option_chain)
+    if vol is None:
+        vol = normalize_iv_decimal(india_vix_level, default=None)
+    if vol is None:
+        vol = normalize_iv_decimal(fallback_iv, default=None)
+    if vol is None:
+        return "UNKNOWN_VOL"
 
     if vol < cfg.low_vol_threshold:
         return "LOW_VOL"
