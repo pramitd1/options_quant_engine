@@ -974,7 +974,7 @@ Live/real-time quotes (optional setup):
 FINNHUB_API_KEY=d7b5flhr01qhndem3m9gd7b5flhr01qhndem3ma0
 ```
 
-See [EXTERNAL_DATA_SETUP.md](EXTERNAL_DATA_SETUP.md) for integration guide, usage examples, and upgrade path to premium feeds.
+Local setup and handoff notes can be kept under the ignored `documentation/` tree when needed.
 
 ### Backtest Data Source
 

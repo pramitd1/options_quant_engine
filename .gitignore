@@ -35,6 +35,8 @@ documentation/**
 *.rst
 *.txt
 *.pdf
+*.html
+*.ipynb
 *.doc
 *.docx
 *.odt
@@ -49,6 +51,10 @@ documentation/**
 
 # Keep only the root repository README tracked
 !/README.md
+
+# Explicit local continuity / handoff docs
+PROJECT_STATUS.md
+EXTERNAL_DATA_SETUP.md
 
 # Second-pass hardening (whitelist style): in mixed folders, only keep code-centric types trackable
 # research/: allow source/config/shell/template marker files only
