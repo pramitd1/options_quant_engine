@@ -258,11 +258,15 @@ def _compute_stickiness_gate_verdict(
         flip_lag_penalty = stickiness_1step - max(hit_rates)
 
     red_alerts = 0
-    if stickiness_1step is not None and stickiness_1step > max_stickiness:
+    stickiness_breached = bool(stickiness_1step is not None and stickiness_1step > max_stickiness)
+    imbalance_breached = bool(direction_imbalance is not None and direction_imbalance > max_imbalance)
+    flip_lag_breached = bool(flip_lag_penalty is not None and flip_lag_penalty > max_flip_lag_penalty)
+
+    if stickiness_breached:
         red_alerts += 1
-    if direction_imbalance is not None and direction_imbalance > max_imbalance:
+    if imbalance_breached:
         red_alerts += 1
-    if flip_lag_penalty is not None and flip_lag_penalty > max_flip_lag_penalty:
+    if flip_lag_breached:
         red_alerts += 1
 
     if red_alerts == 0:
@@ -278,6 +282,9 @@ def _compute_stickiness_gate_verdict(
         "stickiness_1step": stickiness_1step,
         "direction_imbalance": direction_imbalance,
         "flip_lag_penalty": flip_lag_penalty,
+        "stickiness_breached": stickiness_breached,
+        "imbalance_breached": imbalance_breached,
+        "flip_lag_breached": flip_lag_breached,
         "red_alerts": red_alerts,
     }
     cache_state["last_mtime"] = mtime
@@ -1325,9 +1332,29 @@ def main():
                 stickiness_1step = gate.get("stickiness_1step")
                 direction_imbalance = gate.get("direction_imbalance")
                 flip_lag_penalty = gate.get("flip_lag_penalty")
-                stickiness_txt = "NA" if stickiness_1step is None else f"{stickiness_1step:.4f}/{_stickiness_gate_max_stickiness:.4f}"
-                imbalance_txt = "NA" if direction_imbalance is None else f"{direction_imbalance:.4f}/{_stickiness_gate_max_imbalance:.4f}"
-                lag_txt = "NA" if flip_lag_penalty is None else f"{flip_lag_penalty:.4f}/{_stickiness_gate_max_flip_lag_penalty:.4f}"
+
+                def _format_directional_gate_metric(value, threshold, breached):
+                    if value is None:
+                        return "NA"
+                    comparator = ">" if breached else "<="
+                    state = "BREACH" if breached else "OK"
+                    return f"{value:.4f} {comparator} {threshold:.4f} ({state})"
+
+                stickiness_txt = _format_directional_gate_metric(
+                    stickiness_1step,
+                    _stickiness_gate_max_stickiness,
+                    bool(gate.get("stickiness_breached")),
+                )
+                imbalance_txt = _format_directional_gate_metric(
+                    direction_imbalance,
+                    _stickiness_gate_max_imbalance,
+                    bool(gate.get("imbalance_breached")),
+                )
+                lag_txt = _format_directional_gate_metric(
+                    flip_lag_penalty,
+                    _stickiness_gate_max_flip_lag_penalty,
+                    bool(gate.get("flip_lag_breached")),
+                )
                 print(
                     "\n"
                     f"LIVE DIRECTIONAL GATE: {gate.get('verdict')} "

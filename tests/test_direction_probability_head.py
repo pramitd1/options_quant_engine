@@ -127,3 +127,61 @@ def test_direction_probability_head_segmented_calibrator_and_fallback(tmp_path: 
     assert metrics["total"] >= 2
     assert metrics["segment_hits"] >= 1
     assert metrics["fallback_hits"] >= 1
+
+
+def test_rr_unit_handling_points_vs_decimal_consistency():
+    common = dict(
+        final_flow_signal="BULLISH_FLOW",
+        spot_vs_flip="ABOVE_FLIP",
+        hedging_bias="UPSIDE_ACCELERATION",
+        gamma_event="NONE",
+        gamma_regime="NEGATIVE_GAMMA",
+        macro_regime="RISK_OFF",
+        volatility_regime="VOL_EXPANSION",
+        oi_velocity_score=0.0,
+        rr_momentum="STABLE",
+        volume_pcr_atm=1.0,
+        hybrid_move_probability=0.55,
+        vote_bull_probability=0.55,
+        provider_health_summary="GOOD",
+        provider_health_blocking_status="PASS",
+        core_effective_priced_ratio=0.8,
+        core_one_sided_quote_ratio=0.0,
+        core_quote_integrity_health="GOOD",
+        apply_calibration=False,
+    )
+
+    out_points = compute_direction_probability_head(rr_value=-2.0, rr_unit="VOL_POINTS", **common)
+    out_decimal = compute_direction_probability_head(rr_value=-0.02, rr_unit="DECIMAL", **common)
+    assert out_points["probability_up_raw"] == out_decimal["probability_up_raw"]
+
+
+def test_rr_points_transform_monotonic_without_early_saturation():
+    common = dict(
+        final_flow_signal="NEUTRAL_FLOW",
+        spot_vs_flip="AT_FLIP",
+        hedging_bias="PINNING",
+        gamma_event="NONE",
+        gamma_regime="NEUTRAL_GAMMA",
+        macro_regime="RISK_OFF",
+        volatility_regime="NORMAL_VOL",
+        oi_velocity_score=0.0,
+        rr_momentum="STABLE",
+        volume_pcr_atm=1.0,
+        hybrid_move_probability=0.5,
+        vote_bull_probability=0.5,
+        provider_health_summary="GOOD",
+        provider_health_blocking_status="PASS",
+        core_effective_priced_ratio=0.9,
+        core_one_sided_quote_ratio=0.0,
+        core_quote_integrity_health="GOOD",
+        apply_calibration=False,
+    )
+
+    p_neg_small = compute_direction_probability_head(rr_value=-0.5, rr_unit="VOL_POINTS", **common)["probability_up_raw"]
+    p_neg_big = compute_direction_probability_head(rr_value=-1.5, rr_unit="VOL_POINTS", **common)["probability_up_raw"]
+    p_pos_small = compute_direction_probability_head(rr_value=0.5, rr_unit="VOL_POINTS", **common)["probability_up_raw"]
+    p_pos_big = compute_direction_probability_head(rr_value=1.5, rr_unit="VOL_POINTS", **common)["probability_up_raw"]
+
+    assert p_neg_big > p_neg_small
+    assert p_pos_big < p_pos_small

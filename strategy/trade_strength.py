@@ -583,6 +583,7 @@ def compute_trade_strength(
     max_pain_dist=None,
     max_pain_zone=None,
     days_to_expiry=None,
+    rr_unit="VOL_POINTS",
 ):
     """
     Purpose:
@@ -782,6 +783,8 @@ def compute_trade_strength(
             breakdown["oi_velocity_score_component"] = weights.get("oi_velocity_conflict_penalty", -3)
 
     rr = _safe_float(rr_value, None)
+    if rr is not None and str(rr_unit or "VOL_POINTS").upper().strip() == "DECIMAL":
+        rr *= 100.0
     if use_rr and rr is not None:
         rr_put_dom = _safe_float(rt.get("rr_skew_put_dominant"), 0.75)
         rr_call_dom = _safe_float(rt.get("rr_skew_call_dominant"), -0.75)

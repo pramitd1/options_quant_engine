@@ -4,6 +4,7 @@ import pandas as pd
 
 from analytics.greeks_engine import summarize_greek_exposures
 from analytics.gamma_walls import classify_walls, detect_gamma_walls
+from analytics.market_gamma_map import calculate_market_gamma
 from analytics.volatility_surface import compute_risk_reversal
 
 
@@ -91,3 +92,37 @@ def test_summarize_greek_exposures_handles_string_inputs_and_regimes():
     assert summary["charm_exposure"] == 2.0
     assert summary["vanna_regime"] == "POSITIVE_VANNA"
     assert summary["charm_regime"] == "POSITIVE_CHARM"
+
+
+def test_gamma_walls_raises_on_unknown_option_type():
+    chain = pd.DataFrame(
+        {
+            "STRIKE_PR": [100, 105],
+            "OPTION_TYP": ["CE", "CALL"],
+            "OPEN_INT": [1000, 900],
+            "GAMMA": [0.02, 0.03],
+        }
+    )
+
+    try:
+        detect_gamma_walls(chain)
+        raise AssertionError("Expected ValueError for unknown OPTION_TYP")
+    except ValueError as exc:
+        assert "Unknown OPTION_TYP" in str(exc)
+
+
+def test_market_gamma_map_raises_on_unknown_option_type():
+    chain = pd.DataFrame(
+        {
+            "STRIKE_PR": [100, 105],
+            "OPTION_TYP": ["PE", "PUT"],
+            "OPEN_INT": [1200, 800],
+            "GAMMA": [0.02, 0.03],
+        }
+    )
+
+    try:
+        calculate_market_gamma(chain)
+        raise AssertionError("Expected ValueError for unknown OPTION_TYP")
+    except ValueError as exc:
+        assert "Unknown OPTION_TYP" in str(exc)

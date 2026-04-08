@@ -35,6 +35,32 @@ def _clip(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def _resolve_feature_reliability_weights(trade: dict) -> dict[str, float]:
+    weights = trade.get("feature_reliability_weights") if isinstance(trade.get("feature_reliability_weights"), dict) else {}
+    return {
+        "flow": _clip(_safe_float(weights.get("flow"), 1.0), 0.0, 1.0),
+        "vol_surface": _clip(_safe_float(weights.get("vol_surface"), 1.0), 0.0, 1.0),
+        "greeks": _clip(_safe_float(weights.get("greeks"), 1.0), 0.0, 1.0),
+        "liquidity": _clip(_safe_float(weights.get("liquidity"), 1.0), 0.0, 1.0),
+        "macro": _clip(_safe_float(weights.get("macro"), 1.0), 0.0, 1.0),
+    }
+
+
+def _blend_feature_reliability(trade: dict, **components: float) -> float:
+    weights = _resolve_feature_reliability_weights(trade)
+    total_weight = 0.0
+    blended = 0.0
+    for key, component_weight in components.items():
+        weight = max(0.0, _safe_float(component_weight, 0.0))
+        if weight <= 0.0:
+            continue
+        blended += weights.get(key, 0.85) * weight
+        total_weight += weight
+    if total_weight <= 0.0:
+        return 1.0
+    return _clip(blended / total_weight, 0.0, 1.0)
+
+
 _TRADE_STRENGTH_LABELS = {
     "VERY_STRONG": 95,
     "STRONG": 80,
@@ -57,7 +83,9 @@ def _signal_strength_component(trade: dict) -> float:
     prob = _safe_float(trade.get("hybrid_move_probability"), 0)
     prob_norm = _clip(prob * 100.0, 0, 100)
 
-    return _clip(0.60 * strength_norm + 0.40 * prob_norm, 0, 100)
+    component = _clip(0.60 * strength_norm + 0.40 * prob_norm, 0, 100)
+    reliability = _blend_feature_reliability(trade, flow=0.55, liquidity=0.25, greeks=0.20)
+    return _clip(component * reliability, 0, 100)
 
 
 def _confirmation_component(trade: dict) -> float:
@@ -77,9 +105,12 @@ def _confirmation_component(trade: dict) -> float:
         positive = sum(1 for v in breakdown.values() if _safe_float(v) > 0)
         total = max(len(breakdown), 1)
         ratio_bonus = _clip((positive / total) * 100, 0, 100)
-        return _clip(0.70 * status_score + 0.30 * ratio_bonus, 0, 100)
+        component = _clip(0.70 * status_score + 0.30 * ratio_bonus, 0, 100)
+        reliability = _blend_feature_reliability(trade, flow=0.75, liquidity=0.15, greeks=0.10)
+        return _clip(component * reliability, 0, 100)
 
-    return float(status_score)
+    reliability = _blend_feature_reliability(trade, flow=0.75, liquidity=0.15, greeks=0.10)
+    return _clip(float(status_score) * reliability, 0, 100)
 
 
 def _market_stability_component(trade: dict) -> float:
@@ -117,10 +148,12 @@ def _market_stability_component(trade: dict) -> float:
     )
     gamma_stability = _clip(100 - _clip(gamma_vol, 0, 100), 0, 100)
 
-    return _clip(
+    component = _clip(
         0.30 * regime_score + 0.30 * risk_score + 0.20 * vol_stability + 0.20 * gamma_stability,
         0, 100,
     )
+    reliability = _blend_feature_reliability(trade, vol_surface=0.75, macro=0.25)
+    return _clip(component * reliability, 0, 100)
 
 
 def _data_integrity_component(trade: dict) -> float:
@@ -169,14 +202,18 @@ def _data_integrity_component(trade: dict) -> float:
     else:
         ph_score = 50.0
 
-    return _clip(0.60 * dq_norm + 0.40 * ph_score, 0, 100)
+    component = _clip(0.60 * dq_norm + 0.40 * ph_score, 0, 100)
+    reliability = _blend_feature_reliability(trade, flow=0.20, vol_surface=0.30, greeks=0.25, liquidity=0.25)
+    return _clip(component * reliability, 0, 100)
 
 
 def _option_efficiency_component(trade: dict) -> float:
     """Derived from option_efficiency_score and premium_efficiency_score."""
     oe = _safe_float(trade.get("option_efficiency_score"), 50)
     pe = _safe_float(trade.get("premium_efficiency_score"), 50)
-    return _clip(0.55 * _clip(oe, 0, 100) + 0.45 * _clip(pe, 0, 100), 0, 100)
+    component = _clip(0.55 * _clip(oe, 0, 100) + 0.45 * _clip(pe, 0, 100), 0, 100)
+    reliability = _blend_feature_reliability(trade, liquidity=0.45, greeks=0.30, vol_surface=0.25)
+    return _clip(component * reliability, 0, 100)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +240,15 @@ def _as_upper(value) -> str:
 
 
 def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[str]]:
-    """Apply conservative caps when execution preconditions are not met."""
+    """Apply conservative caps when execution preconditions are not met.
+
+    Returns
+    -------
+    (capped_score, guard_caps, cap_was_applied)
+        ``cap_was_applied`` is True only when the cap chain actually reduced the
+        score below its raw weighted value.  When False the guards are still
+        relevant context but none of them was the binding constraint.
+    """
     guard_caps = []
 
     trade_status = _as_upper(trade.get("trade_status"))
@@ -236,9 +281,12 @@ def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[
         cap = min(cap, 42.0)
         guard_caps.append("provider_health_weak")
 
-    if confirmation_status in {"CONFLICT", "NO_DIRECTION"}:
+    if confirmation_status == "NO_DIRECTION":
         cap = min(cap, 52.0)
-        guard_caps.append("confirmation_conflict_or_no_direction")
+        guard_caps.append("confirmation_no_direction")
+    elif confirmation_status == "CONFLICT":
+        cap = min(cap, 52.0)
+        guard_caps.append("confirmation_conflict")
 
     if no_trade_reason_code and trade_status != "TRADE":
         cap = min(cap, 60.0)
@@ -248,7 +296,8 @@ def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[
         cap = min(cap, 55.0)
         guard_caps.append("direction_unresolved")
 
-    return (round(min(score, cap), 2), guard_caps)
+    capped_score = round(min(score, cap), 2)
+    return (capped_score, guard_caps, capped_score < score)
 
 
 # ---------------------------------------------------------------------------
@@ -307,11 +356,12 @@ def compute_signal_confidence(trade: dict) -> dict:
         + _WEIGHTS["option_efficiency"] * components["option_efficiency_component"]
     )
     score = round(_clip(raw, 0, 100), 2)
-    score, applied_guards = _apply_recalibration_guards(trade, score)
+    score, applied_guards, cap_was_applied = _apply_recalibration_guards(trade, score)
 
     return {
         "confidence_score": score,
         "confidence_level": _classify(score),
         "confidence_recalibration_guards": applied_guards,
+            "confidence_cap_applied": cap_was_applied,
         **components,
     }

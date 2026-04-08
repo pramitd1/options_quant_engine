@@ -104,6 +104,34 @@ TARGET_COLUMNS = {
     "eod_mae_bps":        "eod_mae_bps",       # regression target
 }
 
+LEAKAGE_LABEL_COLUMNS = {
+    "correct_1d",
+    "correct_2d",
+    "correct_3d",
+    "correct_5d",
+    "correct_at_expiry",
+    "return_1d_bps",
+    "return_2d_bps",
+    "return_3d_bps",
+    "return_5d_bps",
+    "return_at_expiry_bps",
+    "eod_mfe_bps",
+    "eod_mae_bps",
+    "spot_1d",
+    "spot_2d",
+    "spot_3d",
+    "spot_5d",
+    "spot_at_expiry",
+}
+
+
+def validate_no_post_signal_labels_in_features(feature_names: list[str]) -> list[str]:
+    """Return any post-signal label columns accidentally present in features."""
+    if not feature_names:
+        return []
+    normalized = {str(name).strip() for name in feature_names}
+    return sorted(normalized.intersection(LEAKAGE_LABEL_COLUMNS))
+
 
 # ── Extraction from signal evaluation row ───────────────────────────
 
@@ -346,7 +374,8 @@ def extract_target(row: dict, target_name: str = "target_1d") -> float | None:
 
     Returns None if the target is unavailable.
     """
-    v = row.get(target_name)
+    source_key = TARGET_COLUMNS.get(target_name, target_name)
+    v = row.get(source_key)
     if v is None:
         return None
     if isinstance(v, float) and np.isnan(v):

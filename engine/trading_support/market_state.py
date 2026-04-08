@@ -491,6 +491,16 @@ def _collect_market_state(
             default={},
         ) or {}
 
+    iv_surface_residual = _timed_step(
+        "iv_surface_residual_penalty",
+        _call_first,
+        volatility_surface_mod,
+        ["compute_surface_residual_penalty"],
+        df,
+        spot,
+        default={},
+    ) or {}
+
     # OI velocity — fresh positioning speed from rolling OI changes.
     oi_velocity_data = {}
     oi_velocity_regime = "BALANCED"
@@ -610,6 +620,12 @@ def _collect_market_state(
         "rr_value": rr_data.get("rr_value"),
         "rr_momentum": rr_momentum_data.get("rr_momentum", "UNAVAILABLE"),
         "rr_velocity": rr_momentum_data.get("rr_velocity"),
+        "iv_surface_residual_status": iv_surface_residual.get("iv_surface_residual_status"),
+        "iv_surface_residual_rmse": iv_surface_residual.get("iv_surface_residual_rmse"),
+        "iv_surface_residual_outlier_ratio": iv_surface_residual.get("iv_surface_residual_outlier_ratio"),
+        "iv_surface_term_structure_inversion_count": iv_surface_residual.get("iv_surface_term_structure_inversion_count"),
+        "iv_surface_residual_penalty_score": iv_surface_residual.get("iv_surface_residual_penalty_score", 0),
+        "iv_surface_residual_penalty_reasons": iv_surface_residual.get("iv_surface_residual_penalty_reasons", []),
         "oi_velocity_score": oi_velocity_data.get("velocity_score"),
         "oi_velocity_regime": oi_velocity_regime,
         "gamma_flip_drift": gamma_flip_drift,

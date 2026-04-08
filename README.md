@@ -42,6 +42,7 @@ Direction-head promotion governance in this repository is currently signal-quali
 - [Quick Start](#quick-start)
 - [10-Minute Runbook](#10-minute-runbook)
 - [Main Workflows](#main-workflows)
+- [Repair Queue Ops](#repair-queue-ops)
 - [Parameter Packs](#parameter-packs)
 - [Promotion And Shadow Mode](#promotion-and-shadow-mode)
 - [Tuning Workflow](#tuning-workflow)
@@ -316,6 +317,64 @@ Important distinction:
 
 - `tuning/` contains the parameter-tuning and promotion code
 - `research/parameter_tuning/` stores runtime-generated research artifacts, ledgers, reports, state, and candidate packs
+
+## Repair Queue Ops
+
+Use these commands for legacy contract-repair operations.
+
+Generate HIGH-only repair artifacts and review queue (safe dry-run):
+
+```bash
+python scripts/backfill_signal_contract_fields.py \
+  --dataset cumulative \
+  --apply-repair-proposals \
+  --emit-audit \
+  --emit-repair-proposals \
+  --high-confidence-only \
+  --dry-run
+```
+
+Apply MEDIUM+HIGH proposals and promote repaired copy into source cumulative dataset (with backup):
+
+```bash
+python scripts/backfill_signal_contract_fields.py \
+  --dataset cumulative \
+  --apply-repair-proposals \
+  --emit-audit \
+  --emit-repair-proposals \
+  --min-proposal-confidence MEDIUM \
+  --promote-repaired-dataset
+```
+
+Approve selected MEDIUM rows from an existing review queue without regenerating proposals:
+
+```bash
+python scripts/approve_repair_review_queue.py \
+  --review-queue-csv research/signal_evaluation/backfill_audit/contract_match_audit_YYYYMMDD_HHMMSS/repair_review_queue.csv \
+  --dataset-path research/signal_evaluation/signals_dataset_cumul.csv \
+  --signal-ids "signal_id_1,signal_id_2" \
+  --promote-approved
+```
+
+Run daily refresh with automatic HIGH-only review artifact emission:
+
+```bash
+python scripts/schedule_refresh_cumulative_daily.py \
+  --dataset-path research/signal_evaluation/signals_dataset_cumul.csv \
+  --emit-high-only-review-artifacts
+```
+
+Enable automatic HIGH-confidence promotion in production cron/task:
+
+```cron
+# every day at 18:35 IST
+35 18 * * * cd /Users/pramitdutta/Desktop/Quant\ Engines/options_quant_engine && \
+  /Users/pramitdutta/Desktop/Quant\ Engines/options_quant_engine/.venv/bin/python \
+  scripts/schedule_refresh_cumulative_daily.py \
+  --dataset-path research/signal_evaluation/signals_dataset_cumul.csv \
+  --emit-high-only-review-artifacts \
+  --promote-high-confidence-repairs
+```
 
 ### 6. ML Research Evaluation
 

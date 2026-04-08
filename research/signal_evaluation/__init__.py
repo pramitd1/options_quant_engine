@@ -34,6 +34,13 @@ from research.signal_evaluation.evaluator import (
 )
 from research.signal_evaluation.market_data import fetch_realized_spot_path
 from research.signal_evaluation.market_data import resolve_research_as_of
+from research.signal_evaluation.legacy_backfill import (
+    apply_repair_proposals_to_dataset,
+    audit_unresolved_signal_contract_matches,
+    backfill_signal_contract_fields,
+    partition_repair_proposals,
+    propose_repairs_for_unresolved_signal_contract_matches,
+)
 from research.signal_evaluation.policy import (
     CAPTURE_POLICY_ACTIONABLE,
     CAPTURE_POLICY_ALL,
@@ -92,4 +99,9 @@ __all__ = [
     "build_signal_evaluation_summary",
     "render_signal_evaluation_markdown",
     "write_signal_evaluation_report",
+    "backfill_signal_contract_fields",
+    "audit_unresolved_signal_contract_matches",
+    "propose_repairs_for_unresolved_signal_contract_matches",
+    "apply_repair_proposals_to_dataset",
+    "partition_repair_proposals",
 ]

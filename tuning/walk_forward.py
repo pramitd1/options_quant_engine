@@ -135,7 +135,7 @@ def build_walk_forward_splits(
 
     while True:
         train_start = min_ts if split_type == "anchored" else cursor
-        train_end = train_start + train_window
+        train_end = (cursor + train_window) if split_type == "anchored" else (train_start + train_window)
         validation_start = train_end
         validation_end = validation_start + validation_window
 
@@ -167,6 +167,93 @@ def build_walk_forward_splits(
             break
 
     return splits
+
+
+def build_walk_forward_splits_with_fallback(
+    frame: pd.DataFrame,
+    *,
+    split_type: str,
+    train_window_days: int,
+    validation_window_days: int,
+    step_size_days: int,
+    minimum_train_rows: int,
+    minimum_validation_rows: int,
+    timestamp_col: str = "signal_timestamp",
+) -> tuple[list[WalkForwardSplit], dict[str, Any]]:
+    """
+    Build walk-forward splits and progressively relax configuration when no split is found.
+    """
+    candidate_configs: list[dict[str, Any]] = [
+        {
+            "used_fallback": False,
+            "effective_train_window_days": int(train_window_days),
+            "effective_validation_window_days": int(validation_window_days),
+            "effective_step_size_days": int(step_size_days),
+            "effective_minimum_train_rows": int(minimum_train_rows),
+            "effective_minimum_validation_rows": int(minimum_validation_rows),
+        }
+    ]
+
+    signal_ts = frame[timestamp_col] if timestamp_col in frame.columns else pd.Series(dtype=object)
+    ordered_ts = pd.to_datetime(signal_ts, errors="coerce").dropna()
+    if ordered_ts.empty:
+        return [], {
+            "used_fallback": True,
+            "reason": "no_valid_signal_timestamp",
+        }
+
+    span_days = max((ordered_ts.max() - ordered_ts.min()).total_seconds() / 86400.0, 1.0)
+    fallback_train_window_days = max(1, int(round(min(span_days * 0.5, 30.0))))
+    fallback_validation_window_days = max(1, int(round(min(span_days * 0.2, 10.0))))
+    fallback_step_size_days = max(1, min(fallback_validation_window_days, int(step_size_days)))
+
+    candidate_configs.extend(
+        [
+            {
+                "used_fallback": True,
+                "effective_train_window_days": int(fallback_train_window_days),
+                "effective_validation_window_days": int(fallback_validation_window_days),
+                "effective_step_size_days": int(fallback_step_size_days),
+                "effective_minimum_train_rows": max(20, min(int(minimum_train_rows), 25)),
+                "effective_minimum_validation_rows": max(10, min(int(minimum_validation_rows), 10)),
+            },
+            {
+                "used_fallback": True,
+                "effective_train_window_days": max(1, min(int(fallback_train_window_days), 2)),
+                "effective_validation_window_days": 1,
+                "effective_step_size_days": 1,
+                "effective_minimum_train_rows": 20,
+                "effective_minimum_validation_rows": 10,
+            },
+            {
+                "used_fallback": True,
+                "effective_train_window_days": 1,
+                "effective_validation_window_days": 1,
+                "effective_step_size_days": 1,
+                "effective_minimum_train_rows": 10,
+                "effective_minimum_validation_rows": 5,
+            },
+        ]
+    )
+
+    for config in candidate_configs:
+        splits = build_walk_forward_splits(
+            frame,
+            split_type=split_type,
+            train_window_days=config["effective_train_window_days"],
+            validation_window_days=config["effective_validation_window_days"],
+            step_size_days=config["effective_step_size_days"],
+            minimum_train_rows=config["effective_minimum_train_rows"],
+            minimum_validation_rows=config["effective_minimum_validation_rows"],
+            timestamp_col=timestamp_col,
+        )
+        if splits:
+            return splits, config
+
+    return [], {
+        "used_fallback": True,
+        "reason": "no_valid_split_configuration_found",
+    }
 
 
 def apply_walk_forward_split(

@@ -7,7 +7,7 @@ import pytest
 
 from analytics.dealer_gamma_path import simulate_gamma_path
 from analytics.gamma_exposure import approximate_gamma, calculate_gamma_exposure, gamma_signal
-from analytics.greeks_engine import _bs_price_for_iv, estimate_iv_from_price
+from analytics.greeks_engine import _bs_price_for_iv, compute_option_greeks, estimate_iv_from_price
 from strategy.enhanced_strike_scoring import (
     compute_dealer_pressure,
     compute_enhanced_strike_scores,
@@ -163,3 +163,54 @@ def test_compute_dealer_pressure_uses_flip_context_and_gamma_intensity():
     )
 
     assert float(stressed.iloc[0]) > float(baseline.iloc[0])
+
+
+def test_greeks_monotonic_gamma_as_tte_shrinks():
+    g_long = compute_option_greeks(
+        spot=100.0,
+        strike=100.0,
+        time_to_expiry_years=5.0 / 365.0,
+        volatility_pct=20.0,
+        option_type="CE",
+    )
+    g_short = compute_option_greeks(
+        spot=100.0,
+        strike=100.0,
+        time_to_expiry_years=1.0 / 365.0,
+        volatility_pct=20.0,
+        option_type="CE",
+    )
+
+    assert g_long is not None
+    assert g_short is not None
+    assert g_short["GAMMA"] > g_long["GAMMA"]
+
+
+def test_greeks_black_scholes_reference_values():
+    # ATM call benchmark: S=K=100, T=0.5y, sigma=20%, r=0, q=0
+    greeks = compute_option_greeks(
+        spot=100.0,
+        strike=100.0,
+        time_to_expiry_years=0.5,
+        volatility_pct=20.0,
+        option_type="CE",
+        risk_free_rate=0.0,
+        dividend_yield=0.0,
+    )
+
+    assert greeks is not None
+    assert greeks["DELTA"] == pytest.approx(0.5282, abs=1e-3)
+    assert greeks["GAMMA"] == pytest.approx(0.0281, abs=1e-3)
+    assert greeks["VEGA"] == pytest.approx(0.2814, abs=2e-3)
+
+
+def test_greeks_ultra_short_tte_policy_behavior():
+    # Default policy skips Greeks below 60 seconds to expiry.
+    greeks = compute_option_greeks(
+        spot=100.0,
+        strike=100.0,
+        time_to_expiry_years=30.0 / (365.0 * 24.0 * 3600.0),
+        volatility_pct=20.0,
+        option_type="CE",
+    )
+    assert greeks is None

@@ -171,7 +171,7 @@ def _evaluate_provider_health_override_eligibility(
 
     allowed_summary_statuses = _normalize_string_set(
         runtime_thresholds.get("provider_health_override_allowed_summary_statuses"),
-        default={"CAUTION"},
+        default={"CAUTION", "WEAK"},
     )
     provider_health_summary_upper = _as_upper(provider_health_summary)
     if provider_health_summary_upper not in allowed_summary_statuses:
@@ -781,6 +781,105 @@ def _compute_runtime_composite_score(
         + w_gamma * gamma_stability_score
     )
     return int(_clip(round(composite), 0, 100))
+
+
+def _compute_feature_reliability_overlay(option_chain_validation):
+    """Summarize feature reliability weights for downstream diagnostics and weighting."""
+    weights = (
+        option_chain_validation.get("feature_reliability_weights")
+        if isinstance(option_chain_validation, dict)
+        and isinstance(option_chain_validation.get("feature_reliability_weights"), dict)
+        else {}
+    )
+    if not weights:
+        return {
+            "status": "UNSPECIFIED",
+            "aggregate_score": 100.0,
+            "trade_strength_penalty": 0,
+            "runtime_composite_penalty": 0,
+            "reasons": [],
+            "weights": {},
+        }
+
+    normalized = {
+        "flow": _clip(_safe_float(weights.get("flow"), 1.0), 0.0, 1.0),
+        "vol_surface": _clip(_safe_float(weights.get("vol_surface"), 1.0), 0.0, 1.0),
+        "greeks": _clip(_safe_float(weights.get("greeks"), 1.0), 0.0, 1.0),
+        "liquidity": _clip(_safe_float(weights.get("liquidity"), 1.0), 0.0, 1.0),
+        "macro": _clip(_safe_float(weights.get("macro"), 1.0), 0.0, 1.0),
+    }
+    aggregate_score = round(
+        100.0
+        * (
+            0.30 * normalized["flow"]
+            + 0.25 * normalized["vol_surface"]
+            + 0.20 * normalized["greeks"]
+            + 0.15 * normalized["liquidity"]
+            + 0.10 * normalized["macro"]
+        ),
+        2,
+    )
+    reasons = []
+    for key, label in (
+        ("flow", "flow_low_reliability"),
+        ("vol_surface", "vol_surface_low_reliability"),
+        ("greeks", "greeks_low_reliability"),
+        ("liquidity", "liquidity_low_reliability"),
+    ):
+        if normalized[key] < 0.60:
+            reasons.append(label)
+    if normalized["macro"] < 0.70:
+        reasons.append("macro_low_reliability")
+
+    status = "ROBUST"
+    if aggregate_score < 70.0:
+        status = "FRAGILE"
+    elif aggregate_score < 85.0:
+        status = "CAUTION"
+
+    return {
+        "status": status,
+        "aggregate_score": aggregate_score,
+        "trade_strength_penalty": 0,
+        "runtime_composite_penalty": 0,
+        "reasons": reasons,
+        "weights": {key: round(value, 4) for key, value in normalized.items()},
+    }
+
+
+def _blend_feature_reliability(weights, **components):
+    total_weight = 0.0
+    blended = 0.0
+    normalized = weights if isinstance(weights, dict) else {}
+    for key, component_weight in components.items():
+        weight = max(0.0, _safe_float(component_weight, 0.0))
+        if weight <= 0.0:
+            continue
+        blended += _clip(_safe_float(normalized.get(key), 1.0), 0.0, 1.0) * weight
+        total_weight += weight
+    if total_weight <= 0.0:
+        return 1.0
+    return round(_clip(blended / total_weight, 0.0, 1.0), 4)
+
+
+def _scale_adjustment_by_reliability(score, reliability_weight):
+    score_value = int(_safe_float(score, 0.0))
+    weight_value = _clip(_safe_float(reliability_weight, 1.0), 0.0, 1.0)
+    return int(round(score_value * weight_value))
+
+
+def _scale_candidate_adjustment_by_reliability(score, reliability_weight):
+    """Scale strike-candidate adjustments: dampen rewards, amplify penalties when reliability is weak."""
+    score_value = int(_safe_float(score, 0.0))
+    weight_value = _clip(_safe_float(reliability_weight, 1.0), 0.0, 1.0)
+    if score_value >= 0:
+        return int(round(score_value * weight_value))
+
+    penalty_multiplier = 1.0 + ((1.0 - weight_value) * 0.75)
+    scaled = int(round(score_value * penalty_multiplier))
+    if score_value < 0 and scaled == 0:
+        return -1
+    return scaled
 
 
 def _resolve_regime_thresholds(*, runtime_thresholds, base_min_trade_strength, base_min_composite_score, market_state):
@@ -1533,6 +1632,17 @@ def generate_trade(
         analytics_state=analytics_state,
         probability_state=probability_state,
     )
+    feature_reliability_overlay = _compute_feature_reliability_overlay(option_chain_validation)
+    feature_reliability_weights = feature_reliability_overlay.get("weights") if isinstance(feature_reliability_overlay.get("weights"), dict) else {}
+    flow_reliability_weight = _blend_feature_reliability(feature_reliability_weights, flow=0.75, liquidity=0.15, greeks=0.10)
+    surface_reliability_weight = _blend_feature_reliability(feature_reliability_weights, vol_surface=0.75, greeks=0.15, liquidity=0.10)
+    dealer_reliability_weight = _blend_feature_reliability(feature_reliability_weights, flow=0.35, liquidity=0.35, greeks=0.30)
+    option_efficiency_reliability_weight = _blend_feature_reliability(
+        feature_reliability_weights,
+        liquidity=0.45,
+        greeks=0.30,
+        vol_surface=0.25,
+    )
 
     macro_event_state = macro_event_state if isinstance(macro_event_state, dict) else {}
     macro_event_risk_score = int(_safe_float(macro_event_state.get("macro_event_risk_score"), 0))
@@ -1675,7 +1785,11 @@ def generate_trade(
     elif event_window_status in {"PRE_EVENT_LOCKDOWN", "LIVE_EVENT"}:
         macro_event_score_adjustment = event_cfg.lockdown_penalty
 
-    confirmation["score_adjustment"] += macro_news_adjustments["macro_confirmation_adjustment"]
+    chain_confirmation_score = int(_safe_float(confirmation.get("score_adjustment"), 0.0))
+    scaled_chain_confirmation_score = _scale_adjustment_by_reliability(chain_confirmation_score, flow_reliability_weight)
+    confirmation["score_adjustment"] = scaled_chain_confirmation_score + int(
+        _safe_float(macro_news_adjustments["macro_confirmation_adjustment"], 0.0)
+    )
 
     event_overlay_score = _safe_float(
         macro_news_adjustments.get("event_overlay_score_adjustment"),
@@ -1683,6 +1797,9 @@ def generate_trade(
     )
     macro_news_total_score = _safe_float(macro_news_adjustments.get("macro_adjustment_score"), 0.0)
     macro_news_core_score = macro_news_total_score - event_overlay_score
+    scoring_breakdown["chain_confirmation_score_raw"] = chain_confirmation_score
+    scoring_breakdown["chain_confirmation_reliability_weight"] = flow_reliability_weight
+    scoring_breakdown["chain_confirmation_reliability_delta"] = scaled_chain_confirmation_score - chain_confirmation_score
     scoring_breakdown["confirmation_filter_score"] = confirmation["score_adjustment"]
     scoring_breakdown["macro_event_score"] = macro_event_score_adjustment
     scoring_breakdown["macro_news_score"] = macro_news_core_score
@@ -1734,9 +1851,12 @@ def generate_trade(
         gamma_flip_drift=market_state.get("gamma_flip_drift"),
     )
     gamma_vol_trade_modifiers = derive_gamma_vol_trade_modifiers(gamma_vol_state, direction=direction)
-    gamma_vol_adjustment_score = gamma_vol_trade_modifiers["effective_adjustment_score"]
+    gamma_vol_raw_adjustment_score = int(_safe_float(gamma_vol_trade_modifiers["effective_adjustment_score"], 0.0))
+    gamma_vol_adjustment_score = _scale_adjustment_by_reliability(gamma_vol_raw_adjustment_score, surface_reliability_weight)
     scoring_breakdown["gamma_vol_base_adjustment_score"] = gamma_vol_trade_modifiers["base_adjustment_score"]
     scoring_breakdown["gamma_vol_alignment_adjustment_score"] = gamma_vol_trade_modifiers["alignment_adjustment_score"]
+    scoring_breakdown["gamma_vol_reliability_weight"] = surface_reliability_weight
+    scoring_breakdown["gamma_vol_reliability_delta"] = gamma_vol_adjustment_score - gamma_vol_raw_adjustment_score
     scoring_breakdown["gamma_vol_adjustment_score"] = gamma_vol_adjustment_score
     dealer_pressure_state = build_dealer_hedging_pressure_state(
         spot=spot,
@@ -1770,17 +1890,29 @@ def generate_trade(
         days_to_expiry=market_state.get("days_to_expiry"),
     )
     dealer_pressure_trade_modifiers = derive_dealer_pressure_trade_modifiers(dealer_pressure_state, direction=direction)
-    dealer_pressure_adjustment_score = dealer_pressure_trade_modifiers["effective_adjustment_score"]
+    dealer_pressure_raw_adjustment_score = int(_safe_float(dealer_pressure_trade_modifiers["effective_adjustment_score"], 0.0))
+    dealer_pressure_adjustment_score = _scale_adjustment_by_reliability(
+        dealer_pressure_raw_adjustment_score,
+        dealer_reliability_weight,
+    )
     scoring_breakdown["dealer_pressure_base_adjustment_score"] = dealer_pressure_trade_modifiers["base_adjustment_score"]
     scoring_breakdown["dealer_pressure_alignment_adjustment_score"] = dealer_pressure_trade_modifiers["alignment_adjustment_score"]
+    scoring_breakdown["dealer_pressure_reliability_weight"] = dealer_reliability_weight
+    scoring_breakdown["dealer_pressure_reliability_delta"] = dealer_pressure_adjustment_score - dealer_pressure_raw_adjustment_score
     scoring_breakdown["dealer_pressure_adjustment_score"] = dealer_pressure_adjustment_score
     global_risk_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
     india_vix_level = global_risk_features.get("india_vix_level")
     india_vix_change_24h = global_risk_features.get("india_vix_change_24h")
     option_efficiency_state = {}
     option_efficiency_trade_modifiers = derive_option_efficiency_trade_modifiers(option_efficiency_state)
-    option_efficiency_adjustment_score = option_efficiency_trade_modifiers["option_efficiency_adjustment_score"]
+    option_efficiency_raw_adjustment_score = int(_safe_float(option_efficiency_trade_modifiers["option_efficiency_adjustment_score"], 0.0))
+    option_efficiency_adjustment_score = _scale_adjustment_by_reliability(
+        option_efficiency_raw_adjustment_score,
+        option_efficiency_reliability_weight,
+    )
     scoring_breakdown["option_efficiency_adjustment_score"] = option_efficiency_adjustment_score
+    scoring_breakdown["option_efficiency_reliability_weight"] = option_efficiency_reliability_weight
+    scoring_breakdown["option_efficiency_reliability_delta"] = option_efficiency_adjustment_score - option_efficiency_raw_adjustment_score
 
     # Trade strength is accumulated in layers: base directional edge, then
     # confirmation/macro adjustments, then stateful risk overlays.
@@ -1906,6 +2038,10 @@ def generate_trade(
         int(_safe_float(runtime_thresholds.get("gamma_vol_winsor_lower"), 0.0)),
         int(_safe_float(runtime_thresholds.get("gamma_vol_winsor_upper"), 100.0)),
     )
+    iv_surface_residual_penalty_score = int(_safe_float(market_state.get("iv_surface_residual_penalty_score"), 0.0))
+    if iv_surface_residual_penalty_score > 0:
+        adjusted_trade_strength = int(_clip(adjusted_trade_strength - iv_surface_residual_penalty_score, 0, 100))
+
     structural_imbalance_audit = _compute_structural_imbalance_audit(
         market_state=market_state,
         direction=direction,
@@ -1914,6 +2050,7 @@ def generate_trade(
     scoring_breakdown["base_trade_strength"] = trade_strength
     scoring_breakdown["freshness_uncertainty_score"] = -freshness_score_penalty
     scoring_breakdown["at_flip_trade_strength_penalty"] = -at_flip_penalty_applied
+    scoring_breakdown["iv_surface_residual_penalty"] = -iv_surface_residual_penalty_score
     scoring_breakdown["total_score"] = adjusted_trade_strength
     signal_regime = classify_signal_regime(
         direction=direction,
@@ -1958,6 +2095,12 @@ def generate_trade(
         "intraday_gamma_state": market_state["intraday_gamma_state"],
         "volatility_regime": market_state["vol_regime"],
         "vol_surface_regime": market_state["surface_regime"],
+        "iv_surface_residual_status": market_state.get("iv_surface_residual_status"),
+        "iv_surface_residual_rmse": market_state.get("iv_surface_residual_rmse"),
+        "iv_surface_residual_outlier_ratio": market_state.get("iv_surface_residual_outlier_ratio"),
+        "iv_surface_term_structure_inversion_count": market_state.get("iv_surface_term_structure_inversion_count"),
+        "iv_surface_residual_penalty_score": iv_surface_residual_penalty_score,
+        "iv_surface_residual_penalty_reasons": market_state.get("iv_surface_residual_penalty_reasons", []),
         "atm_iv": round(float(market_state["atm_iv"]), 2) if market_state["atm_iv"] is not None else None,
         "max_pain": market_state.get("max_pain"),
         "max_pain_dist": market_state.get("max_pain_dist"),
@@ -1993,6 +2136,15 @@ def generate_trade(
         "spot_validation": spot_validation,
         "option_chain_validation": option_chain_validation,
         "provider_health": option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else None,
+        "analytics_usable": bool(option_chain_validation.get("analytics_usable")) if isinstance(option_chain_validation, dict) else False,
+        "execution_suggestion_usable": bool(option_chain_validation.get("execution_suggestion_usable")) if isinstance(option_chain_validation, dict) else False,
+        "tradable_data": option_chain_validation.get("tradable_data") if isinstance(option_chain_validation, dict) else None,
+        "feature_reliability_weights": option_chain_validation.get("feature_reliability_weights") if isinstance(option_chain_validation, dict) else None,
+        "feature_reliability_status": feature_reliability_overlay.get("status"),
+        "feature_reliability_score": feature_reliability_overlay.get("aggregate_score"),
+        "feature_reliability_penalty_score": feature_reliability_overlay.get("trade_strength_penalty"),
+        "feature_reliability_composite_penalty": feature_reliability_overlay.get("runtime_composite_penalty"),
+        "feature_reliability_reasons": feature_reliability_overlay.get("reasons", []),
         "provider_health_summary": provider_health_summary,
         "data_quality_score": data_quality["score"],
         "data_quality_status": data_quality["status"],
@@ -2439,7 +2591,7 @@ def generate_trade(
                 row_payload.setdefault("openInterest", candidate_context.get("open_interest"))
                 row_payload.setdefault("IV", candidate_context.get("iv"))
 
-            return score_option_efficiency_candidate(
+            hook_payload = score_option_efficiency_candidate(
                 row_payload,
                 spot=spot,
                 direction=direction,
@@ -2465,6 +2617,20 @@ def generate_trade(
                 support_wall=market_state["support_wall"],
                 resistance_wall=market_state["resistance_wall"],
             )
+            hook_payload = hook_payload if isinstance(hook_payload, dict) else {}
+            raw_adjustment = int(_safe_float(hook_payload.get("score_adjustment"), 0.0))
+            strike_reliability_weight = _blend_feature_reliability(
+                feature_reliability_weights,
+                liquidity=0.55,
+                vol_surface=0.35,
+                greeks=0.10,
+            )
+            scaled_adjustment = _scale_candidate_adjustment_by_reliability(raw_adjustment, strike_reliability_weight)
+            hook_payload["score_adjustment_raw"] = raw_adjustment
+            hook_payload["score_adjustment"] = scaled_adjustment
+            hook_payload["strike_reliability_weight"] = strike_reliability_weight
+            hook_payload["strike_reliability_delta"] = scaled_adjustment - raw_adjustment
+            return hook_payload
 
         strike, ranked_strikes = select_best_strike(
             option_chain=df,
@@ -2563,6 +2729,18 @@ def generate_trade(
     resolved_delta_input = option_row_dict.get("DELTA")
     if _safe_float(resolved_delta_input, None) in (None, 0.0) and isinstance(ranked_candidate, dict):
         resolved_delta_input = ranked_candidate.get("delta")
+    selected_option_iv = _safe_float(
+        option_row_dict.get("impliedVolatility", option_row_dict.get("IV")),
+        _safe_float((ranked_candidate or {}).get("iv"), None),
+    )
+    selected_option_ba_spread_ratio = _safe_float(
+        option_row_dict.get("_normalized_ba_spread_ratio"),
+        _safe_float((ranked_candidate or {}).get("ba_spread_ratio"), None),
+    )
+    selected_option_capital_per_lot = _safe_float(
+        (ranked_candidate or {}).get("capital_per_lot"),
+        round(entry_price * float(lot_size), 2) if lot_size is not None else None,
+    )
 
     # Once a specific contract is chosen, recompute option-efficiency metrics
     # with contract-level Greeks, expiry, and payoff geometry.
@@ -2603,12 +2781,29 @@ def generate_trade(
         holding_profile=holding_profile,
     )
     option_efficiency_trade_modifiers = derive_option_efficiency_trade_modifiers(option_efficiency_state)
-    option_efficiency_adjustment_score = option_efficiency_trade_modifiers["option_efficiency_adjustment_score"]
+    option_efficiency_raw_adjustment_score = int(_safe_float(option_efficiency_trade_modifiers["option_efficiency_adjustment_score"], 0.0))
+    option_efficiency_adjustment_score = _scale_adjustment_by_reliability(
+        option_efficiency_raw_adjustment_score,
+        option_efficiency_reliability_weight,
+    )
     adjusted_trade_strength = int(_clip(adjusted_trade_strength + option_efficiency_adjustment_score, 0, 100))
     scoring_breakdown["option_efficiency_adjustment_score"] = option_efficiency_adjustment_score
+    scoring_breakdown["option_efficiency_reliability_weight"] = option_efficiency_reliability_weight
+    scoring_breakdown["option_efficiency_reliability_delta"] = option_efficiency_adjustment_score - option_efficiency_raw_adjustment_score
+    feature_reliability_penalty_score = max(
+        0,
+        chain_confirmation_score - scaled_chain_confirmation_score,
+        gamma_vol_raw_adjustment_score - gamma_vol_adjustment_score,
+        dealer_pressure_raw_adjustment_score - dealer_pressure_adjustment_score,
+        option_efficiency_raw_adjustment_score - option_efficiency_adjustment_score,
+    )
+    feature_reliability_composite_penalty = int(_clip(round(feature_reliability_penalty_score * 0.67), 0, 8))
+    scoring_breakdown["feature_reliability_penalty"] = -feature_reliability_penalty_score
     scoring_breakdown["total_score"] = adjusted_trade_strength
     base_payload["trade_strength"] = adjusted_trade_strength
     base_payload["signal_quality"] = classify_signal_quality(adjusted_trade_strength)
+    base_payload["feature_reliability_penalty_score"] = feature_reliability_penalty_score
+    base_payload["feature_reliability_composite_penalty"] = feature_reliability_composite_penalty
     signal_regime = classify_signal_regime(
         direction=direction,
         adjusted_trade_strength=adjusted_trade_strength,
@@ -2631,6 +2826,34 @@ def generate_trade(
         "expansion_direction": expansion_direction,
         "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
         "entry_price": round(entry_price, 2),
+        "selected_option_last_price": round(entry_price, 2),
+        "selected_option_volume": _to_python_number(
+            _safe_float(
+                option_row_dict.get("totalTradedVolume", option_row_dict.get("VOLUME")),
+                _safe_float((ranked_candidate or {}).get("volume"), None),
+            )
+        ),
+        "selected_option_open_interest": _to_python_number(
+            _safe_float(
+                option_row_dict.get("openInterest", option_row_dict.get("OPEN_INT")),
+                _safe_float((ranked_candidate or {}).get("open_interest"), None),
+            )
+        ),
+        "selected_option_iv": round(float(selected_option_iv), 4) if selected_option_iv not in (None, 0.0) else None,
+        "selected_option_iv_is_proxy": bool((ranked_candidate or {}).get("iv_is_proxy", False)),
+        "selected_option_iv_proxy_source": (ranked_candidate or {}).get("iv_proxy_source"),
+        "selected_option_delta": round(float(resolved_delta_input), 6) if _safe_float(resolved_delta_input, None) is not None else None,
+        "selected_option_delta_is_proxy": bool((ranked_candidate or {}).get("delta_is_proxy", False)),
+        "selected_option_delta_proxy_source": (ranked_candidate or {}).get("delta_proxy_source"),
+        "selected_option_gamma": _to_python_number(_safe_float(option_row_dict.get("GAMMA"), None)),
+        "selected_option_theta": _to_python_number(_safe_float(option_row_dict.get("THETA"), None)),
+        "selected_option_vega": _to_python_number(_safe_float(option_row_dict.get("VEGA"), None)),
+        "selected_option_vanna": _to_python_number(_safe_float(option_row_dict.get("VANNA"), None)),
+        "selected_option_charm": _to_python_number(_safe_float(option_row_dict.get("CHARM"), None)),
+        "selected_option_capital_per_lot": _to_python_number(selected_option_capital_per_lot),
+        "selected_option_ba_spread_ratio": _to_python_number(selected_option_ba_spread_ratio),
+        "selected_option_ba_spread_pct": round(float(selected_option_ba_spread_ratio) * 100.0, 4) if selected_option_ba_spread_ratio is not None else None,
+        "selected_option_score": _to_python_number(_safe_float((ranked_candidate or {}).get("score"), None)),
         "target": round(target, 2),
         "stop_loss": round(stop_loss, 2),
         "recommended_hold_minutes": recommended_hold_minutes,
@@ -2644,7 +2867,8 @@ def generate_trade(
         "premium_efficiency_score": option_efficiency_trade_modifiers["premium_efficiency_score"],
         "strike_efficiency_score": option_efficiency_trade_modifiers["strike_efficiency_score"],
         "option_efficiency_score": option_efficiency_trade_modifiers["option_efficiency_score"],
-        "option_efficiency_adjustment_score": option_efficiency_trade_modifiers["option_efficiency_adjustment_score"],
+        "option_efficiency_adjustment_score": option_efficiency_adjustment_score,
+        "option_efficiency_reliability_weight": option_efficiency_reliability_weight,
         "overnight_option_efficiency_penalty": option_efficiency_trade_modifiers["overnight_option_efficiency_penalty"],
         "strike_moneyness_bucket": option_efficiency_trade_modifiers["strike_moneyness_bucket"],
         "strike_distance_from_spot": option_efficiency_trade_modifiers["strike_distance_from_spot"],
@@ -2798,6 +3022,8 @@ def generate_trade(
         weight_data_quality=runtime_thresholds.get("composite_weight_data_quality", 0.10),
         weight_gamma_stability=runtime_thresholds.get("composite_weight_gamma_stability", 0.05),
     )
+    if feature_reliability_composite_penalty > 0:
+        runtime_composite_score = int(_clip(runtime_composite_score - feature_reliability_composite_penalty, 0, 100))
     
     # Apply score calibration if enabled
     enable_calibration = bool(int(_safe_float(runtime_thresholds.get("enable_score_calibration"), 1.0)))
@@ -2911,6 +3137,18 @@ def generate_trade(
             base_payload,
             "WATCHLIST",
             f"Runtime composite score {runtime_composite_score} below threshold {effective_min_composite_score}",
+        )
+
+    if bool(base_payload.get("analytics_usable")) and not bool(base_payload.get("execution_suggestion_usable")):
+        tradable_data = base_payload.get("tradable_data") if isinstance(base_payload.get("tradable_data"), dict) else {}
+        tradable_reasons = tradable_data.get("reasons") if isinstance(tradable_data.get("reasons"), list) else []
+        reason_suffix = f" ({', '.join(str(r) for r in tradable_reasons)})" if tradable_reasons else ""
+        base_payload["no_trade_reason_code"] = "EXECUTION_DATA_UNUSABLE"
+        base_payload["no_trade_reason"] = "Execution suggestion blocked: tradable data quality is below execution threshold"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            f"Execution suggestion blocked by tradable-data gate{reason_suffix}",
         )
 
     weak_data_shadow_triggered, weak_data_shadow = _evaluate_weak_data_circuit_breaker(

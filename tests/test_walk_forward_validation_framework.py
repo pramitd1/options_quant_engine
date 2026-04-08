@@ -70,6 +70,25 @@ def test_walk_forward_split_engine_is_deterministic_and_leak_free():
     assert pd.Timestamp(splits[0].train_end) < pd.Timestamp(splits[0].validation_start)
 
 
+def test_anchored_walk_forward_advances_validation_windows_without_duplicates():
+    frame = _validation_frame()
+    splits = build_walk_forward_splits(
+        frame,
+        split_type="anchored",
+        train_window_days=4,
+        validation_window_days=2,
+        step_size_days=2,
+        minimum_train_rows=4,
+        minimum_validation_rows=2,
+    )
+
+    assert len(splits) == 4
+    assert splits[0].split_id == "anchored_000"
+    assert pd.Timestamp(splits[0].train_start) == pd.Timestamp(frame.iloc[0]["signal_timestamp"])
+    assert pd.Timestamp(splits[0].validation_start) < pd.Timestamp(splits[1].validation_start)
+    assert len({split.validation_start for split in splits}) == len(splits)
+
+
 def test_regime_labeling_assigns_expected_buckets():
     frame = _validation_frame().iloc[[1, 3]].copy()
     labeled = label_validation_regimes(frame)

@@ -46,6 +46,14 @@ class SignalEvaluationReportsTests(unittest.TestCase):
                     "spot_next_close": 22120,
                     "spot_close_same_day": 22090,
                     "spot_60m": 22070,
+                    "entry_price": 110.0,
+                    "target": 143.0,
+                    "stop_loss": 93.5,
+                    "target_premium_return_pct": 30.0,
+                    "stop_loss_premium_return_pct": -15.0,
+                    "selected_option_delta": 0.48,
+                    "selected_option_iv": 18.2,
+                    "selected_option_capital_per_lot": 5500.0,
                     "direction": "CALL",
                     "direction_score": 90,
                     "magnitude_score": 76,
@@ -73,6 +81,14 @@ class SignalEvaluationReportsTests(unittest.TestCase):
                     "spot_next_close": 22110,
                     "spot_close_same_day": 22040,
                     "spot_60m": 22020,
+                    "entry_price": 210.0,
+                    "target": 273.0,
+                    "stop_loss": 178.5,
+                    "target_premium_return_pct": 30.0,
+                    "stop_loss_premium_return_pct": -15.0,
+                    "selected_option_delta": -0.46,
+                    "selected_option_iv": 21.4,
+                    "selected_option_capital_per_lot": 10500.0,
                     "direction": "PUT",
                     "direction_score": 35,
                     "magnitude_score": 42,
@@ -129,6 +145,8 @@ class SignalEvaluationReportsTests(unittest.TestCase):
         self.assertIn("horizon_performance", summary)
         self.assertIn("score_statistics", summary)
         self.assertIn("score_bucket_performance", summary)
+        self.assertIn("premium_summary", summary)
+        self.assertIn("premium_bucket_performance", summary)
 
         tmp_dir = Path(self.id().replace(".", "_"))
         try:
@@ -142,6 +160,7 @@ class SignalEvaluationReportsTests(unittest.TestCase):
             self.assertTrue(Path(artifact["json_path"]).exists())
             self.assertTrue(Path(artifact["markdown_path"]).exists())
             self.assertIn("signals_by_symbol", artifact["csv_paths"])
+            self.assertIn("premium_bucket_performance", artifact["csv_paths"])
         finally:
             if tmp_dir.exists():
                 for child in sorted(tmp_dir.rglob("*"), reverse=True):

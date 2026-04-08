@@ -9,6 +9,46 @@ from config.policy_resolver import temporary_parameter_pack
 
 
 class OptionChainValidationTests(unittest.TestCase):
+    def test_validation_emits_dual_usability_and_reliability_weights(self):
+        rows = []
+        for s in range(22000, 23000, 25):
+            rows.append(
+                {
+                    "strikePrice": s,
+                    "OPTION_TYP": "CE",
+                    "lastPrice": 100,
+                    "bidPrice": 99,
+                    "askPrice": 101,
+                    "impliedVolatility": 18,
+                    "EXPIRY_DT": "2026-03-26",
+                }
+            )
+            rows.append(
+                {
+                    "strikePrice": s,
+                    "OPTION_TYP": "PE",
+                    "lastPrice": 110,
+                    "bidPrice": 109,
+                    "askPrice": 111,
+                    "impliedVolatility": 19,
+                    "EXPIRY_DT": "2026-03-26",
+                }
+            )
+        df = pd.DataFrame(rows)
+
+        result = validate_option_chain(df)
+
+        self.assertTrue(result["analytics_usable"])
+        self.assertTrue(result["execution_suggestion_usable"])
+        self.assertIn("tradable_data", result)
+        self.assertIn("feature_reliability_weights", result)
+        weights = result["feature_reliability_weights"]
+        self.assertIn("flow", weights)
+        self.assertIn("vol_surface", weights)
+        self.assertIn("greeks", weights)
+        self.assertIn("liquidity", weights)
+        self.assertIn("macro", weights)
+
     def test_accepts_alias_columns_and_reports_pairing(self):
         option_chain = pd.DataFrame(
             [
@@ -306,6 +346,168 @@ class OptionChainValidationTests(unittest.TestCase):
         self.assertEqual(ph["core_quote_integrity_health"], "WEAK")
         self.assertEqual(ph["trade_blocking_status"], "BLOCK")
         self.assertIn("core_quote_integrity_weak", ph["trade_blocking_reasons"])
+
+    # ------------------------------------------------------------------ #
+    # Industry-grade IV quality gate tests                                 #
+    # ------------------------------------------------------------------ #
+
+    def _make_full_chain(self, spot=22500, *, iv_ce=18.5, iv_pe=19.0, n_strikes=20):
+        """Build a clean paired chain centred around `spot`."""
+        step = 50
+        rows = []
+        for i in range(-n_strikes // 2, n_strikes // 2 + 1):
+            s = spot + i * step
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "CE",
+                "lastPrice": 100, "bidPrice": 99, "askPrice": 101,
+                "impliedVolatility": iv_ce, "EXPIRY_DT": "2026-06-26",
+            })
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "PE",
+                "lastPrice": 110, "bidPrice": 109, "askPrice": 111,
+                "impliedVolatility": iv_pe, "EXPIRY_DT": "2026-06-26",
+            })
+        return pd.DataFrame(rows)
+
+    def test_atm_iv_health_good_when_both_legs_present_and_in_range(self):
+        """Full chain with IV=18.5/19.0 (percent form) → ATM both legs present,
+        normalises to ~0.185/0.190, within 4%–150% → GOOD."""
+        df = self._make_full_chain(spot=22500)
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["atm_iv_health"], "GOOD")
+        self.assertTrue(ph["atm_iv_ce_found"])
+        self.assertTrue(ph["atm_iv_pe_found"])
+        self.assertTrue(ph["atm_iv_in_range"])
+        self.assertIsNotNone(ph["atm_iv_midpoint"])
+        # midpoint should be close to (0.185 + 0.190)/2
+        self.assertAlmostEqual(ph["atm_iv_midpoint"], 0.1875, places=3)
+
+    def test_atm_iv_health_weak_when_no_iv_at_atm(self):
+        """Chain where IV is 0 for all ATM strikes → WEAK, and triggers trade block."""
+        df = self._make_full_chain(spot=22500)
+        # Zero out IV for the 3 nearest strikes
+        atm_mask = df["strikePrice"].between(22350, 22650)
+        df.loc[atm_mask, "impliedVolatility"] = 0
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["atm_iv_health"], "WEAK")
+        self.assertFalse(ph["atm_iv_ce_found"])
+        self.assertFalse(ph["atm_iv_pe_found"])
+        self.assertEqual(ph["trade_blocking_status"], "BLOCK")
+        self.assertIn("atm_iv_weak", ph["trade_blocking_reasons"])
+
+    def test_atm_iv_health_caution_when_only_one_leg_present(self):
+        """Chain where only CE side has ATM IV → CAUTION (not WEAK, not GOOD)."""
+        df = self._make_full_chain(spot=22500)
+        pe_mask = (df["strikePrice"].between(22350, 22650)) & (df["OPTION_TYP"] == "PE")
+        df.loc[pe_mask, "impliedVolatility"] = 0
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["atm_iv_health"], "CAUTION")
+        self.assertTrue(ph["atm_iv_ce_found"])
+        self.assertFalse(ph["atm_iv_pe_found"])
+        # CAUTION does not trigger trade block on its own
+        self.assertNotIn("atm_iv_weak", ph["trade_blocking_reasons"])
+
+    def test_atm_iv_health_not_evaluated_without_spot(self):
+        """Without spot, ATM gate is skipped entirely (cannot determine ATM)."""
+        df = self._make_full_chain(spot=22500)
+        # Zero all IVs — would be WEAK if spot were passed
+        df["impliedVolatility"] = 0
+        result = validate_option_chain(df)  # no spot argument
+        ph = result["provider_health"]
+
+        # health tag is WEAK (chain has no IV) but it must NOT be in trade_blocking_reasons
+        self.assertNotIn("atm_iv_weak", ph["trade_blocking_reasons"])
+
+    def test_atm_iv_vs_vix_consistent_field_populated_when_vix_supplied(self):
+        """India VIX supplied with matching scale → consistency flag is True."""
+        df = self._make_full_chain(spot=22500)
+        # ATM IV ≈ 0.1875; VIX = 15.0 → decimal 0.15 → ratio ≈ 1.25 → in [0.3, 3.0]
+        result = validate_option_chain(df, spot=22500, india_vix_level=15.0)
+        ph = result["provider_health"]
+
+        self.assertTrue(ph["atm_iv_vs_vix_consistent"])
+        self.assertEqual(ph["atm_iv_health"], "GOOD")
+
+    def test_atm_iv_vs_vix_inconsistent_downgrades_to_caution(self):
+        """ATM IV far outside VIX band → VIX-inconsistent → CAUTION."""
+        df = self._make_full_chain(spot=22500)
+        # ATM IV ≈ 0.1875; VIX would need to be 0.063–0.625 for ratio to be in [0.3, 3.0]
+        # Supply a VIX of 1.0 (100% → decimal) → ratio = 0.1875 → outside lower bound 0.3
+        result = validate_option_chain(df, spot=22500, india_vix_level=100.0)
+        ph = result["provider_health"]
+
+        self.assertFalse(ph["atm_iv_vs_vix_consistent"])
+        self.assertEqual(ph["atm_iv_health"], "CAUTION")
+
+    def test_iv_parity_health_good_on_clean_chain(self):
+        """Chain with uniform CE/PE IVs → near-zero divergence → GOOD."""
+        df = self._make_full_chain(spot=22500, iv_ce=18.5, iv_pe=19.0)
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["iv_parity_health"], "GOOD")
+        self.assertIsNotNone(ph["iv_parity_breach_ratio"])
+        self.assertGreater(ph["iv_parity_checked_pairs"], 0)
+
+    def test_iv_parity_health_weak_on_crossed_chain(self):
+        """Chain where PE IV is wildly different from CE IV on most strikes → WEAK,
+        and a warning is emitted."""
+        df = self._make_full_chain(spot=22500, iv_ce=18.5, iv_pe=18.5)
+        # Inflate PE IV by 5× to simulate a crossed/stale feed
+        df.loc[df["OPTION_TYP"] == "PE", "impliedVolatility"] = 95.0
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["iv_parity_health"], "WEAK")
+        iv_parity_warnings = [w for w in result["warnings"] if "iv_parity_breach_detected" in w]
+        self.assertEqual(len(iv_parity_warnings), 1)
+
+    def test_iv_staleness_health_good_on_varied_ivs(self):
+        """Each strike has a distinct IV → staleness ratio near 0 → GOOD."""
+        rows = []
+        spot = 22500
+        for i, s in enumerate(range(22000, 23050, 50)):
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "CE", "lastPrice": 100,
+                "impliedVolatility": 15.0 + i * 0.1, "EXPIRY_DT": "2026-06-26",
+            })
+            rows.append({
+                "strikePrice": s, "OPTION_TYP": "PE", "lastPrice": 110,
+                "impliedVolatility": 16.0 + i * 0.1, "EXPIRY_DT": "2026-06-26",
+            })
+        df = pd.DataFrame(rows)
+        result = validate_option_chain(df, spot=spot)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["iv_staleness_health"], "GOOD")
+
+    def test_iv_staleness_health_weak_on_static_feed(self):
+        """All rows share the same IV → stale ratio = 1.0 → WEAK, warning emitted."""
+        df = self._make_full_chain(spot=22500, iv_ce=20.0, iv_pe=20.0, n_strikes=30)
+        # Force a single repeated IV value → static feed
+        df["impliedVolatility"] = 20.0
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertIn(ph["iv_staleness_health"], ("CAUTION", "WEAK"))
+        staleness_warnings = [w for w in result["warnings"] if "iv_staleness_detected" in w]
+        self.assertEqual(len(staleness_warnings), 1)
+
+    def test_atm_iv_summary_status_reflects_weak_atm_iv(self):
+        """When ATM IV is absent (spot known), summary_status must be WEAK."""
+        df = self._make_full_chain(spot=22500)
+        df["impliedVolatility"] = 0  # strip all IV
+        result = validate_option_chain(df, spot=22500)
+
+        self.assertEqual(result["provider_health"]["summary_status"], "WEAK")
+        self.assertEqual(result["provider_health"]["atm_iv_health"], "WEAK")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -112,11 +112,41 @@ class GammaFlipPolicyConfig:
     neutral_band_pct: float = 0.50
 
 
+@dataclass(frozen=True)
+class IvHvSpreadPolicyConfig:
+    """Policy controls for IV-HV relative richness classification."""
+
+    rich_threshold_relative: float = 0.15
+    cheap_threshold_relative: float = -0.15
+
+
+@dataclass(frozen=True)
+class DealerFlowPolicyConfig:
+    """Policy controls for dealer-flow convexity blend weights."""
+
+    gamma_weight: float = 0.50
+    charm_weight: float = 0.25
+
+
 def get_gamma_flip_policy_config() -> GammaFlipPolicyConfig:
     """Return the gamma-flip policy bundle used by analytics features."""
     from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("analytics.gamma_flip", GammaFlipPolicyConfig())
+
+
+def get_iv_hv_spread_policy_config() -> IvHvSpreadPolicyConfig:
+    """Return policy bundle used by IV-HV spread classification."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config("analytics.iv_hv_spread", IvHvSpreadPolicyConfig())
+
+
+def get_dealer_flow_policy_config() -> DealerFlowPolicyConfig:
+    """Return policy bundle used by dealer-flow convexity aggregation."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config("analytics.dealer_flow", DealerFlowPolicyConfig())
 
 
 def get_flow_imbalance_policy_config() -> FlowImbalancePolicyConfig:

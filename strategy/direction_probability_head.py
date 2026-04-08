@@ -31,6 +31,8 @@ _CALIBRATION_SEGMENT_METRICS: dict[str, int] = {
 }
 _CALIBRATION_SEGMENT_METRICS_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_RR_SCALE_POINTS = 2.0
+_RR_CLIP = 1.0
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
@@ -70,6 +72,16 @@ def _provider_status_score(status: str) -> float:
     return mapping.get(_as_upper(status), 0.5)
 
 
+def _normalize_rr_points(rr_value: Any, rr_unit: Any = None) -> float | None:
+    rr = _safe_float(rr_value, None)
+    if rr is None:
+        return None
+    unit = _as_upper(rr_unit)
+    if unit == "DECIMAL":
+        return rr * 100.0
+    return rr
+
+
 def _directional_signal_bias(
     *,
     final_flow_signal: Any,
@@ -79,6 +91,7 @@ def _directional_signal_bias(
     gamma_regime: Any,
     oi_velocity_score: Any,
     rr_value: Any,
+    rr_unit: Any,
     rr_momentum: Any,
     volume_pcr_atm: Any,
     gamma_flip_drift: Any,
@@ -117,10 +130,11 @@ def _directional_signal_bias(
     if oi_velocity is not None:
         score += _clip(oi_velocity, -0.7, 0.7) * 0.55
 
-    rr = _safe_float(rr_value, None)
-    if rr is not None:
+    rr_points = _normalize_rr_points(rr_value, rr_unit)
+    if rr_points is not None:
         # Positive RR implies put skew dominance (bearish), negative RR bullish.
-        score += _clip(-rr / 3.0, -0.6, 0.6)
+        rr_scaled = _clip(-(rr_points / _RR_SCALE_POINTS), -_RR_CLIP, _RR_CLIP)
+        score += 0.6 * rr_scaled
 
     rr_m = _as_upper(rr_momentum)
     if rr_m == "RISING_PUT_SKEW":
@@ -347,6 +361,7 @@ def compute_direction_probability_head(
     volatility_regime: Any = None,
     oi_velocity_score: Any = None,
     rr_value: Any = None,
+    rr_unit: Any = "VOL_POINTS",
     rr_momentum: Any = None,
     volume_pcr_atm: Any = None,
     gamma_flip_drift: Any = None,
@@ -370,6 +385,7 @@ def compute_direction_probability_head(
         gamma_regime=gamma_regime,
         oi_velocity_score=oi_velocity_score,
         rr_value=rr_value,
+        rr_unit=rr_unit,
         rr_momentum=rr_momentum,
         volume_pcr_atm=volume_pcr_atm,
         gamma_flip_drift=gamma_flip_drift,

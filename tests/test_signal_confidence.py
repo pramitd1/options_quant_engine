@@ -68,4 +68,46 @@ def test_confidence_recalibration_caps_direction_unresolved_conflict_setup():
     result = compute_signal_confidence(trade)
     assert result["confidence_score"] <= 52.0
     assert "direction_unresolved" in result["confidence_recalibration_guards"]
-    assert "confirmation_conflict_or_no_direction" in result["confidence_recalibration_guards"]
+    assert "confirmation_no_direction" in result["confidence_recalibration_guards"]
+
+
+def test_feature_reliability_weights_reduce_confidence_components():
+    strong_trade = {
+        "trade_status": "TRADE",
+        "direction": "CALL",
+        "trade_strength": 88,
+        "hybrid_move_probability": 0.76,
+        "confirmation_status": "STRONG_CONFIRMATION",
+        "confirmation_breakdown": {"flow": 1.0, "dealer": 1.0},
+        "macro_regime": "RISK_ON",
+        "global_risk_state": "LOW_RISK",
+        "market_volatility_shock_score": 8,
+        "gamma_vol_acceleration_score_normalized": 14,
+        "data_quality_status": "GOOD",
+        "provider_health_summary": "GOOD",
+        "option_efficiency_score": 84,
+        "premium_efficiency_score": 82,
+        "feature_reliability_weights": {
+            "flow": 1.0,
+            "vol_surface": 1.0,
+            "greeks": 1.0,
+            "liquidity": 1.0,
+            "macro": 1.0,
+        },
+    }
+    fragile_trade = dict(strong_trade)
+    fragile_trade["feature_reliability_weights"] = {
+        "flow": 0.35,
+        "vol_surface": 0.25,
+        "greeks": 0.30,
+        "liquidity": 0.28,
+        "macro": 0.80,
+    }
+
+    strong = compute_signal_confidence(strong_trade)
+    fragile = compute_signal_confidence(fragile_trade)
+
+    assert fragile["confidence_score"] < strong["confidence_score"]
+    assert fragile["signal_strength_component"] < strong["signal_strength_component"]
+    assert fragile["market_stability_component"] < strong["market_stability_component"]
+    assert fragile["option_efficiency_component"] < strong["option_efficiency_component"]

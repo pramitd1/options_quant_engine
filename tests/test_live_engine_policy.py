@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
 from tuning.runtime import temporary_parameter_pack
+from config.settings import validate_runtime_secret_hygiene
 from data.provider_normalization import normalize_live_option_chain
 from data.option_chain_validation import validate_option_chain
 from engine.trading_engine import (
@@ -27,6 +29,32 @@ from risk.global_risk_layer import evaluate_global_risk_layer
 
 
 class LiveEnginePolicyTests(unittest.TestCase):
+    def test_secret_hygiene_blocks_live_tokens_without_override(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "OQE_RUNTIME_ENV": "DEV",
+                "OQE_ALLOW_LIVE_SECRETS": "false",
+                "ZERODHA_API_KEY": "live_key_abcdef123456",
+                "ZERODHA_API_SECRET": "live_secret_abcdef123456",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(RuntimeError):
+                validate_runtime_secret_hygiene()
+
+    def test_secret_hygiene_allows_with_explicit_override(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "OQE_RUNTIME_ENV": "DEV",
+                "OQE_ALLOW_LIVE_SECRETS": "true",
+                "ZERODHA_API_KEY": "live_key_abcdef123456",
+            },
+            clear=False,
+        ):
+            validate_runtime_secret_hygiene()
+
     def test_provider_normalization_adds_metadata_and_dedupes(self):
         option_chain = pd.DataFrame(
             [

@@ -3,6 +3,7 @@ import pandas as pd
 
 from analytics.volatility_regime import detect_volatility_regime
 from analytics.volatility_surface import compute_risk_reversal
+from analytics.volatility_surface import iv_hv_spread
 from analytics.volatility_surface import vol_regime
 from config.signal_evaluation_scoring import get_signal_evaluation_selection_policy
 from config.signal_policy import get_activation_score_policy_config, get_trade_runtime_thresholds
@@ -10,6 +11,7 @@ from engine.signal_engine import _resolve_regime_thresholds
 from engine.trading_support.probability import _blend_move_probability, _compute_atm_iv_percentile
 from strategy.enhanced_strike_scoring import compute_premium_efficiency
 from tuning.registry import get_parameter_registry
+from tuning.runtime import temporary_parameter_pack
 from utils.regime_normalization import canonical_gamma_regime, normalize_iv_decimal
 
 
@@ -154,4 +156,45 @@ def test_risk_reversal_is_iv_unit_invariant():
     rr_dec = compute_risk_reversal(chain_dec, spot=1000.0)
 
     assert rr_pct["rr_value"] == rr_dec["rr_value"]
+    assert rr_pct["rr_value_points"] == rr_dec["rr_value_points"]
+    assert rr_pct["rr_value_decimal"] == rr_dec["rr_value_decimal"]
+    assert rr_pct["rr_unit"] == "VOL_POINTS"
+    assert rr_dec["rr_unit"] == "VOL_POINTS"
     assert rr_pct["rr_regime"] == rr_dec["rr_regime"]
+
+
+def test_iv_hv_regime_relative_threshold_low_vol():
+    # In low vol, +1 vol point can be materially rich.
+    out = iv_hv_spread(0.09, 0.08)
+    assert out["iv_hv_spread"] == 0.01
+    assert out["iv_hv_spread_relative"] == 0.125
+    assert out["iv_hv_regime"] == "IV_FAIR"
+
+    out_rich = iv_hv_spread(0.095, 0.08)
+    assert out_rich["iv_hv_spread_relative"] == 0.1875
+    assert out_rich["iv_hv_regime"] == "IV_RICH"
+
+
+def test_iv_hv_regime_relative_threshold_high_vol():
+    # In high vol, a larger absolute spread can still be fair on a relative basis.
+    out = iv_hv_spread(0.42, 0.40)
+    assert out["iv_hv_spread"] == 0.02
+    assert out["iv_hv_spread_relative"] == 0.05
+    assert out["iv_hv_regime"] == "IV_FAIR"
+
+    out_cheap = iv_hv_spread(0.32, 0.40)
+    assert out_cheap["iv_hv_spread_relative"] == -0.2
+    assert out_cheap["iv_hv_regime"] == "IV_CHEAP"
+
+
+def test_iv_hv_spread_respects_runtime_policy_override():
+    with temporary_parameter_pack(
+        "iv_hv_override_test",
+        overrides={
+            "analytics.iv_hv_spread.rich_threshold_relative": 0.10,
+            "analytics.iv_hv_spread.cheap_threshold_relative": -0.10,
+        },
+    ):
+        out = iv_hv_spread(0.09, 0.08)
+    assert out["iv_hv_spread_relative"] == 0.125
+    assert out["iv_hv_regime"] == "IV_RICH"

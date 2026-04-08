@@ -64,7 +64,12 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from models.expanded_feature_builder import FEATURE_NAMES, N_FEATURES, extract_features
+from models.expanded_feature_builder import (
+    FEATURE_NAMES,
+    N_FEATURES,
+    extract_features,
+    validate_no_post_signal_labels_in_features,
+)
 from models.trained_predictor import TrainedMovePredictor
 
 # ── Paths ───────────────────────────────────────────────────────────
@@ -328,6 +333,9 @@ def main():
     X = X_raw[:, keep_mask]
     active_names = [n for n, k in zip(FEATURE_NAMES, keep_mask) if k]
     dropped_names = [n for n, k in zip(FEATURE_NAMES, keep_mask) if not k]
+    leaked = validate_no_post_signal_labels_in_features(active_names)
+    if leaked:
+        raise RuntimeError(f"Feature leakage detected in active feature names: {leaked}")
     print(f"  Features: {X.shape[1]} active (dropped {sum(~keep_mask)}: {dropped_names})")
 
     # Build correct_60m_all target

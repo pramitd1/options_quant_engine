@@ -23,6 +23,63 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _is_placeholder_secret(value: str, key_name: str) -> bool:
+    if not value:
+        return True
+    cleaned = str(value).strip()
+    upper = cleaned.upper()
+    if upper in {"REDACTED", "NONE", "NULL", "CHANGEME", "YOUR_SECRET_HERE"}:
+        return True
+    if cleaned == f"YOUR_{key_name}":
+        return True
+    if upper.startswith("YOUR_"):
+        return True
+    return False
+
+
+def validate_runtime_secret_hygiene(*, runtime_env: str | None = None, allow_live_secrets: bool | None = None) -> None:
+    """Block accidental live-secret usage in non-production environments."""
+    env = str(runtime_env or os.getenv("OQE_RUNTIME_ENV", "PROD")).upper().strip()
+    if env in {"PROD", "PRODUCTION"}:
+        return
+
+    allow = _env_flag("OQE_ALLOW_LIVE_SECRETS", default=False)
+    if allow_live_secrets is not None:
+        allow = bool(allow_live_secrets)
+    if allow:
+        return
+
+    secret_keys = (
+        "ZERODHA_API_KEY",
+        "ZERODHA_API_SECRET",
+        "ZERODHA_ACCESS_TOKEN",
+        "ICICI_BREEZE_API_KEY",
+        "ICICI_BREEZE_SECRET_KEY",
+        "ICICI_BREEZE_SESSION_TOKEN",
+        "OPENAI_API_KEY",
+    )
+    live_keys = []
+    for key in secret_keys:
+        value = str(os.getenv(key, "")).strip()
+        if _is_placeholder_secret(value, key):
+            continue
+        if len(value) >= 6:
+            live_keys.append(key)
+
+    if live_keys:
+        joined = ", ".join(live_keys)
+        raise RuntimeError(
+            "Live credentials detected in non-production runtime environment "
+            f"({env}): {joined}. Use placeholder values or set "
+            "OQE_ALLOW_LIVE_SECRETS=true to override explicitly."
+        )
+
+
 def _csv_env_list(name: str) -> list[str]:
     """
     Purpose:
@@ -128,6 +185,8 @@ OUTPUT_MODE = os.getenv("OQE_OUTPUT_MODE", "COMPACT").upper().strip()
 # Accepted production aliases: PROD, PRODUCTION.
 RUNTIME_ENV = os.getenv("OQE_RUNTIME_ENV", "PROD").upper().strip()
 IS_PRODUCTION = RUNTIME_ENV in {"PROD", "PRODUCTION"}
+
+validate_runtime_secret_hygiene(runtime_env=RUNTIME_ENV)
 
 REFRESH_INTERVAL = 10
 NSE_REFRESH_INTERVAL = 12

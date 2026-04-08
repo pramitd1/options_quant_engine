@@ -75,6 +75,15 @@ def _warn_once(key: str, message: str, *args) -> None:
     _LOG.warning(message, *args)
 
 
+def _signed_option_type(series: pd.Series) -> pd.Series:
+    normalized = series.astype(str).str.upper().str.strip()
+    signed = normalized.map({"CE": 1.0, "PE": -1.0})
+    if signed.isna().any():
+        unknown = sorted(set(normalized[signed.isna()].tolist()))
+        raise ValueError(f"Unknown OPTION_TYP values in streamlit signed gamma view: {unknown}")
+    return signed
+
+
 def _safe_metric_value(value):
     """
     Purpose:
@@ -1068,7 +1077,7 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
     if {"strikePrice", "OPTION_TYP", "GAMMA"}.issubset(df.columns):
         gamma_view = (
             df.dropna(subset=["strikePrice", "GAMMA"])
-            .assign(signed_gamma=lambda frame: frame["GAMMA"] * frame["OPTION_TYP"].map({"CE": 1.0, "PE": -1.0}).fillna(0.0))
+            .assign(signed_gamma=lambda frame: frame["GAMMA"] * _signed_option_type(frame["OPTION_TYP"]))
             .groupby("strikePrice", as_index=True)["signed_gamma"]
             .sum()
             .sort_index()

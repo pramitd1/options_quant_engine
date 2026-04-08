@@ -224,3 +224,21 @@ def test_probability_disables_unexpected_feature_count(monkeypatch):
     contract = out["components"]["model_feature_contract"]
     assert contract["status"] == "unexpected_feature_count"
     assert contract["feature_count"] == 9
+
+
+def test_feature_contract_rejects_post_signal_label_columns():
+    leaked = expanded_feature_builder_mod.validate_no_post_signal_labels_in_features(
+        ["flow_signal_numeric", "correct_1d", "spot_1d", "alpha_feature"]
+    )
+    assert leaked == ["correct_1d", "spot_1d"]
+
+
+def test_extract_target_resolves_aliases_to_source_columns():
+    row = {
+        "correct_1d": 1,
+        "correct_5d": 0,
+        "correct_at_expiry": 1,
+    }
+    assert expanded_feature_builder_mod.extract_target(row, "target_1d") == 1.0
+    assert expanded_feature_builder_mod.extract_target(row, "target_5d") == 0.0
+    assert expanded_feature_builder_mod.extract_target(row, "target_at_expiry") == 1.0

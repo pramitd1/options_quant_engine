@@ -15,8 +15,15 @@ Downstream Usage:
 """
 import numpy as np
 
+from config.analytics_feature_policy import get_dealer_flow_policy_config
 
-def dealer_hedging_flow(option_chain):
+
+def dealer_hedging_flow(
+    option_chain,
+    *,
+    gamma_weight: float | None = None,
+    charm_weight: float | None = None,
+):
 
     """
     Estimate hedging pressure from dealer positions.
@@ -25,16 +32,24 @@ def dealer_hedging_flow(option_chain):
     if option_chain is None or len(option_chain) == 0:
         return "SELL_FUTURES"
 
-    df = option_chain.copy()
-    delta = np.nan_to_num(df.get("DELTA", 0.0), nan=0.0)
-    open_int = np.nan_to_num(df.get("OPEN_INT", df.get("openInterest", 0.0)), nan=0.0)
+    policy = get_dealer_flow_policy_config()
+    gamma_weight = float(policy.gamma_weight if gamma_weight is None else gamma_weight)
+    charm_weight = float(policy.charm_weight if charm_weight is None else charm_weight)
 
-    flow = float((delta * open_int).sum())
+    df = option_chain.copy()
+    delta = np.nan_to_num(df.get("DELTA", 0.0), nan=0.0).astype(float)
+    gamma = np.nan_to_num(df.get("GAMMA", 0.0), nan=0.0).astype(float)
+    charm = np.nan_to_num(df.get("CHARM", 0.0), nan=0.0).astype(float)
+    open_int = np.nan_to_num(df.get("OPEN_INT", df.get("openInterest", 0.0)), nan=0.0).astype(float)
+
+    flow = float(
+        (delta * open_int).sum()
+        + float(gamma_weight) * (gamma * open_int).sum()
+        + float(charm_weight) * (charm * open_int).sum()
+    )
 
     if flow > 0:
-
         return "BUY_FUTURES"
 
     else:
-
         return "SELL_FUTURES"

@@ -97,3 +97,51 @@ def test_trade_escalation_findings_respect_resolved_min_severity():
     assert "LOW_CASE" not in codes
     assert "MED_CASE" in codes
     assert "HIGH_CASE" in codes
+
+
+def test_flow_macro_contradiction_bullish_flow_with_risk_off_is_flagged():
+    trade = {
+        "final_flow_signal": "BULLISH_FLOW",
+        "macro_regime": "RISK_OFF",
+        "global_risk_state": "RISK_OFF",
+        "volatility_regime": "NORMAL_VOL",
+        "option_efficiency_status": "AVAILABLE",
+    }
+
+    findings = collect_trade_consistency_findings(trade)
+    codes = {item["code"] for item in findings}
+
+    assert "FLOW_MACRO_REGIME_CONTRADICTION" in codes
+    contradiction = next(f for f in findings if f["code"] == "FLOW_MACRO_REGIME_CONTRADICTION")
+    assert contradiction["severity"] == "MEDIUM"
+    assert "bullish" in contradiction["message"]
+    assert "RISK_OFF" in contradiction["message"]
+
+
+def test_flow_macro_contradiction_aligned_flow_is_not_flagged():
+    trade = {
+        "final_flow_signal": "BEARISH_FLOW",
+        "macro_regime": "RISK_OFF",
+        "global_risk_state": "RISK_OFF",
+        "volatility_regime": "NORMAL_VOL",
+        "option_efficiency_status": "AVAILABLE",
+    }
+
+    findings = collect_trade_consistency_findings(trade)
+    codes = {item["code"] for item in findings}
+
+    assert "FLOW_MACRO_REGIME_CONTRADICTION" not in codes
+
+
+def test_flow_macro_contradiction_not_flagged_when_no_flow_signal():
+    trade = {
+        "macro_regime": "RISK_OFF",
+        "global_risk_state": "RISK_OFF",
+        "volatility_regime": "NORMAL_VOL",
+        "option_efficiency_status": "AVAILABLE",
+    }
+
+    findings = collect_trade_consistency_findings(trade)
+    codes = {item["code"] for item in findings}
+
+    assert "FLOW_MACRO_REGIME_CONTRADICTION" not in codes

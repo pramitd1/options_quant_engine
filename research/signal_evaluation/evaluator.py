@@ -247,27 +247,82 @@ def build_signal_evaluation_row(
     Notes:
         The row schema intentionally mirrors the live signal contract closely so researchers can connect ex-ante signal diagnostics with ex-post realized performance.
     """
-    if not result or not result.get("trade"):
+    if not isinstance(result, dict):
+        raise ValueError("Result payload must be a dictionary")
+
+    trade_obj = result.get("trade")
+    if not isinstance(trade_obj, dict) or not trade_obj:
         raise ValueError("Result payload must include a trade object")
 
-    trade = result["trade"] or {}
-    spot_summary = result.get("spot_summary", {}) or {}
+    trade = trade_obj
+    spot_summary_obj = result.get("spot_summary")
+    spot_summary = spot_summary_obj if isinstance(spot_summary_obj, dict) else {}
     signal_timestamp = spot_summary.get("timestamp") or trade.get("valuation_time")
     if signal_timestamp is None:
         raise ValueError("Signal row requires a stable signal timestamp")
+
+    ranked_strikes_obj = result.get("ranked_strikes")
+    ranked_strikes = ranked_strikes_obj if isinstance(ranked_strikes_obj, list) else []
+    option_chain_validation_obj = result.get("option_chain_validation")
+    option_chain_validation = option_chain_validation_obj if isinstance(option_chain_validation_obj, dict) else {}
+
+    def _normalize_option_type(value):
+        token = str(value or "").upper().strip()
+        aliases = {
+            "CE": "CE",
+            "CALL": "CE",
+            "C": "CE",
+            "PE": "PE",
+            "PUT": "PE",
+            "P": "PE",
+        }
+        return aliases.get(token)
+
+    inferred_option_type = _normalize_option_type(trade.get("option_type"))
+    if inferred_option_type is None:
+        inferred_option_type = _normalize_option_type(trade.get("direction"))
+
+    inferred_selected_expiry = trade.get("selected_expiry") or option_chain_validation.get("selected_expiry")
+    inferred_strike = trade.get("strike")
+    if inferred_strike in (None, "") and isinstance(ranked_strikes, list) and ranked_strikes:
+        preferred_candidates = ranked_strikes
+        if inferred_option_type is not None:
+            option_filtered = [
+                candidate for candidate in ranked_strikes
+                if _normalize_option_type((candidate or {}).get("option_type")) == inferred_option_type
+            ]
+            if option_filtered:
+                preferred_candidates = option_filtered
+        if inferred_selected_expiry not in (None, ""):
+            expiry_filtered = [
+                candidate for candidate in preferred_candidates
+                if str((candidate or {}).get("selected_expiry") or (candidate or {}).get("expiry") or "").strip() == str(inferred_selected_expiry).strip()
+            ]
+            if expiry_filtered:
+                preferred_candidates = expiry_filtered
+        top_candidate = preferred_candidates[0] if preferred_candidates else None
+        if isinstance(top_candidate, dict):
+            inferred_strike = top_candidate.get("strike")
+            if inferred_option_type is None:
+                inferred_option_type = _normalize_option_type(top_candidate.get("option_type"))
+            if inferred_selected_expiry in (None, ""):
+                inferred_selected_expiry = top_candidate.get("selected_expiry") or top_candidate.get("expiry")
 
     signal_id = build_signal_id(
         signal_timestamp=signal_timestamp,
         source=result.get("source"),
         mode=result.get("mode"),
         symbol=result.get("symbol"),
-        selected_expiry=trade.get("selected_expiry"),
+        selected_expiry=inferred_selected_expiry,
         direction=trade.get("direction"),
-        strike=trade.get("strike"),
-        option_type=trade.get("option_type"),
+        strike=inferred_strike,
+        option_type=inferred_option_type,
     )
 
-    provider_health = trade.get("provider_health") or result.get("option_chain_validation", {}).get("provider_health", {}) or {}
+    provider_health_obj = trade.get("provider_health")
+    if not isinstance(provider_health_obj, dict):
+        provider_health_obj = option_chain_validation.get("provider_health")
+    provider_health = provider_health_obj if isinstance(provider_health_obj, dict) else {}
     regime_fingerprint, regime_fingerprint_id = build_regime_fingerprint(trade, provider_health)
     saved_paths = result.get("saved_paths") or {}
     captured_ts = resolve_research_as_of(captured_at, default=signal_timestamp).isoformat()
@@ -282,6 +337,17 @@ def build_signal_evaluation_row(
     # Compute atm_iv_scaled from raw atm_iv if available
     raw_atm_iv = trade.get("atm_iv")
     atm_iv_scaled = normalize_iv_decimal(raw_atm_iv, default=None)
+    entry_price = _safe_float(trade.get("entry_price"), None)
+    target_price = _safe_float(trade.get("target"), None)
+    stop_loss_price = _safe_float(trade.get("stop_loss"), None)
+
+    target_premium_return_pct = None
+    if entry_price not in (None, 0.0) and target_price is not None:
+        target_premium_return_pct = round(((target_price - entry_price) / entry_price) * 100.0, 4)
+
+    stop_loss_premium_return_pct = None
+    if entry_price not in (None, 0.0) and stop_loss_price is not None:
+        stop_loss_premium_return_pct = round(((stop_loss_price - entry_price) / entry_price) * 100.0, 4)
 
     row = {
         "signal_id": signal_id,
@@ -290,11 +356,31 @@ def build_signal_evaluation_row(
         "mode": str(result.get("mode") or "").upper().strip(),
         "symbol": normalize_underlying_symbol(result.get("symbol")),
         "ticker": spot_summary.get("ticker") or result.get("spot_snapshot", {}).get("ticker"),
-        "selected_expiry": trade.get("selected_expiry"),
+        "selected_expiry": inferred_selected_expiry,
         "direction": trade.get("direction"),
-        "option_type": trade.get("option_type"),
-        "strike": trade.get("strike"),
+        "option_type": inferred_option_type,
+        "strike": inferred_strike,
         "entry_price": trade.get("entry_price"),
+        "target_premium_return_pct": target_premium_return_pct,
+        "stop_loss_premium_return_pct": stop_loss_premium_return_pct,
+        "selected_option_last_price": trade.get("selected_option_last_price", trade.get("entry_price")),
+        "selected_option_volume": trade.get("selected_option_volume"),
+        "selected_option_open_interest": trade.get("selected_option_open_interest"),
+        "selected_option_iv": trade.get("selected_option_iv"),
+        "selected_option_iv_is_proxy": trade.get("selected_option_iv_is_proxy"),
+        "selected_option_iv_proxy_source": trade.get("selected_option_iv_proxy_source"),
+        "selected_option_delta": trade.get("selected_option_delta"),
+        "selected_option_delta_is_proxy": trade.get("selected_option_delta_is_proxy"),
+        "selected_option_delta_proxy_source": trade.get("selected_option_delta_proxy_source"),
+        "selected_option_gamma": trade.get("selected_option_gamma"),
+        "selected_option_theta": trade.get("selected_option_theta"),
+        "selected_option_vega": trade.get("selected_option_vega"),
+        "selected_option_vanna": trade.get("selected_option_vanna"),
+        "selected_option_charm": trade.get("selected_option_charm"),
+        "selected_option_capital_per_lot": trade.get("selected_option_capital_per_lot"),
+        "selected_option_ba_spread_ratio": trade.get("selected_option_ba_spread_ratio"),
+        "selected_option_ba_spread_pct": trade.get("selected_option_ba_spread_pct"),
+        "selected_option_score": trade.get("selected_option_score"),
         "target": trade.get("target"),
         "stop_loss": trade.get("stop_loss"),
         "recommended_hold_minutes": trade.get("recommended_hold_minutes"),
@@ -378,6 +464,13 @@ def build_signal_evaluation_row(
         "consistency_check_findings": json.dumps(trade.get("consistency_check_findings") or [], sort_keys=True),
         "dealer_position": trade.get("dealer_position"),
         "dealer_hedging_bias": trade.get("dealer_hedging_bias"),
+        "dealer_hedging_flow": trade.get("dealer_hedging_flow"),
+        "market_delta_exposure": trade.get("delta_exposure"),
+        "market_gamma_exposure": trade.get("gamma_exposure_greeks"),
+        "market_theta_exposure": trade.get("theta_exposure"),
+        "market_vega_exposure": trade.get("vega_exposure"),
+        "market_vanna_exposure": trade.get("vanna_exposure"),
+        "market_charm_exposure": trade.get("charm_exposure"),
         "volatility_regime": trade.get("volatility_regime"),
         "liquidity_vacuum_state": trade.get("liquidity_vacuum_state"),
         "confirmation_status": trade.get("confirmation_status"),
@@ -390,9 +483,11 @@ def build_signal_evaluation_row(
         "provider_health_pairing": provider_health.get("pairing_health"),
         "provider_health_iv": provider_health.get("iv_health"),
         "provider_health_duplicate": provider_health.get("duplicate_health"),
+        "move_probability": trade.get("hybrid_move_probability"),
         "rule_move_probability": trade.get("rule_move_probability"),
         "hybrid_move_probability": trade.get("hybrid_move_probability"),
         "ml_move_probability": trade.get("ml_move_probability"),
+        "large_move_probability": trade.get("large_move_probability"),
         "saved_spot_snapshot_path": saved_paths.get("spot"),
         "saved_chain_snapshot_path": saved_paths.get("chain"),
 
@@ -976,10 +1071,11 @@ def save_signal_evaluation(
     Notes:
         This keeps the on-write schema identical across live trading, replay analysis, and research backfills.
     """
-    capture_default = (
-        result.get("spot_summary", {}).get("timestamp")
-        or result.get("trade", {}).get("valuation_time")
-    )
+    spot_summary = result.get("spot_summary") if isinstance(result, dict) else None
+    spot_summary = spot_summary if isinstance(spot_summary, dict) else {}
+    trade = result.get("trade") if isinstance(result, dict) else None
+    trade = trade if isinstance(trade, dict) else {}
+    capture_default = spot_summary.get("timestamp") or trade.get("valuation_time")
     row = build_signal_evaluation_row(
         result,
         notes=notes,

@@ -61,7 +61,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
-from models.expanded_feature_builder import FEATURE_NAMES, N_FEATURES, extract_features
+from models.expanded_feature_builder import (
+    FEATURE_NAMES,
+    N_FEATURES,
+    extract_features,
+    validate_no_post_signal_labels_in_features,
+)
 
 # ── Paths ───────────────────────────────────────────────────────────
 DATASET_PATH = PROJECT_ROOT / "research" / "signal_evaluation" / "backtest_signals_dataset.parquet"
@@ -155,6 +160,10 @@ def feature_sanity_analysis(X: np.ndarray, names: list[str]) -> dict:
 
     X_clean = X[:, keep_mask]
     kept_names = [n for n, k in zip(names, keep_mask) if k]
+
+    leaked = validate_no_post_signal_labels_in_features(kept_names)
+    if leaked:
+        raise RuntimeError(f"Feature leakage detected in active feature names: {leaked}")
 
     log(f"\n  Summary:")
     log(f"    Original features: {len(names)}")

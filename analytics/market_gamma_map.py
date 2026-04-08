@@ -16,6 +16,15 @@ Downstream Usage:
 import pandas as pd
 
 
+def _signed_option_type(series: pd.Series) -> pd.Series:
+    normalized = series.astype(str).str.upper().str.strip()
+    signed = normalized.map({"CE": 1.0, "PE": -1.0})
+    if signed.isna().any():
+        unknown = sorted(set(normalized[signed.isna()].tolist()))
+        raise ValueError(f"Unknown OPTION_TYP values in market_gamma_map: {unknown}")
+    return signed
+
+
 def calculate_market_gamma(option_chain):
     """
     Calculate strike-wise signed gamma-load proxy.
@@ -43,8 +52,8 @@ def calculate_market_gamma(option_chain):
         distance = (strikes - spot_proxy).abs() / max(spot_proxy, 1e-6)
         gamma = (1.0 / (1.0 + distance.fillna(float("inf")))).astype(float)
 
-    option_type = df.get("OPTION_TYP", pd.Series(index=df.index, dtype=object)).astype(str).str.upper()
-    signed = option_type.map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
+    option_type = df.get("OPTION_TYP", pd.Series(index=df.index, dtype=object))
+    signed = _signed_option_type(option_type)
 
     df["GAMMA_EXPOSURE"] = gamma * oi * signed
 

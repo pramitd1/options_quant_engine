@@ -62,6 +62,22 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "option_type": "CE",
                 "strike": 22000,
                 "entry_price": 110.5,
+                "selected_option_last_price": 110.5,
+                "selected_option_volume": 138212815,
+                "selected_option_open_interest": 8704150,
+                "selected_option_iv": 55.79,
+                "selected_option_iv_is_proxy": False,
+                "selected_option_delta": 0.4735,
+                "selected_option_delta_is_proxy": False,
+                "selected_option_gamma": 0.0124,
+                "selected_option_theta": -0.084,
+                "selected_option_vega": 0.221,
+                "selected_option_vanna": 0.013,
+                "selected_option_charm": -0.009,
+                "selected_option_capital_per_lot": 13685.75,
+                "selected_option_ba_spread_ratio": 0.012,
+                "selected_option_ba_spread_pct": 1.2,
+                "selected_option_score": 27.81,
                 "target": 143.65,
                 "stop_loss": 93.93,
                 "trade_strength": 81,
@@ -107,6 +123,13 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "volatility_explosion_probability": 0.45,
                 "dealer_position": "Short Gamma",
                 "dealer_hedging_bias": "UPSIDE_ACCELERATION",
+                "dealer_hedging_flow": 0.63,
+                "delta_exposure": 142500.0,
+                "gamma_exposure_greeks": -8420.0,
+                "theta_exposure": -315.0,
+                "vega_exposure": 2240.0,
+                "vanna_exposure": 190.0,
+                "charm_exposure": -44.0,
                 "volatility_regime": "VOL_EXPANSION",
                 "liquidity_vacuum_state": "BREAKOUT_ZONE",
                 "confirmation_status": "CONFIRMED",
@@ -126,6 +149,14 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
 
         self.assertEqual(row_a["signal_id"], row_b["signal_id"])
         self.assertEqual(row_a["symbol"], "NIFTY")
+        self.assertEqual(row_a["selected_option_last_price"], 110.5)
+        self.assertEqual(row_a["selected_option_delta"], 0.4735)
+        self.assertEqual(row_a["selected_option_gamma"], 0.0124)
+        self.assertEqual(row_a["selected_option_charm"], -0.009)
+        self.assertEqual(row_a["market_gamma_exposure"], -8420.0)
+        self.assertEqual(row_a["market_charm_exposure"], -44.0)
+        self.assertAlmostEqual(row_a["target_premium_return_pct"], 30.0, places=4)
+        self.assertAlmostEqual(row_a["stop_loss_premium_return_pct"], -14.9955, places=4)
         self.assertEqual(row_a["provider_health_status"], "GOOD")
         self.assertEqual(row_a["hybrid_move_probability"], 0.72)
         self.assertEqual(row_a["rule_move_probability"], 0.61)
@@ -199,6 +230,10 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("expected_move_pct", frame.columns)
             self.assertIn("target_reachability_score", frame.columns)
             self.assertIn("premium_efficiency_score", frame.columns)
+            self.assertIn("selected_option_delta", frame.columns)
+            self.assertIn("selected_option_iv", frame.columns)
+            self.assertIn("market_gamma_exposure", frame.columns)
+            self.assertIn("market_charm_exposure", frame.columns)
             self.assertIn("strike_efficiency_score", frame.columns)
             self.assertIn("option_efficiency_score", frame.columns)
             self.assertIn("option_efficiency_adjustment_score", frame.columns)
@@ -426,6 +461,35 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertTrue(pd.isna(enriched["magnitude_score"]))
         self.assertTrue(pd.isna(enriched["timing_score"]))
         self.assertTrue(pd.isna(enriched["tradeability_score"]))
+
+    def test_row_builder_infers_missing_contract_keys_from_ranked_strikes(self):
+        result = self._sample_result()
+        result["trade"] = dict(result["trade"])
+        result["trade"]["selected_expiry"] = None
+        result["trade"]["option_type"] = None
+        result["trade"]["strike"] = None
+        result["option_chain_validation"] = dict(result["option_chain_validation"])
+        result["option_chain_validation"]["selected_expiry"] = "2026-03-26"
+        result["ranked_strikes"] = [
+            {
+                "strike": 22100,
+                "option_type": "PE",
+                "selected_expiry": "2026-03-26",
+                "score": 25.0,
+            },
+            {
+                "strike": 22000,
+                "option_type": "CE",
+                "selected_expiry": "2026-03-26",
+                "score": 27.81,
+            },
+        ]
+
+        row = build_signal_evaluation_row(result)
+
+        self.assertEqual(row["selected_expiry"], "2026-03-26")
+        self.assertEqual(row["option_type"], "CE")
+        self.assertEqual(row["strike"], 22000)
 
     def test_update_dataset_outcomes_merges_updated_rows(self):
         result = self._sample_result()

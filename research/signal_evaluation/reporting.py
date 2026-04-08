@@ -62,6 +62,11 @@ COVERAGE_FIELDS = (
     "timing_score",
     "tradeability_score",
     "composite_signal_score",
+    "entry_price",
+    "selected_option_delta",
+    "selected_option_iv",
+    "market_gamma_exposure",
+    "market_charm_exposure",
     "correct_60m",
     "signed_return_60m_bps",
 )
@@ -507,6 +512,70 @@ def _research_tables(frame: pd.DataFrame) -> dict[str, list[dict[str, Any]]]:
     return tables
 
 
+def _premium_summary(frame: pd.DataFrame) -> dict[str, Any]:
+    premium_fields = (
+        "entry_price",
+        "target",
+        "stop_loss",
+        "target_premium_return_pct",
+        "stop_loss_premium_return_pct",
+        "selected_option_delta",
+        "selected_option_gamma",
+        "selected_option_charm",
+        "selected_option_iv",
+        "selected_option_capital_per_lot",
+        "selected_option_score",
+    )
+    summary = {
+        field_name: _score_statistics(frame, field_name)
+        for field_name in premium_fields
+        if field_name in frame.columns
+    }
+    summary["proxy_capture"] = {
+        "selected_option_iv_proxy_ratio": _round_or_none(
+            pd.to_numeric(frame.get("selected_option_iv_is_proxy", pd.Series(dtype=float)), errors="coerce").mean(),
+            4,
+        ),
+        "selected_option_delta_proxy_ratio": _round_or_none(
+            pd.to_numeric(frame.get("selected_option_delta_is_proxy", pd.Series(dtype=float)), errors="coerce").mean(),
+            4,
+        ),
+    }
+    return summary
+
+
+def _premium_bucket_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    if frame.empty or "entry_price" not in frame.columns:
+        return []
+
+    working = frame.copy()
+    working["entry_price"] = pd.to_numeric(working["entry_price"], errors="coerce")
+    working["correct_60m"] = pd.to_numeric(working.get("correct_60m", pd.Series(index=working.index)), errors="coerce")
+    working["signed_return_60m_bps"] = pd.to_numeric(working.get("signed_return_60m_bps", pd.Series(index=working.index)), errors="coerce")
+    working = working.dropna(subset=["entry_price"])
+    if working.empty:
+        return []
+
+    bins = [float("-inf"), 50.0, 100.0, 150.0, 250.0, float("inf")]
+    labels = ["0_49", "50_99", "100_149", "150_249", "250_plus"]
+    working["premium_bucket"] = pd.cut(working["entry_price"], bins=bins, labels=labels)
+
+    rows = []
+    for bucket, group in working.groupby("premium_bucket", dropna=False, observed=False):
+        if pd.isna(bucket):
+            continue
+        rows.append(
+            {
+                "premium_bucket": str(bucket),
+                "signal_count": int(len(group)),
+                "avg_entry_price": _round_or_none(group["entry_price"].mean(), 2),
+                "hit_rate_60m": _round_or_none(group["correct_60m"].mean(), 4),
+                "avg_signed_return_60m_bps": _round_or_none(group["signed_return_60m_bps"].mean(), 4),
+            }
+        )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Advanced research metrics
 # ---------------------------------------------------------------------------
@@ -680,6 +749,8 @@ def build_signal_evaluation_summary(
         "calibration_analysis": _calibration_analysis(enriched),
         "expected_value_metrics": _expected_value_metrics(enriched),
         "drawdown_analysis": _drawdown_analysis(enriched),
+        "premium_summary": _premium_summary(enriched),
+        "premium_bucket_performance": _premium_bucket_performance(enriched),
         "research_tables": _research_tables(enriched),
         }
     )
@@ -773,6 +844,39 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
         )
     if not summary.get("score_bucket_performance"):
         lines.append("| (none) | 0 |  |  |  |")
+
+    premium_summary = summary.get("premium_summary", {})
+    if premium_summary:
+        lines.extend(
+            [
+                "",
+                "## Option Premium Diagnostics",
+                "",
+                f"- Avg entry premium: {premium_summary.get('entry_price', {}).get('mean')}",
+                f"- Median entry premium: {premium_summary.get('entry_price', {}).get('median')}",
+                f"- Avg target premium return (%): {premium_summary.get('target_premium_return_pct', {}).get('mean')}",
+                f"- Avg stop-loss premium return (%): {premium_summary.get('stop_loss_premium_return_pct', {}).get('mean')}",
+                f"- Avg selected option delta: {premium_summary.get('selected_option_delta', {}).get('mean')}",
+                f"- Avg selected option IV: {premium_summary.get('selected_option_iv', {}).get('mean')}",
+                f"- Avg capital per lot: {premium_summary.get('selected_option_capital_per_lot', {}).get('mean')}",
+            ]
+        )
+
+    premium_buckets = summary.get("premium_bucket_performance", [])
+    if premium_buckets:
+        lines.extend(
+            [
+                "",
+                "## Premium Bucket Performance",
+                "",
+                "| Entry Premium Bucket | Signal Count | Avg Entry Price | 60m Hit Rate | Avg Signed Return 60m (bps) |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for row in premium_buckets:
+            lines.append(
+                f"| {row.get('premium_bucket')} | {row.get('signal_count')} | {row.get('avg_entry_price')} | {row.get('hit_rate_60m')} | {row.get('avg_signed_return_60m_bps')} |"
+            )
 
     regime_breakdown = summary.get("regime_breakdown", {})
     for regime_name, rows in regime_breakdown.items():
@@ -875,6 +979,7 @@ def _write_table_csvs(summary: dict[str, Any], base_dir: Path) -> dict[str, str]
         "score_bucket_performance": summary.get("score_bucket_performance", []),
         "data_coverage_summary": summary.get("data_coverage_summary", []),
         "calibration_analysis": summary.get("calibration_analysis", []),
+        "premium_bucket_performance": summary.get("premium_bucket_performance", []),
     }
     for name, rows in table_mappings.items():
         csv_path = base_dir / f"{name}.csv"

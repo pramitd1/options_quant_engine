@@ -20,7 +20,9 @@ from dataclasses import fields
 from typing import Any
 
 from config.analytics_feature_policy import (
+    DealerFlowPolicyConfig,
     FlowImbalancePolicyConfig,
+    IvHvSpreadPolicyConfig,
     SmartMoneyFlowPolicyConfig,
     VolatilityRegimePolicyConfig,
 )
@@ -767,6 +769,42 @@ def build_default_parameter_registry() -> ParameterRegistry:
             category="volatility_regime",
             config_obj=VolatilityRegimePolicyConfig(),
             description_prefix="Analytics volatility-regime parameter",
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.iv_hv_spread",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="iv_hv_spread",
+            config_obj=IvHvSpreadPolicyConfig(),
+            description_prefix="Analytics IV-HV spread parameter",
+            min_values={
+                "rich_threshold_relative": 0.02,
+                "cheap_threshold_relative": -0.60,
+            },
+            max_values={
+                "rich_threshold_relative": 0.60,
+                "cheap_threshold_relative": -0.02,
+            },
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.dealer_flow",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="dealer_flow",
+            config_obj=DealerFlowPolicyConfig(),
+            description_prefix="Analytics dealer-flow weight parameter",
+            min_values={
+                "gamma_weight": 0.0,
+                "charm_weight": 0.0,
+            },
+            max_values={
+                "gamma_weight": 2.0,
+                "charm_weight": 2.0,
+            },
         )
     )
 

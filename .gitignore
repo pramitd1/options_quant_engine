@@ -134,3 +134,12 @@ scripts/backtest/reports/
 # Final explicit keep-out overrides (must appear after whitelists)
 research/artifacts/
 research/artifacts/**
+
+# Backfill audit run artifacts (timestamped run dirs, regenerable)
+research/signal_evaluation/backfill_audit/
+
+# IVHv dealer calibration walkforward run dirs (timestamped, regenerable)
+research/parameter_tuning/ivhv_dealer_walkforward_*/
+
+# Readiness trend snapshots (live-generated, not source)
+research/signal_evaluation/readiness_trend/

@@ -229,43 +229,65 @@ def _format_probability_display(probability):
     return f"{prob:.0%}"
 
 
-def _summarize_confidence_guards(guards):
-    """Return a compact explanation when display confidence is being capped."""
+def _summarize_confidence_guards(guards, *, cap_applied=True):
+    """Return a compact explanation when display confidence is being capped.
+
+    When ``direction_unresolved`` is the root cause, downstream guards
+    (confirmation state, no-trade reason, watchlist/blocked status) are
+    suppressed because they are expected consequences of the same root issue.
+    When ``cap_applied`` is False the raw component score was already below
+    every guard cap; in that case "constrained by" is used instead of
+    "capped by" to accurately reflect that the component scoring, not the
+    cap, drove the low result.
+    Output is capped at 3 items; overflow is appended as ``; +N more``.
+    """
     if not isinstance(guards, list) or not guards:
         return None
 
     normalized = {str(item).strip().lower() for item in guards if str(item).strip()}
+    direction_root = "direction_unresolved" in normalized
     notes = []
 
-    if "provider_health_weak" in normalized:
-        notes.append("capped by weak provider health")
-    elif "provider_health_caution" in normalized:
-        notes.append("capped by caution provider health")
+    # Choose prefix depending on whether the cap chain actually reduced the score.
+    _cap_prefix = "capped by" if cap_applied else "constrained by"
 
-    if "status_watchlist_or_blocked" in normalized:
-        notes.append("capped by blocked/watchlist status")
+    # Provider and data quality are always independent root causes.
+    if "provider_health_weak" in normalized:
+        notes.append(f"{_cap_prefix} weak provider health")
+    elif "provider_health_caution" in normalized:
+        notes.append(f"{_cap_prefix} caution provider health")
+
     if "data_quality_weak" in normalized:
-        notes.append("capped by weak data quality")
+        notes.append(f"{_cap_prefix} weak data quality")
     elif "data_quality_caution" in normalized:
-        notes.append("capped by caution data quality")
-    if "explicit_no_trade_reason" in normalized:
-        notes.append("capped by explicit no-trade reason")
-    if "direction_unresolved" in normalized:
-        notes.append("capped by unresolved direction")
-    if "confirmation_conflict_or_no_direction" in normalized:
-        notes.append("capped by confirmation conflict")
+        notes.append(f"{_cap_prefix} caution data quality")
+
+    if direction_root:
+        # Show the single root cause; skip downstream effects.
+        notes.append(f"{_cap_prefix} unresolved direction")
+    else:
+        # Only show these when they fire independently of direction state.
+        if "confirmation_no_direction" in normalized:
+            notes.append("no directional confirmation")
+        elif "confirmation_conflict" in normalized:
+            notes.append(f"{_cap_prefix} confirmation conflict")
+        # Legacy key emitted by older cached data.
+        elif "confirmation_conflict_or_no_direction" in normalized:
+            notes.append(f"{_cap_prefix} confirmation conflict")
+        if "explicit_no_trade_reason" in normalized:
+            notes.append(f"{_cap_prefix} explicit no-trade reason")
+        if "status_watchlist_or_blocked" in normalized:
+            notes.append("execution-gated by blocked/watchlist status (setup may still be strong)")
 
     if not notes:
         return None
 
-    deduped_notes = []
-    seen = set()
-    for note in notes:
-        if note in seen:
-            continue
-        seen.add(note)
-        deduped_notes.append(note)
-    return "; ".join(deduped_notes)
+    deduped_notes = list(dict.fromkeys(notes))
+    max_display = 3
+    if len(deduped_notes) <= max_display:
+        return "; ".join(deduped_notes)
+    overflow = len(deduped_notes) - max_display
+    return "; ".join(deduped_notes[:max_display]) + f"; +{overflow} more"
 
 
 def _resolve_move_sigma_points(trade):
@@ -1098,6 +1120,8 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
         if oi_chg_f is None:
             return 0.0, "OI_ONLY"
 
+        oi_is_flat = abs(oi_chg_f) <= 1e-9
+
         try:
             current_premium_f = float(current_premium) if current_premium is not None else None
         except (TypeError, ValueError):
@@ -1151,7 +1175,9 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
             agreement_boost = -0.08
 
         premium_strength_score = min(abs(weighted_direction), 1.0)
-        if available_horizons >= 2 and abs(weighted_direction) >= 0.25:
+        if oi_is_flat and has_premium_signal:
+            reason_code = "OI_FLAT_PREMIUM_AGREE" if agreement_boost > 0 else "OI_FLAT_PREMIUM_CONFLICT" if agreement_boost < 0 else "OI_FLAT_PREMIUM"
+        elif available_horizons >= 2 and abs(weighted_direction) >= 0.25:
             reason_code = "PREMIUM_STRONG_AGREE" if agreement_boost > 0 else "PREMIUM_STRONG_CONFLICT" if agreement_boost < 0 else "PREMIUM_STRONG"
         elif has_premium_signal:
             reason_code = "PREMIUM_WEAK_AGREE" if agreement_boost > 0 else "PREMIUM_WEAK_CONFLICT" if agreement_boost < 0 else "PREMIUM_WEAK"
@@ -1159,7 +1185,10 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
             reason_code = "PROXY_ONLY"
 
         snapshot_penalty = -0.05 if uses_snapshot_oi_proxy else 0.0
-        base = 0.58 if available_horizons > 0 else 0.50 if fallback_prev_change is not None else 0.40
+        if oi_is_flat:
+            base = 0.34 if available_horizons > 0 else 0.30 if fallback_prev_change is not None else 0.25
+        else:
+            base = 0.58 if available_horizons > 0 else 0.50 if fallback_prev_change is not None else 0.40
         confidence = base + (0.22 * oi_strength) + (0.24 * premium_strength_score) + agreement_boost + snapshot_penalty
         confidence = max(0.0, min(0.99, confidence))
         return round(confidence, 2), reason_code
@@ -1561,6 +1590,59 @@ def _annotate_trigger_with_distance(trigger, spot):
     return f"{trigger_text} [{distance_pts:+.1f}pts / {distance_pct:+.2f}%]"
 
 
+def _apply_min_breakout_noise_buffer(trigger, trade):
+    """Ensure price-break triggers clear a minimum noise buffer from spot."""
+    if not trigger or not isinstance(trade, dict):
+        return trigger
+
+    trigger_text = str(trigger)
+    normalized = trigger_text.lower()
+    directional_terms = (
+        "decisive move above",
+        "decisive move below",
+        "break above",
+        "break below",
+        "move above",
+        "move below",
+    )
+    if not any(term in normalized for term in directional_terms):
+        return trigger_text
+
+    spot = trade.get("spot")
+    try:
+        spot_f = float(spot)
+    except (TypeError, ValueError):
+        return trigger_text
+    if spot_f <= 0:
+        return trigger_text
+
+    match = re.search(r"(?<![A-Za-z])(\d+(?:\.\d+)?)", trigger_text)
+    if not match:
+        return trigger_text
+
+    try:
+        level_f = float(match.group(1))
+    except (TypeError, ValueError):
+        return trigger_text
+
+    distance_pts = level_f - spot_f
+    min_buffer_pts = max(5.0, spot_f * 0.001)  # 0.10% or 5 points minimum
+    if abs(distance_pts) >= min_buffer_pts:
+        return trigger_text
+
+    if "above" in normalized:
+        direction_sign = 1.0
+    elif "below" in normalized:
+        direction_sign = -1.0
+    else:
+        direction_sign = 1.0 if distance_pts >= 0 else -1.0
+
+    buffered_level = spot_f + (direction_sign * min_buffer_pts)
+    replacement = f"{buffered_level:.2f}"
+    rewritten = trigger_text[:match.start(1)] + replacement + trigger_text[match.end(1):]
+    return f"{rewritten} (noise-buffered from {level_f:.2f})"
+
+
 def _split_potential_triggers(triggers):
     """Group potential triggers into state blockers and price-based triggers."""
     state_blockers = []
@@ -1652,6 +1734,7 @@ def _rewrite_gamma_flip_trigger(trigger, trade):
 def _format_trigger_for_display(trigger, trade):
     """Apply trigger wording cleanup and distance annotations for compact output."""
     rewritten = _rewrite_gamma_flip_trigger(trigger, trade)
+    rewritten = _apply_min_breakout_noise_buffer(rewritten, trade)
     spot = trade.get("spot") if isinstance(trade, dict) else None
     return _annotate_trigger_with_distance(rewritten, spot)
 
@@ -1822,7 +1905,7 @@ def _build_directionality_diagnostics(trade, *, mode="standard"):
     evidence = []
     if direction in {"CALL", "PUT"}:
         evidence.append(f"direction selected: {direction}")
-    if confirmation:
+    if confirmation in {"CONFIRMED", "STRONG_CONFIRMATION", "MIXED"}:
         evidence.append(f"confirmation: {confirmation}")
     if flow_alignment in {"STRONG", "PARTIAL"}:
         evidence.append(f"flow alignment: {flow_alignment.lower()}")
@@ -2278,14 +2361,26 @@ def _render_dealer_gamma_levels(trade):
         pressure_items.append(("flow_state", dealer_flow_state))
     if gex is not None and gex != 0.0:
         gex_label = "NET_LONG_GAMMA" if gex > 0 else "NET_SHORT_GAMMA"
-        pressure_items.append(("net_gex", f"{gex:+.4f}  ({gex_label})"))
+        _sign = "+" if gex > 0 else ""
+        _gex_abs = abs(gex)
+        if _gex_abs >= 1_000_000:
+            _gex_fmt = f"{_sign}{gex / 1_000_000:.2f}M"
+        elif _gex_abs >= 1_000:
+            _gex_fmt = f"{_sign}{gex / 1_000:.1f}K"
+        else:
+            _gex_fmt = f"{gex:+.2f}"
+        pressure_items.append(("net_gex", f"{_gex_fmt}  ({gex_label})"))
     if intraday_gamma_state and intraday_gamma_state not in ("NEUTRAL", "NO_SHIFT"):
         pressure_items.append(("gamma_shift", intraday_gamma_state))
     # Gamma flip drift: direction and magnitude vs previous snapshot
     _flip_drift = trade.get("gamma_flip_drift") or {}
     if _flip_drift.get("drift_direction") and _flip_drift["drift_direction"] != "STABLE":
         _drift_pts = _flip_drift.get("drift", 0)
-        pressure_items.append(("flip_drift", f"{_flip_drift['drift_direction']}  ({_drift_pts:+.0f} pts)"))
+        _prev_flip = _flip_drift.get("prev_flip")
+        if _prev_flip is not None:
+            pressure_items.append(("flip_drift", f"{_flip_drift['drift_direction']}  ({_drift_pts:+.0f} pts vs prev snapshot)"))
+        else:
+            pressure_items.append(("flip_drift", f"{_flip_drift['drift_direction']}  ({_drift_pts:+.0f} pts)"))
     if vanna_regime and vanna_regime not in ("UNKNOWN", "NEUTRAL_VANNA"):
         pressure_items.append(("vanna", vanna_regime))
     if charm_regime and charm_regime not in ("UNKNOWN", "NEUTRAL_CHARM"):
@@ -2420,12 +2515,46 @@ def _render_provider_health_compact_detail(trade):
             f"iv={core_iv or '-'}, "
             f"quote_integrity={core_quote_integrity or 'N/A'}"
         )
+    atm_iv_health = provider_health.get("atm_iv_health")
+    atm_iv_midpoint = provider_health.get("atm_iv_midpoint")
+    atm_iv_vs_vix = provider_health.get("atm_iv_vs_vix_consistent")
+    iv_parity_health = provider_health.get("iv_parity_health")
+    iv_parity_breach = provider_health.get("iv_parity_breach_ratio")
+    iv_staleness_health = provider_health.get("iv_staleness_health")
+    iv_stale_ratio = provider_health.get("iv_stale_ratio")
+    if any(v is not None for v in (atm_iv_health, iv_parity_health, iv_staleness_health)):
+        atm_str = atm_iv_health or "-"
+        if atm_iv_midpoint is not None:
+            atm_str += f" ({float(atm_iv_midpoint)*100:.1f}%)"
+        if atm_iv_vs_vix is not None:
+            atm_str += " vix-ok" if atm_iv_vs_vix else " vix-inconsistent"
+        parity_str = iv_parity_health or "-"
+        if iv_parity_breach is not None:
+            parity_str += f" (breach={float(iv_parity_breach):.0%})"
+        stale_str = iv_staleness_health or "-"
+        if iv_stale_ratio is not None:
+            stale_str += f" (stale={float(iv_stale_ratio):.0%})"
+        print(
+            "    iv quality: "
+            f"atm={atm_str}, parity={parity_str}, staleness={stale_str}"
+        )
     block_status = provider_health.get("trade_blocking_status")
     if block_status:
         print(f"    block st  : {block_status}")
     block_reasons = provider_health.get("trade_blocking_reasons")
     if isinstance(block_reasons, list) and block_reasons:
         print(f"    block why : {', '.join(str(r) for r in block_reasons)}")
+    override_diag = trade.get("provider_health_override_diagnostics")
+    if isinstance(override_diag, dict) and override_diag:
+        eligible = bool(override_diag.get("eligible"))
+        fail_reasons = override_diag.get("fail_reasons") if isinstance(override_diag.get("fail_reasons"), list) else []
+        if fail_reasons:
+            detail = ", ".join(str(item) for item in fail_reasons)
+        elif override_diag.get("reason"):
+            detail = str(override_diag.get("reason"))
+        else:
+            detail = "none"
+        print(f"    override  : eligible={eligible}; unmet={detail}")
     non_critical_weak = provider_health.get("non_critical_weak_components")
     if isinstance(non_critical_weak, list) and non_critical_weak:
         print(f"    advisory  : weak non-critical -> {', '.join(str(r) for r in non_critical_weak)}")
@@ -2456,6 +2585,85 @@ def _render_provider_health_compact_detail(trade):
         print(f"    quote rt  : {float(quoted_ratio):.4f}")
 
 
+def _render_data_usability_diagnostics(trade, *, verbose=False):
+    """Print analytics/execution usability and tradable-data diagnostics."""
+    if not isinstance(trade, dict):
+        return
+
+    analytics_usable = trade.get("analytics_usable")
+    execution_usable = trade.get("execution_suggestion_usable")
+    tradable_data = trade.get("tradable_data") if isinstance(trade.get("tradable_data"), dict) else {}
+    reliability = trade.get("feature_reliability_weights") if isinstance(trade.get("feature_reliability_weights"), dict) else {}
+
+    if analytics_usable is None and execution_usable is None and not tradable_data and not reliability:
+        return
+
+    print("\nDATA USABILITY")
+    print("---------------------------")
+    print(f"{'analytics_usable':26}: {analytics_usable}")
+    print(f"{'execution_usable':26}: {execution_usable}")
+
+    status = tradable_data.get("status")
+    score = tradable_data.get("score")
+    if status is not None:
+        print(f"{'tradable_status':26}: {status}")
+    if score is not None:
+        print(f"{'tradable_score':26}: {score}")
+
+    if verbose:
+        reasons = tradable_data.get("reasons") if isinstance(tradable_data.get("reasons"), list) else []
+        if reasons:
+            print(f"{'tradable_reasons':26}: {', '.join(str(r) for r in reasons)}")
+        if isinstance(tradable_data.get("crossed_or_locked_ratio"), (int, float)):
+            print(f"{'crossed_locked_ratio':26}: {float(tradable_data.get('crossed_or_locked_ratio')):.4f}")
+        if isinstance(tradable_data.get("quote_outlier_ratio"), (int, float)):
+            print(f"{'quote_outlier_ratio':26}: {float(tradable_data.get('quote_outlier_ratio')):.4f}")
+
+    if reliability:
+        top_weights = sorted(
+            ((str(k), float(v)) for k, v in reliability.items() if isinstance(v, (int, float))),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if top_weights:
+            preview = ", ".join(f"{name}={value:.2f}" for name, value in top_weights[:6])
+            print(f"{'feature_weights':26}: {preview}")
+
+
+def _render_reliability_damping(trade):
+    """Show where reliability weighting damped (or amplified) overlay contributions."""
+    if not isinstance(trade, dict):
+        return
+
+    scoring = trade.get("scoring_breakdown") if isinstance(trade.get("scoring_breakdown"), dict) else {}
+    provider_health = trade.get("provider_health") if isinstance(trade.get("provider_health"), dict) else {}
+
+    fields = {
+        "feature_reliability_status": trade.get("feature_reliability_status"),
+        "feature_reliability_score": trade.get("feature_reliability_score"),
+        "feature_reliability_penalty": scoring.get("feature_reliability_penalty"),
+        "chain_confirm_weight": scoring.get("chain_confirmation_reliability_weight"),
+        "chain_confirm_delta": scoring.get("chain_confirmation_reliability_delta"),
+        "gamma_vol_weight": scoring.get("gamma_vol_reliability_weight"),
+        "gamma_vol_delta": scoring.get("gamma_vol_reliability_delta"),
+        "dealer_pressure_weight": scoring.get("dealer_pressure_reliability_weight"),
+        "dealer_pressure_delta": scoring.get("dealer_pressure_reliability_delta"),
+        "option_eff_weight": scoring.get("option_efficiency_reliability_weight"),
+        "option_eff_delta": scoring.get("option_efficiency_reliability_delta"),
+        # IV structural quality inputs that drive vol_surface reliability weight
+        "atm_iv_health": provider_health.get("atm_iv_health"),
+        "atm_iv_midpoint": provider_health.get("atm_iv_midpoint"),
+        "atm_iv_vs_vix_consistent": provider_health.get("atm_iv_vs_vix_consistent"),
+        "iv_parity_health": provider_health.get("iv_parity_health"),
+        "iv_parity_breach_ratio": provider_health.get("iv_parity_breach_ratio"),
+        "iv_staleness_health": provider_health.get("iv_staleness_health"),
+        "iv_stale_ratio": provider_health.get("iv_stale_ratio"),
+    }
+    if all(value is None for value in fields.values()):
+        return
+    _print_section("RELIABILITY DAMPING", fields)
+
+
 def _render_signal_confidence(trade, *, show_components=True):
     """Print the SIGNAL CONFIDENCE block."""
     result = compute_signal_confidence(trade)
@@ -2465,6 +2673,13 @@ def _render_signal_confidence(trade, *, show_components=True):
     print("---------------------------")
     print(f"{'confidence_score':26}: {icon} {result['confidence_score']}")
     print(f"{'confidence_level':26}: {result['confidence_level']}")
+
+    confidence_note = _summarize_confidence_guards(
+        result.get("confidence_recalibration_guards"),
+        cap_applied=bool(result.get("confidence_cap_applied", True)),
+    )
+    if confidence_note:
+        print(f"{'confidence_note':26}: {confidence_note}")
 
     if show_components:
         print(f"{'signal_strength':26}: {result['signal_strength_component']}")
@@ -2621,7 +2836,8 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         prob = trade.get("hybrid_move_probability")
         prob_str = _format_probability_display(prob)
         confidence_note = _summarize_confidence_guards(
-            confidence.get("confidence_recalibration_guards")
+            confidence.get("confidence_recalibration_guards"),
+            cap_applied=bool(confidence.get("confidence_cap_applied", True)),
         )
         
         decision_classification = trade.get("decision_classification")
@@ -2870,6 +3086,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         }
         if _show_provider_detail:
             _render_provider_health_compact_detail(trade)
+            _render_data_usability_diagnostics(trade, verbose=False)
 
     # ── 5. RANKED STRIKES ────────────────────────────────────────────────
     ranked = trade.get("ranked_strike_candidates") if trade else None
@@ -3006,6 +3223,7 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
 
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
+    _render_data_usability_diagnostics(trade, verbose=True)
 
     if isinstance(trade, dict) and isinstance(result, dict) and "previous_chain_frame" in result:
         trade.setdefault("previous_chain_frame", result.get("previous_chain_frame"))
@@ -3042,6 +3260,17 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
     _exp_pct_model = trade.get("expected_move_pct_model")
     _exp_pct_div = None
     _top_call_oi, _top_put_oi = _resolve_top_oi_strikes(trade, option_chain_frame, top_n=5, formatted=True)
+    _trade_for_oi = _build_trade_for_oi_inference(
+        trade=trade,
+        result=result,
+        spot_summary=spot_summary,
+    )
+    _raw_call_oi, _raw_put_oi = _get_top_oi_levels_cached(
+        result=result,
+        trade_for_oi=_trade_for_oi,
+        option_chain_frame=option_chain_frame,
+        top_n=5,
+    )
     if isinstance(_exp_pct_straddle, (int, float)) and isinstance(_exp_pct_model, (int, float)):
         _exp_pct_div = round(float(_exp_pct_model) - float(_exp_pct_straddle), 3)
 
@@ -3056,6 +3285,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "stop_loss": trade.get("stop_loss"),
         "trade_strength": trade.get("trade_strength"),
         "signal_quality": trade.get("signal_quality"),
+        "analytics_usable": trade.get("analytics_usable"),
+        "execution_suggestion_usable": trade.get("execution_suggestion_usable"),
         "decision_classification": trade.get("decision_classification"),
         "setup_quality": trade.get("setup_quality"),
         "hybrid_move_probability": trade.get("hybrid_move_probability"),
@@ -3079,6 +3310,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "volume_pcr_regime": trade.get("volume_pcr_regime"),
         "macro_regime": trade.get("macro_regime"),
         "global_risk_state": trade.get("global_risk_state"),
+        "iv_surface_residual_status": trade.get("iv_surface_residual_status"),
+        "iv_surface_residual_penalty_score": trade.get("iv_surface_residual_penalty_score"),
         "option_efficiency_score": trade.get("option_efficiency_score"),
         "premium_efficiency_score": trade.get("premium_efficiency_score"),
         "strike_efficiency_score": trade.get("strike_efficiency_score"),
@@ -3111,6 +3344,7 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
     })
 
     _render_directionality_diagnostics(trade, mode="standard")
+    _render_reliability_damping(trade)
 
     # Scoring breakdown
     scoring = trade.get("scoring_breakdown")
@@ -3139,6 +3373,33 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         extended=True,
         direction=trade.get("direction") if trade else None,
     )
+
+    _trade_for_oi = _build_trade_for_oi_inference(
+        trade=trade,
+        result=result,
+        spot_summary=spot_summary,
+    )
+    _raw_call_oi, _raw_put_oi = _get_top_oi_levels_cached(
+        result=result,
+        trade_for_oi=_trade_for_oi,
+        option_chain_frame=option_chain_frame,
+        top_n=5,
+    )
+    consistency_findings = _collect_compact_consistency_checks(
+        trade,
+        call_oi=_raw_call_oi,
+        put_oi=_raw_put_oi,
+    )
+    _print_section(
+        "CONSISTENCY CHECK",
+        {
+            "status": "WARN" if consistency_findings else "PASS",
+            "issues": len(consistency_findings),
+        },
+    )
+    if consistency_findings:
+        for finding in consistency_findings:
+            print(f"  • {finding}")
 
 
 # ---------------------------------------------------------------------------
@@ -3228,6 +3489,16 @@ _DIAGNOSTIC_KEYS = [
     "spot_validation",
     "option_chain_validation",
     "provider_health",
+    "analytics_usable",
+    "execution_suggestion_usable",
+    "tradable_data",
+    "feature_reliability_weights",
+    "iv_surface_residual_status",
+    "iv_surface_residual_rmse",
+    "iv_surface_residual_outlier_ratio",
+    "iv_surface_term_structure_inversion_count",
+    "iv_surface_residual_penalty_score",
+    "iv_surface_residual_penalty_reasons",
     "data_quality_reasons",
     "macro_adjustment_reasons",
     "confirmation_status",
@@ -3324,6 +3595,8 @@ def _render_full_signal_summary(trade, option_chain_frame=None):
         "stop_loss": trade.get("stop_loss"),
         "trade_strength": trade.get("trade_strength"),
         "signal_quality": trade.get("signal_quality"),
+        "analytics_usable": trade.get("analytics_usable"),
+        "execution_suggestion_usable": trade.get("execution_suggestion_usable"),
         "decision_classification": trade.get("decision_classification"),
         "setup_state": trade.get("setup_state"),
         "setup_quality": trade.get("setup_quality"),
@@ -3380,6 +3653,10 @@ def _render_full_signal_summary(trade, option_chain_frame=None):
         "overnight_risk_penalty": trade.get("overnight_risk_penalty"),
         "atm_iv": trade.get("atm_iv"),
         "vol_surface_regime": trade.get("vol_surface_regime"),
+        "iv_surface_residual_status": trade.get("iv_surface_residual_status"),
+        "iv_surface_residual_rmse": trade.get("iv_surface_residual_rmse"),
+        "iv_surface_residual_penalty_score": trade.get("iv_surface_residual_penalty_score"),
+        "iv_surface_residual_penalty_reasons": trade.get("iv_surface_residual_penalty_reasons"),
         "capital_required": trade.get("capital_required"),
         "data_quality_score": trade.get("data_quality_score"),
         "data_quality_status": trade.get("data_quality_status"),
@@ -3517,6 +3794,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
 
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
+    _render_data_usability_diagnostics(trade, verbose=True)
 
     if not trade:
         print("\n  ▸ NO TRADE SIGNAL")
@@ -3532,6 +3810,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
             print(f"{key:26}: {display[key]}")
 
     _render_directionality_diagnostics(trade, mode="full_debug")
+    _render_reliability_damping(trade)
 
     # Dealer dashboard
     dashboard = dict(trade)
@@ -3577,6 +3856,33 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         extended=True,
         direction=trade.get("direction") if trade else None,
     )
+
+    _trade_for_oi = _build_trade_for_oi_inference(
+        trade=trade,
+        result=result,
+        spot_summary=spot_summary,
+    )
+    _raw_call_oi, _raw_put_oi = _get_top_oi_levels_cached(
+        result=result,
+        trade_for_oi=_trade_for_oi,
+        option_chain_frame=option_chain_frame,
+        top_n=5,
+    )
+    consistency_findings = _collect_compact_consistency_checks(
+        trade,
+        call_oi=_raw_call_oi,
+        put_oi=_raw_put_oi,
+    )
+    _print_section(
+        "CONSISTENCY CHECK",
+        {
+            "status": "WARN" if consistency_findings else "PASS",
+            "issues": len(consistency_findings),
+        },
+    )
+    if consistency_findings:
+        for finding in consistency_findings:
+            print(f"  • {finding}")
 
 
 # ---------------------------------------------------------------------------

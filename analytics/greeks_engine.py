@@ -17,14 +17,22 @@ Downstream Usage:
 from __future__ import annotations
 
 import math
+import os
 import re
 from functools import lru_cache
+import logging
 
 import pandas as pd
 
 from config.settings import DIVIDEND_YIELD, RISK_FREE_RATE
 from utils.numerics import safe_float as _safe_float  # noqa: F401
 from utils.math_helpers import norm_pdf as _norm_pdf, norm_cdf as _norm_cdf  # noqa: F401
+
+
+_LOG = logging.getLogger(__name__)
+_SECONDS_PER_YEAR = 365.0 * 24.0 * 3600.0
+_GREEKS_MIN_TTE_SECONDS = float(os.getenv("OQE_GREEKS_MIN_TTE_SECONDS", "60"))
+_GREEKS_MIN_TTE_YEARS_FLOOR = float(os.getenv("OQE_GREEKS_MIN_TTE_YEARS_FLOOR", "1e-6"))
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +142,10 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
         raw = expiry_value.strip().upper()
         match = re.fullmatch(r"T\+(\d+)", raw)
         if match:
-            return max(float(match.group(1)) / 365.0, 1.0 / (365.0 * 24.0))
+            years = float(match.group(1)) / 365.0
+            if years * _SECONDS_PER_YEAR < _GREEKS_MIN_TTE_SECONDS:
+                return None
+            return max(years, _GREEKS_MIN_TTE_YEARS_FLOOR)
         parsed = _parse_expiry_timestamp_cached(expiry_value)
     else:
         parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
@@ -149,7 +160,9 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
     time_years = (parsed - now_ts).total_seconds() / (365.0 * 24 * 3600.0)
     if time_years <= 0:
         return None
-    return max(float(time_years), 1.0 / (365.0 * 24.0))
+    if float(time_years) * _SECONDS_PER_YEAR < _GREEKS_MIN_TTE_SECONDS:
+        return None
+    return max(float(time_years), _GREEKS_MIN_TTE_YEARS_FLOOR)
 
 
 @lru_cache(maxsize=2048)
@@ -212,8 +225,12 @@ def compute_option_greeks(
     if spot in (None, 0) or strike in (None, 0) or t in (None, 0) or sigma_pct in (None, 0):
         return None
 
+    if float(t) * _SECONDS_PER_YEAR < _GREEKS_MIN_TTE_SECONDS:
+        _LOG.debug("Skipping Greeks due to ultra-short TTE: %.2f seconds", float(t) * _SECONDS_PER_YEAR)
+        return None
+
     sigma = max(float(sigma_pct) / 100.0, 1e-6)
-    t = max(float(t), 1e-6)
+    t = max(float(t), _GREEKS_MIN_TTE_YEARS_FLOOR)
     r = float(risk_free_rate)
     q = float(dividend_yield)
 

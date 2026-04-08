@@ -124,7 +124,7 @@ def test_run_engine_snapshot_uses_promotion_state_and_logs_shadow(monkeypatch):
     monkeypatch.setattr(
         engine_runner,
         "validate_option_chain",
-        lambda option_chain: {
+        lambda option_chain, **kwargs: {
             "is_valid": True,
             "is_stale": False,
             "selected_expiry": "2026-03-26",
@@ -196,7 +196,7 @@ def test_run_engine_snapshot_closes_managed_router(monkeypatch):
     monkeypatch.setattr(
         engine_runner,
         "validate_option_chain",
-        lambda option_chain: {
+        lambda option_chain, **kwargs: {
             "is_valid": True,
             "is_stale": False,
             "selected_expiry": "2026-03-26",
@@ -386,7 +386,7 @@ def test_run_engine_snapshot_continues_when_spot_history_append_raises_value_err
     monkeypatch.setattr(
         engine_runner,
         "validate_option_chain",
-        lambda option_chain: {
+        lambda option_chain, **kwargs: {
             "is_valid": True,
             "is_stale": False,
             "selected_expiry": "2026-03-26",

@@ -495,7 +495,14 @@ def _prepare_snapshot_context(
 
     resolved_expiry = resolve_selected_expiry(option_chain)
     filtered_option_chain = filter_option_chain_by_expiry(option_chain, resolved_expiry)
-    option_chain_validation = validate_option_chain(filtered_option_chain)
+    _vix_for_validation = (
+        (prepared_global_market_snapshot or {}).get("market_inputs", {}) or {}
+    ).get("india_vix_level")
+    option_chain_validation = validate_option_chain(
+        filtered_option_chain,
+        spot=spot_context.get("spot"),
+        india_vix_level=_vix_for_validation,
+    )
     option_chain_frame = _prepare_option_chain_frame(filtered_option_chain)
 
     return {

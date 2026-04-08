@@ -84,3 +84,23 @@ def test_collect_market_state_emits_timing_breakdown(monkeypatch):
     assert "gamma_exposure" in timings["step_ms"]
     assert "greek_exposures" in timings["step_ms"]
     assert len(timings["slowest_steps"]) > 0
+
+
+def test_feature_reliability_overlay_penalizes_fragile_inputs():
+    overlay = signal_engine._compute_feature_reliability_overlay(
+        {
+            "feature_reliability_weights": {
+                "flow": 0.42,
+                "vol_surface": 0.28,
+                "greeks": 0.39,
+                "liquidity": 0.34,
+                "macro": 0.80,
+            }
+        }
+    )
+
+    assert overlay["status"] == "FRAGILE"
+    assert overlay["aggregate_score"] < 70.0
+    assert overlay["trade_strength_penalty"] == 0
+    assert overlay["runtime_composite_penalty"] == 0
+    assert "vol_surface_low_reliability" in overlay["reasons"]

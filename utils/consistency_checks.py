@@ -110,6 +110,39 @@ def collect_trade_consistency_findings(trade):
             }
         )
 
+    # Flow vs macro/global regime contradiction.
+    flow_signal = str(trade.get("final_flow_signal") or trade.get("flow_signal") or "").upper().strip()
+    macro_regime = str(trade.get("macro_regime") or "").upper().strip()
+    global_risk = str(trade.get("global_risk_state") or "").upper().strip()
+
+    flow_is_bullish = any(token in flow_signal for token in ("BULLISH", "_BUY", "SMART_BUY"))
+    flow_is_bearish = any(token in flow_signal for token in ("BEARISH", "_SELL", "SMART_SELL"))
+    regime_risk_off = macro_regime == "RISK_OFF" or global_risk == "RISK_OFF"
+    regime_risk_on = macro_regime == "RISK_ON" or global_risk == "RISK_ON"
+
+    if flow_is_bullish and regime_risk_off:
+        findings.append(
+            {
+                "code": "FLOW_MACRO_REGIME_CONTRADICTION",
+                "severity": "MEDIUM",
+                "message": (
+                    f"bullish flow signal ({flow_signal}) conflicts with "
+                    f"RISK_OFF macro/global regime; interpret flow with caution"
+                ),
+            }
+        )
+    elif flow_is_bearish and regime_risk_on:
+        findings.append(
+            {
+                "code": "FLOW_MACRO_REGIME_CONTRADICTION",
+                "severity": "MEDIUM",
+                "message": (
+                    f"bearish flow signal ({flow_signal}) conflicts with "
+                    f"RISK_ON macro/global regime; interpret flow with caution"
+                ),
+            }
+        )
+
     return findings
 
 

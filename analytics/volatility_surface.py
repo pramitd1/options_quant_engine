@@ -20,8 +20,133 @@ import math
 import pandas as pd
 import numpy as np
 
+from config.analytics_feature_policy import get_iv_hv_spread_policy_config
 from utils.regime_normalization import normalize_iv_decimal
 from utils.math_helpers import norm_cdf as _norm_cdf
+
+
+def _resolve_surface_columns(option_chain: pd.DataFrame) -> tuple[str | None, str | None, str | None]:
+    strike_col = "STRIKE_PR" if "STRIKE_PR" in option_chain.columns else ("strikePrice" if "strikePrice" in option_chain.columns else None)
+    iv_col = "IV" if "IV" in option_chain.columns else ("impliedVolatility" if "impliedVolatility" in option_chain.columns else None)
+    expiry_col = "EXPIRY_DT" if "EXPIRY_DT" in option_chain.columns else ("expiry" if "expiry" in option_chain.columns else None)
+    return strike_col, iv_col, expiry_col
+
+
+def _fit_expiry_surface_residuals(expiry_df: pd.DataFrame, *, spot: float) -> dict:
+    if expiry_df.empty or spot <= 0:
+        return {"rmse": None, "outlier_ratio": None, "point_count": 0}
+
+    x = np.log(expiry_df["_strike"].to_numpy(dtype=float) / float(spot))
+    y = expiry_df["_iv"].to_numpy(dtype=float)
+    if len(x) < 4:
+        return {"rmse": None, "outlier_ratio": None, "point_count": int(len(x))}
+
+    degree = 2 if len(x) >= 6 else 1
+    try:
+        coeffs = np.polyfit(x, y, degree)
+        y_hat = np.polyval(coeffs, x)
+    except Exception:
+        return {"rmse": None, "outlier_ratio": None, "point_count": int(len(x))}
+
+    residuals = y - y_hat
+    rmse = float(np.sqrt(np.mean(np.square(residuals))))
+    # Residual threshold in IV-decimal units (~6 vol points).
+    outlier_ratio = float(np.mean(np.abs(residuals) > 0.06))
+    return {
+        "rmse": round(rmse, 6),
+        "outlier_ratio": round(outlier_ratio, 6),
+        "point_count": int(len(x)),
+    }
+
+
+def compute_surface_residual_penalty(option_chain: pd.DataFrame, spot: float) -> dict:
+    """Compute IV surface fit residual diagnostics and a penalty score.
+
+    This is a first-pass penalty model for Phase 2. It uses a smooth per-expiry
+    fit and a simple ATM term-structure inversion check.
+    """
+    out = {
+        "iv_surface_residual_status": "UNAVAILABLE",
+        "iv_surface_residual_rmse": None,
+        "iv_surface_residual_outlier_ratio": None,
+        "iv_surface_term_structure_inversion_count": 0,
+        "iv_surface_residual_penalty_score": 0,
+        "iv_surface_residual_penalty_reasons": [],
+    }
+
+    if option_chain is None or option_chain.empty or spot is None or spot <= 0:
+        return out
+
+    df = option_chain.copy()
+    strike_col, iv_col, expiry_col = _resolve_surface_columns(df)
+    if strike_col is None or iv_col is None or expiry_col is None:
+        return out
+
+    df["_strike"] = pd.to_numeric(df[strike_col], errors="coerce")
+    df["_iv"] = pd.to_numeric(df[iv_col], errors="coerce").apply(lambda v: normalize_iv_decimal(v, default=np.nan))
+    df["_expiry"] = pd.to_datetime(df[expiry_col], errors="coerce")
+    df = df.dropna(subset=["_strike", "_iv", "_expiry"])
+    df = df[(df["_strike"] > 0) & (df["_iv"] > 0)]
+    if df.empty:
+        return out
+
+    expiry_stats = []
+    atm_curve = []
+    for expiry, expiry_df in df.groupby("_expiry"):
+        fit_stats = _fit_expiry_surface_residuals(expiry_df, spot=float(spot))
+        if fit_stats.get("rmse") is not None:
+            expiry_stats.append(fit_stats)
+
+        expiry_df = expiry_df.copy()
+        expiry_df["_dist"] = (expiry_df["_strike"] - float(spot)).abs()
+        if not expiry_df.empty:
+            atm_iv = float(expiry_df.sort_values("_dist").iloc[0]["_iv"])
+            atm_curve.append((expiry, atm_iv))
+
+    if not expiry_stats:
+        return out
+
+    rmse_values = [float(s["rmse"]) for s in expiry_stats if s.get("rmse") is not None]
+    outlier_values = [float(s["outlier_ratio"]) for s in expiry_stats if s.get("outlier_ratio") is not None]
+    rmse = float(np.mean(rmse_values)) if rmse_values else 0.0
+    outlier_ratio = float(np.mean(outlier_values)) if outlier_values else 0.0
+
+    inversion_count = 0
+    if len(atm_curve) >= 2:
+        atm_curve = sorted(atm_curve, key=lambda item: item[0])
+        # Count notable backward ATM-IV steps (>= 3 vol points).
+        for idx in range(1, len(atm_curve)):
+            prev_iv = atm_curve[idx - 1][1]
+            curr_iv = atm_curve[idx][1]
+            if curr_iv + 0.03 < prev_iv:
+                inversion_count += 1
+
+    penalty_score = int(min(20.0, max(0.0, (rmse * 220.0) + (outlier_ratio * 25.0) + (inversion_count * 3.0))))
+    reasons = []
+    if rmse > 0.035:
+        reasons.append("surface_residual_rmse_high")
+    if outlier_ratio > 0.15:
+        reasons.append("surface_residual_outlier_ratio_high")
+    if inversion_count > 0:
+        reasons.append("term_structure_inversion_detected")
+
+    status = "GOOD"
+    if penalty_score >= 12:
+        status = "WEAK"
+    elif penalty_score >= 6:
+        status = "CAUTION"
+
+    out.update(
+        {
+            "iv_surface_residual_status": status,
+            "iv_surface_residual_rmse": round(rmse, 6),
+            "iv_surface_residual_outlier_ratio": round(outlier_ratio, 6),
+            "iv_surface_term_structure_inversion_count": int(inversion_count),
+            "iv_surface_residual_penalty_score": int(penalty_score),
+            "iv_surface_residual_penalty_reasons": reasons,
+        }
+    )
+    return out
 
 
 def build_vol_surface(option_chain):
@@ -107,6 +232,9 @@ def compute_risk_reversal(option_chain, spot: float, delta_target: float = 0.25)
     """
     result = {
         "rr_value": None,
+        "rr_value_points": None,
+        "rr_value_decimal": None,
+        "rr_unit": "VOL_POINTS",
         "put_iv_25d": None,
         "call_iv_25d": None,
         "rr_regime": "UNAVAILABLE",
@@ -238,13 +366,16 @@ def compute_risk_reversal(option_chain, spot: float, delta_target: float = 0.25)
     # Note: this is the inverse of the Bloomberg/dealer convention
     # (call − put), which reports positive RR for call skew.
     # The direction_probability_head inversion (-rr) corrects for this.
-    rr = round(put_iv_points - call_iv_points, 4)
-    result["rr_value"] = rr
+    rr_points = round(put_iv_points - call_iv_points, 4)
+    rr_decimal = round(put_iv - call_iv, 6)
+    result["rr_value"] = rr_points
+    result["rr_value_points"] = rr_points
+    result["rr_value_decimal"] = rr_decimal
     result["put_iv_25d"] = round(put_iv_points, 4)
     result["call_iv_25d"] = round(call_iv_points, 4)
-    if rr > 0.5:
+    if rr_points > 0.5:
         result["rr_regime"] = "PUT_SKEW"
-    elif rr < -0.5:
+    elif rr_points < -0.5:
         result["rr_regime"] = "CALL_SKEW"
     else:
         result["rr_regime"] = "BALANCED"
@@ -406,6 +537,7 @@ def iv_hv_spread(atm_iv: float | None, realized_hv: float | None) -> dict:
     """
     _empty = {
         "iv_hv_spread": None,
+        "iv_hv_spread_relative": None,
         "iv_hv_regime": "UNAVAILABLE",
         "atm_iv_pct": None,
         "realized_hv_pct": None,
@@ -423,17 +555,23 @@ def iv_hv_spread(atm_iv: float | None, realized_hv: float | None) -> dict:
         return _empty
 
     spread = round(atm_iv_dec - hv_dec, 4)
+    spread_relative = (atm_iv_dec - hv_dec) / max(hv_dec, 1e-4)
 
-    # ±2 vol points tolerance band for "FAIR"
-    if spread > 0.02:
+    # Relative tolerance policy keeps interpretation stable across low-vol and
+    # high-vol regimes while remaining tunable through parameter packs.
+    policy = get_iv_hv_spread_policy_config()
+    rich_threshold = float(policy.rich_threshold_relative)
+    cheap_threshold = float(policy.cheap_threshold_relative)
+    if spread_relative > rich_threshold:
         regime = "IV_RICH"
-    elif spread < -0.02:
+    elif spread_relative < cheap_threshold:
         regime = "IV_CHEAP"
     else:
         regime = "IV_FAIR"
 
     return {
         "iv_hv_spread": spread,
+        "iv_hv_spread_relative": round(spread_relative, 4),
         "iv_hv_regime": regime,
         "atm_iv_pct": round(atm_iv_dec * 100.0, 2),
         "realized_hv_pct": round(hv_dec * 100.0, 2),

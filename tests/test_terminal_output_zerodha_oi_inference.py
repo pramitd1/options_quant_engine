@@ -291,6 +291,66 @@ def test_resolve_top_oi_levels_uses_multi_horizon_reason_codes() -> None:
     assert put_rows[0][6] == "PREMIUM_STRONG_AGREE"
 
 
+def test_resolve_top_oi_levels_downshifts_confidence_when_oi_is_flat_but_premium_moves() -> None:
+    current_chain = pd.DataFrame(
+        {
+            "strikePrice": [22950],
+            "OPTION_TYP": ["CE"],
+            "openInterest": [1400],
+            "changeinOI": [0],
+            "lastPrice": [120.0],
+            "EXPIRY_DT": ["2026-04-07"],
+            "source": ["ICICI"],
+        }
+    )
+    baseline_1m = pd.DataFrame(
+        {
+            "strikePrice": [22950],
+            "OPTION_TYP": ["CE"],
+            "openInterest": [1400],
+            "lastPrice": [110.0],
+            "EXPIRY_DT": ["2026-04-07"],
+            "source": ["ICICI"],
+        }
+    )
+    baseline_3m = pd.DataFrame(
+        {
+            "strikePrice": [22950],
+            "OPTION_TYP": ["CE"],
+            "openInterest": [1400],
+            "lastPrice": [100.0],
+            "EXPIRY_DT": ["2026-04-07"],
+            "source": ["ICICI"],
+        }
+    )
+    baseline_5m = pd.DataFrame(
+        {
+            "strikePrice": [22950],
+            "OPTION_TYP": ["CE"],
+            "openInterest": [1400],
+            "lastPrice": [90.0],
+            "EXPIRY_DT": ["2026-04-07"],
+            "source": ["ICICI"],
+        }
+    )
+    trade = {
+        "selected_expiry": "2026-04-07",
+        "spot": 22980.0,
+        "prev_close": 22800.0,
+        "premium_baseline_chain_frames": {
+            "1m": baseline_1m,
+            "3m": baseline_3m,
+            "5m": baseline_5m,
+        },
+    }
+
+    call_rows, _ = _resolve_top_oi_levels(trade, current_chain, top_n=1)
+
+    assert call_rows[0][3] == "OI_FLAT"
+    assert call_rows[0][6] == "OI_FLAT_PREMIUM_AGREE"
+    assert call_rows[0][5] < 0.5
+
+
 def test_persist_oi_inference_artifact_writes_jsonl_payload(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     call_rows = [

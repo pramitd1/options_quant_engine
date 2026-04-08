@@ -25,6 +25,15 @@ def _resolve_columns(df: pd.DataFrame) -> tuple[str | None, str | None, str | No
     return strike_col, oi_col, type_col
 
 
+def _signed_option_type(series: pd.Series) -> pd.Series:
+    normalized = series.astype(str).str.upper().str.strip()
+    signed = normalized.map({"CE": 1.0, "PE": -1.0})
+    if signed.isna().any():
+        unknown = sorted(set(normalized[signed.isna()].tolist()))
+        raise ValueError(f"Unknown OPTION_TYP values in gamma_walls: {unknown}")
+    return signed
+
+
 def _gamma_exposure_by_strike(df: pd.DataFrame) -> pd.Series:
     strike_col, oi_col, type_col = _resolve_columns(df)
     if strike_col is None or oi_col is None or type_col is None:
@@ -47,7 +56,7 @@ def _gamma_exposure_by_strike(df: pd.DataFrame) -> pd.Series:
         distance = (work[strike_col] - spot_proxy).abs() / max(spot_proxy, 1e-6)
         gamma = 1.0 / (1.0 + distance)
 
-    signed = work[type_col].astype(str).str.upper().map({"CE": 1.0, "PE": -1.0}).fillna(0.0)
+    signed = _signed_option_type(work[type_col])
     work["_signed_gamma_exposure"] = gamma * work[oi_col] * signed
     return work.groupby(strike_col)["_signed_gamma_exposure"].sum()
 
