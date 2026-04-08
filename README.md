@@ -953,6 +953,29 @@ options_quant_engine/
 
 Environment variables are loaded from `.env` when present.
 
+### External Market Data (USD/INR, WTI Crude Oil)
+
+**Available as of April 8, 2026**
+
+Cross-market spillover signals enable advanced regime packs (e.g., `cross_market_spillover_v1`).
+
+Historical data (already fetched):
+
+```bash
+# CSV files ready for backtesting (no additional setup needed)
+data/cache/usd_inr_historical_365d.csv       # 257 trading days
+data/cache/wti_historical_365d.csv           # 251 trading days
+```
+
+Live/real-time quotes (optional setup):
+
+```bash
+# For live trading, set Finnhub API key (free tier, 250 req/min)
+FINNHUB_API_KEY=d7b5flhr01qhndem3m9gd7b5flhr01qhndem3ma0
+```
+
+See [EXTERNAL_DATA_SETUP.md](EXTERNAL_DATA_SETUP.md) for integration guide, usage examples, and upgrade path to premium feeds.
+
 ### Backtest Data Source
 
 ```bash
