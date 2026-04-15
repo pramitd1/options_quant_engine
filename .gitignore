@@ -28,8 +28,16 @@ analyze_tuning_results.py
 research/artifacts/
 
 # Documents, reports, audits, and planning artifacts (keep out of git)
+# Only keep the root README tracked. Future cross-asset platform materials belong
+# in the parent Quant Engines folder, not inside this repository.
 documentation/
 documentation/**
+plans/
+reports/
+reviews/
+summaries/
+docs/
+cross_asset_platform/
 *.md
 *.markdown
 *.rst

@@ -53,10 +53,12 @@ Direction-head promotion governance in this repository is currently signal-quali
 
 ### Environment
 
+Recommended runtime: Python 3.11.15.
+
 macOS / Linux:
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
@@ -65,7 +67,7 @@ cp .env.example .env
 Windows PowerShell:
 
 ```powershell
-py -3 -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
@@ -74,7 +76,7 @@ Copy-Item .env.example .env
 Windows Command Prompt:
 
 ```bat
-py -3 -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate.bat
 pip install -r requirements.txt
 copy .env.example .env
@@ -84,6 +86,7 @@ Fill in provider credentials only for the routes you want to use.
 
 Notes:
 
+- on macOS, prefer `python3.11` when multiple Python versions are installed
 - the commands elsewhere in this README are written in Unix-style form because
   the repo has primarily been developed on macOS
 - on Windows, once the virtual environment is activated, the Python commands
@@ -174,7 +177,7 @@ This is the fastest practical onboarding path for a new operator.
 1. Set up local dev runtime (2-3 minutes)
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
@@ -215,7 +218,8 @@ If you only have 10 minutes, run steps 1 and 2 first, then run steps 3 and 4 bef
 
 To keep the repository maintainable and reproducible, use these artifact path conventions.
 
-- Human-readable operator docs, plans, reviews, summaries, and deployment guides belong under `documentation/` and should follow the index in `documentation/README.md`.
+- This repository is scoped to the options engine itself. Future cross-asset platform code, scaffolds, roadmaps, and platform-level planning should live in the parent `Quant Engines/` folder, not inside this repo.
+- Human-readable operator docs, plans, reviews, summaries, and deployment guides are local-only artifacts. Keep them in the ignored `documentation/` archive or the parent local docs tree. Only the root `README.md` should remain versioned here.
 - Runtime validation and profiling outputs: store under `research/runtime_validation/`.
 - Backtest logs and comparison outputs: store under `research/runtime_validation/backtest_runs/`.
 - Signal-evaluation reports and generated tables: store under `research/signal_evaluation/reports/`.
@@ -974,7 +978,7 @@ Live/real-time quotes (optional setup):
 FINNHUB_API_KEY=d7b5flhr01qhndem3m9gd7b5flhr01qhndem3ma0
 ```
 
-Local setup and handoff notes can be kept under the ignored `documentation/` tree when needed.
+Local setup and handoff notes can be kept under the ignored `documentation/` tree when needed. Cross-asset platform planning should live in the parent `Quant Engines/` folder instead of this repo.
 
 ### Backtest Data Source
 
@@ -1048,6 +1052,7 @@ ICICI_BREEZE_SESSION_TOKEN=
 
 ```bash
 OQE_RUNTIME_ENV=DEV
+OQE_ALLOW_LIVE_SECRETS=true   # set only for trusted local use when live broker secrets are present
 MACRO_EVENT_FILTER_ENABLED=true
 MACRO_EVENT_SCHEDULE_FILE=config/india_macro_schedule.json
 HEADLINE_PROVIDER=RSS
