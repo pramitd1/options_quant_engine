@@ -16,10 +16,43 @@ Downstream Usage:
 import argparse
 import json
 import os
+import sys
 import time
 import warnings
 from getpass import getpass
 from pathlib import Path
+
+
+_MIN_PYTHON = (3, 11)
+
+
+def _ensure_supported_runtime() -> None:
+    """Re-launch under the repo's Python 3.11 environment when available."""
+    if os.environ.get("OQE_RUNTIME_REEXEC") == "1":
+        return
+
+    repo_root = Path(__file__).resolve().parent
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    current_executable = Path(sys.executable).resolve()
+
+    incompatible_version = sys.version_info < _MIN_PYTHON
+    venv_available = venv_python.exists()
+    already_using_venv = venv_available and current_executable == venv_python.resolve()
+
+    if incompatible_version and venv_available and not already_using_venv:
+        os.environ["OQE_RUNTIME_REEXEC"] = "1"
+        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
+
+    if incompatible_version and not venv_available:
+        required = ".".join(str(part) for part in _MIN_PYTHON)
+        found = ".".join(str(part) for part in sys.version_info[:3])
+        raise SystemExit(
+            f"Options Quant Engine requires Python {required}+; found {found}. "
+            "Create the local .venv with Python 3.11 and retry."
+        )
+
+
+_ensure_supported_runtime()
 
 import pandas as pd
 from pandas.errors import ParserError

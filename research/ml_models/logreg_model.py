@@ -33,6 +33,19 @@ _UNAVAILABLE = object()
 _WARN_ONCE_KEYS: set[str] = set()
 
 
+def _is_known_model_compatibility_issue(exc: Exception) -> bool:
+    text = str(exc)
+    compatibility_markers = (
+        "not a known BitGenerator module",
+        "Trying to unpickle estimator",
+        "numpy.random",
+        "unsupported pickle protocol",
+        "No module named",
+        "has no attribute",
+    )
+    return any(marker in text for marker in compatibility_markers)
+
+
 def _warn_once(key: str, message: str, *args) -> None:
     if key in _WARN_ONCE_KEYS:
         return
@@ -84,8 +97,15 @@ def _load_model():
                 _cached_meta = json.load(f)
         logger.info("Loaded LogReg calibration model: %s", LOGREG_MODEL_NAME)
         return _cached_model, _cached_meta
-    except Exception:
-        logger.exception("Failed to load LogReg model from %s", LOGREG_MODEL_PATH)
+    except Exception as exc:
+        if _is_known_model_compatibility_issue(exc):
+            _warn_once(
+                "logreg_model_known_compatibility_issue",
+                "LogReg model artifact is incompatible with the current runtime; disabling LogReg inference until rebuilt: %s",
+                exc,
+            )
+        else:
+            logger.exception("Failed to load LogReg model from %s", LOGREG_MODEL_PATH)
         _cached_model = _UNAVAILABLE
         _cached_meta = None
         return None, None

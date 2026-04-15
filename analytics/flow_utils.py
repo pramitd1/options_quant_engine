@@ -61,6 +61,23 @@ def infer_strike_step(option_chain: pd.DataFrame):
     return min(diffs)
 
 
+def _front_expiry_slice_cache_key(option_chain: pd.DataFrame, *, spot=None, strike_window_steps: int = 4):
+    """Build a stable cache key for front-expiry ATM slices.
+
+    The cache is attached to the snapshot dataframe itself so repeated analytics
+    fan-out on the same normalized chain can reuse the expensive expiry/strike
+    filtering work.
+    """
+    spot_value = _safe_float(spot, None)
+    if spot_value is not None:
+        spot_value = round(float(spot_value), 6)
+    try:
+        steps_value = int(strike_window_steps)
+    except (TypeError, ValueError):
+        steps_value = 4
+    return (spot_value, steps_value, len(option_chain), tuple(option_chain.columns))
+
+
 def front_expiry_atm_slice(option_chain: pd.DataFrame, spot=None, strike_window_steps: int = 4):
     """
     Purpose:
@@ -83,22 +100,37 @@ def front_expiry_atm_slice(option_chain: pd.DataFrame, spot=None, strike_window_
     if option_chain is None or option_chain.empty:
         return option_chain
 
+    cache_key = _front_expiry_slice_cache_key(
+        option_chain,
+        spot=spot,
+        strike_window_steps=strike_window_steps,
+    )
+    cache = option_chain.attrs.setdefault("_front_expiry_atm_slice_cache", {})
+    cached = cache.get(cache_key)
+    if isinstance(cached, pd.DataFrame):
+        return cached.copy()
+
     selected_expiry = resolve_selected_expiry(option_chain)
     df = filter_option_chain_by_expiry(option_chain, selected_expiry)
 
     if df is None or df.empty or spot is None or "strikePrice" not in df.columns:
+        cache[cache_key] = df.copy() if isinstance(df, pd.DataFrame) else df
         return df
 
     strike_step = infer_strike_step(df)
     if strike_step in (None, 0):
+        cache[cache_key] = df.copy()
         return df
 
     lower_bound = float(spot) - (strike_window_steps * strike_step)
     upper_bound = float(spot) + (strike_window_steps * strike_step)
 
+    strike_values = pd.to_numeric(df["strikePrice"], errors="coerce")
     window = df[
-        (pd.to_numeric(df["strikePrice"], errors="coerce") >= lower_bound) &
-        (pd.to_numeric(df["strikePrice"], errors="coerce") <= upper_bound)
+        (strike_values >= lower_bound) &
+        (strike_values <= upper_bound)
     ].copy()
 
-    return window if not window.empty else df
+    result = window if not window.empty else df.copy()
+    cache[cache_key] = result.copy()
+    return result

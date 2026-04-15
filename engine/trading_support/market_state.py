@@ -57,6 +57,36 @@ def _top_timing_steps(step_timings: dict[str, float], limit: int = 5) -> list[di
     ]
 
 
+def _resolve_realized_hv_input(option_chain: pd.DataFrame | None):
+    """Resolve a realized-volatility input from any available live or replay column.
+
+    The live engine should degrade gracefully when no historical-vol proxy is
+    present, but when a replay/backtest snapshot includes one we surface the
+    IV-HV regime into the production market state.
+    """
+    if option_chain is None or option_chain.empty:
+        return None
+
+    candidate_columns = (
+        "hist_vol_20d",
+        "hist_vol_5d",
+        "realized_hv",
+        "realized_hv_20d",
+        "realized_volatility",
+        "realized_volatility_20d",
+        "historicalVolatility",
+        "HV",
+    )
+    for column in candidate_columns:
+        if column not in option_chain.columns:
+            continue
+        values = pd.to_numeric(option_chain[column], errors="coerce").dropna()
+        if values.empty:
+            continue
+        return float(values.median())
+    return None
+
+
 def _summarize_market_gamma(market_gex):
     """
     Purpose:
@@ -427,6 +457,17 @@ def _collect_market_state(
             default=None,
         )
 
+    realized_hv_input = _resolve_realized_hv_input(df)
+    iv_hv_data = _timed_step(
+        "iv_hv_spread",
+        _call_first,
+        volatility_surface_mod,
+        ["iv_hv_spread"],
+        atm_iv,
+        realized_hv_input,
+        default={},
+    ) or {}
+
     # ATM straddle price and market-implied expected move in index points.
     straddle_data = _timed_step(
         "atm_straddle",
@@ -626,6 +667,10 @@ def _collect_market_state(
         "iv_surface_term_structure_inversion_count": iv_surface_residual.get("iv_surface_term_structure_inversion_count"),
         "iv_surface_residual_penalty_score": iv_surface_residual.get("iv_surface_residual_penalty_score", 0),
         "iv_surface_residual_penalty_reasons": iv_surface_residual.get("iv_surface_residual_penalty_reasons", []),
+        "iv_hv_spread": iv_hv_data.get("iv_hv_spread"),
+        "iv_hv_spread_relative": iv_hv_data.get("iv_hv_spread_relative"),
+        "iv_hv_regime": iv_hv_data.get("iv_hv_regime", "UNAVAILABLE"),
+        "realized_hv_pct": iv_hv_data.get("realized_hv_pct"),
         "oi_velocity_score": oi_velocity_data.get("velocity_score"),
         "oi_velocity_regime": oi_velocity_regime,
         "gamma_flip_drift": gamma_flip_drift,

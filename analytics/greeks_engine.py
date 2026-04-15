@@ -321,9 +321,18 @@ def enrich_chain_with_greeks(
 
     df = option_chain.copy()
 
-    for col in ["strikePrice", "IV", "impliedVolatility"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    numeric_candidate_cols = [
+        col for col in ["strikePrice", "STRIKE_PR", "IV", "impliedVolatility", "lastPrice", "LAST_PRICE"]
+        if col in df.columns
+    ]
+    for col in numeric_candidate_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    strike_col = "strikePrice" if "strikePrice" in df.columns else ("STRIKE_PR" if "STRIKE_PR" in df.columns else None)
+    expiry_col = "EXPIRY_DT" if "EXPIRY_DT" in df.columns else ("expiry" if "expiry" in df.columns else None)
+    option_type_col = "OPTION_TYP" if "OPTION_TYP" in df.columns else ("optionType" if "optionType" in df.columns else None)
+    market_price_col = "lastPrice" if "lastPrice" in df.columns else ("LAST_PRICE" if "LAST_PRICE" in df.columns else None)
+    iv_col = "IV" if "IV" in df.columns else ("impliedVolatility" if "impliedVolatility" in df.columns else None)
 
     # Pre-coerce valuation timestamp once (avoids re-parsing per row)
     coerced_valuation_time = _coerce_valuation_timestamp(valuation_time)
@@ -337,6 +346,22 @@ def enrich_chain_with_greeks(
             _tte_cache[key] = _parse_expiry_years(expiry_value, valuation_time=coerced_valuation_time)
         return _tte_cache[key]
 
+    row_count = len(df)
+    strike_values = df[strike_col].tolist() if strike_col else [None] * row_count
+    expiry_values = df[expiry_col].tolist() if expiry_col else [None] * row_count
+    option_type_values = (
+        df[option_type_col].astype(str).tolist()
+        if option_type_col else [""] * row_count
+    )
+    market_price_values = df[market_price_col].tolist() if market_price_col else [None] * row_count
+    iv_values = df[iv_col].tolist() if iv_col else [None] * row_count
+    tte_values = [_cached_parse_expiry_years(expiry_value) for expiry_value in expiry_values]
+
+    existing_greek_values = {
+        name: (df[name].tolist() if name in df.columns else [None] * row_count)
+        for name in ["DELTA", "GAMMA", "THETA", "VEGA", "RHO", "VANNA", "CHARM"]
+    }
+
     deltas = []
     gammas = []
     thetas = []
@@ -347,26 +372,16 @@ def enrich_chain_with_greeks(
     ttes = []
     ivs = []
 
-    for row in df.itertuples(index=False):
-        iv = getattr(row, "IV", None)
-        if iv is None:
-            iv = getattr(row, "impliedVolatility", None)
-
-        expiry_value = getattr(row, "EXPIRY_DT", None)
-        strike_value = getattr(row, "strikePrice", None)
-        option_type_value = getattr(row, "OPTION_TYP", "")
-
+    for idx, (iv, expiry_tte, strike_value, option_type_value, market_price) in enumerate(
+        zip(iv_values, tte_values, strike_values, option_type_values, market_price_values)
+    ):
         # Fallback: estimate IV from market price when provider gives 0/None
-        tte_for_iv = _cached_parse_expiry_years(expiry_value)
         if (iv is None or (isinstance(iv, (int, float)) and iv <= 0)) and spot is not None:
-            market_price = getattr(row, "lastPrice", None)
-            if market_price is None:
-                market_price = getattr(row, "LAST_PRICE", None)
             estimated = estimate_iv_from_price(
                 market_price,
                 spot,
                 strike_value,
-                tte_for_iv,
+                expiry_tte,
                 option_type_value,
                 r=risk_free_rate,
                 q=dividend_yield,
@@ -377,7 +392,7 @@ def enrich_chain_with_greeks(
         greeks = compute_option_greeks(
             spot=spot,
             strike=strike_value,
-            time_to_expiry_years=tte_for_iv,
+            time_to_expiry_years=expiry_tte,
             volatility_pct=iv,
             option_type=option_type_value,
             risk_free_rate=risk_free_rate,
@@ -385,15 +400,15 @@ def enrich_chain_with_greeks(
         )
 
         if greeks is None:
-            deltas.append(getattr(row, "DELTA", None))
-            gammas.append(getattr(row, "GAMMA", None))
-            thetas.append(getattr(row, "THETA", None))
-            vegas.append(getattr(row, "VEGA", None))
-            rhos.append(getattr(row, "RHO", None))
-            vannas.append(getattr(row, "VANNA", None))
-            charms.append(getattr(row, "CHARM", None))
+            deltas.append(existing_greek_values["DELTA"][idx])
+            gammas.append(existing_greek_values["GAMMA"][idx])
+            thetas.append(existing_greek_values["THETA"][idx])
+            vegas.append(existing_greek_values["VEGA"][idx])
+            rhos.append(existing_greek_values["RHO"][idx])
+            vannas.append(existing_greek_values["VANNA"][idx])
+            charms.append(existing_greek_values["CHARM"][idx])
             ttes.append(None)
-            ivs.append(getattr(row, "IV", getattr(row, "impliedVolatility", None)))
+            ivs.append(iv)
             continue
 
         deltas.append(greeks["DELTA"])
@@ -405,7 +420,6 @@ def enrich_chain_with_greeks(
         charms.append(greeks["CHARM"])
         ttes.append(greeks["TTE"])
         ivs.append(iv)
-
     df["DELTA"] = deltas
     df["GAMMA"] = gammas
     df["THETA"] = thetas

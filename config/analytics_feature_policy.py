@@ -54,9 +54,11 @@ class SmartMoneyFlowPolicyConfig:
     
     Attributes:
         unusual_volume_ratio_threshold (float): Threshold used to classify or trigger unusual volume ratio.
-        opening_activity_threshold (float): Threshold used to classify or trigger opening activity.
+        opening_activity_threshold (float): Threshold used to classify or trigger normalized opening activity ratio.
         bullish_ratio_threshold (float): Threshold used to classify or trigger bullish ratio.
         bearish_ratio_threshold (float): Threshold used to classify or trigger bearish ratio.
+        opening_activity_ratio_cap (float): Maximum normalized opening-activity ratio used in score weighting.
+        opening_activity_weight_cap (float): Maximum multiplicative boost applied to notional flow from opening activity.
     
     Notes:
         Explicit field-level documentation makes policy tuning safer because threshold and weighting semantics stay visible at the point of definition.
@@ -65,6 +67,8 @@ class SmartMoneyFlowPolicyConfig:
     opening_activity_threshold: float = 0.0
     bullish_ratio_threshold: float = 1.15
     bearish_ratio_threshold: float = 0.87
+    opening_activity_ratio_cap: float = 3.0
+    opening_activity_weight_cap: float = 4.0
 
 
 @dataclass(frozen=True)

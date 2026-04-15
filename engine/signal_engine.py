@@ -48,6 +48,7 @@ from engine.trading_support import (
     normalize_option_chain,
 )
 from analytics.signal_confidence import compute_signal_confidence
+from analytics.probability_calibration import calibrate_probability
 from macro.engine_adjustments import compute_macro_news_adjustments
 from risk import (
     build_dealer_hedging_pressure_state,
@@ -266,6 +267,153 @@ def _ranked_strike_proxy_ratio(ranked_strikes) -> float:
         if bool(candidate.get("iv_is_proxy")) or bool(candidate.get("delta_is_proxy"))
     )
     return float(proxy_count) / float(max(len(ranked_candidates), 1))
+
+
+def _build_signal_probability_overlay(
+    *,
+    direction,
+    adjusted_trade_strength,
+    call_probability,
+    put_probability,
+    market_state,
+    runtime_thresholds,
+):
+    """Blend direction probabilities with Platt-style score calibration.
+
+    This keeps probability diagnostics on the live signal path even when the
+    standalone calibrator artifact is missing, because the calibration module
+    degrades safely to a linear score-to-probability mapping.
+    """
+    raw_score = float(_clip(_safe_float(adjusted_trade_strength, 50.0), 0.0, 100.0))
+    calibrator_path = runtime_thresholds.get("signal_probability_calibrator_path") if isinstance(runtime_thresholds, dict) else None
+
+    calibrated_probability = None
+    try:
+        calibrated_probability = calibrate_probability(
+            raw_score,
+            calibrator_path=calibrator_path,
+        )
+    except Exception as exc:
+        _LOG.debug("signal_engine: signal probability calibration unavailable: %s", exc)
+
+    directional_probability = None
+    if direction == "CALL":
+        directional_probability = _safe_float(call_probability, None)
+    elif direction == "PUT":
+        directional_probability = _safe_float(put_probability, None)
+    else:
+        call_prob = _safe_float(call_probability, None)
+        put_prob = _safe_float(put_probability, None)
+        directional_probability = max(v for v in (call_prob, put_prob) if v is not None) if any(
+            v is not None for v in (call_prob, put_prob)
+        ) else None
+
+    if directional_probability is not None:
+        directional_probability = float(_clip(directional_probability, 0.0, 1.0))
+    if calibrated_probability is not None:
+        calibrated_probability = float(_clip(calibrated_probability, 0.0, 1.0))
+
+    iv_hv_regime = _as_upper((market_state or {}).get("iv_hv_regime"))
+    iv_hv_probability_adjustment = 0.0
+    if iv_hv_regime == "IV_CHEAP":
+        iv_hv_probability_adjustment = _safe_float(runtime_thresholds.get("iv_hv_probability_bonus"), 0.03)
+    elif iv_hv_regime == "IV_RICH":
+        iv_hv_probability_adjustment = -abs(_safe_float(runtime_thresholds.get("iv_hv_probability_penalty"), 0.03))
+
+    signal_success_probability = None
+    if directional_probability is None and calibrated_probability is None:
+        signal_success_probability = None
+    elif directional_probability is None:
+        signal_success_probability = calibrated_probability
+    elif calibrated_probability is None:
+        signal_success_probability = directional_probability
+    else:
+        signal_success_probability = (
+            0.55 * directional_probability
+            + 0.45 * calibrated_probability
+            + float(iv_hv_probability_adjustment)
+        )
+
+    if signal_success_probability is not None:
+        signal_success_probability = round(float(_clip(signal_success_probability, 0.01, 0.99)), 4)
+
+    return {
+        "directional_signal_probability": round(directional_probability, 4) if directional_probability is not None else None,
+        "signal_calibrated_probability": round(calibrated_probability, 4) if calibrated_probability is not None else None,
+        "signal_success_probability": signal_success_probability,
+        "iv_hv_probability_adjustment": round(float(iv_hv_probability_adjustment), 4),
+    }
+
+
+def _derive_advisory_size_recommendation(
+    payload,
+    *,
+    confidence_score,
+    global_risk_size_cap,
+    at_flip_size_cap,
+    macro_size_multiplier,
+    freshness_size_cap,
+    reversal_stage,
+    expansion_mode,
+    expansion_direction,
+    direction,
+    runtime_thresholds,
+    regime_thresholds,
+    gamma_regime,
+):
+    """Compute sizing as a pure recommendation without mutating the signal payload."""
+    base_lots = max(int(_safe_float((payload or {}).get("number_of_lots"), 0.0)), 0)
+
+    confidence_value = _safe_float(confidence_score, 50.0)
+    if confidence_value < 30.0:
+        confidence_size_mult = 0.25
+    elif confidence_value < 45.0:
+        confidence_size_mult = 0.50
+    elif confidence_value < 55.0:
+        confidence_size_mult = 0.75
+    elif confidence_value < 70.0:
+        confidence_size_mult = 1.00
+    else:
+        confidence_size_mult = 1.25
+
+    risk_size_cap = min(
+        _safe_float(global_risk_size_cap, 1.0),
+        _safe_float(at_flip_size_cap, 1.0),
+        _safe_float(macro_size_multiplier, 1.0),
+        _safe_float(freshness_size_cap, 1.0),
+    )
+    risk_size_cap *= confidence_size_mult
+
+    if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
+        risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_early_size_mult"), 0.60)
+    elif reversal_stage == "CONFIRMED_REVERSAL":
+        risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_confirmed_size_mult"), 1.00)
+
+    if expansion_mode and expansion_direction == direction:
+        risk_size_cap *= _safe_float(runtime_thresholds.get("expansion_mode_size_mult"), 1.10)
+
+    if bool(int(_safe_float(runtime_thresholds.get("enable_regime_conditional_thresholds"), 1.0))):
+        risk_size_cap *= _safe_float((regime_thresholds or {}).get("position_size_multiplier"), 1.0)
+    else:
+        gamma_regime_upper = canonical_gamma_regime(gamma_regime)
+        if gamma_regime_upper == "POSITIVE_GAMMA":
+            risk_size_cap *= _safe_float(runtime_thresholds.get("positive_gamma_size_multiplier"), 0.85)
+        elif gamma_regime_upper == "NEGATIVE_GAMMA":
+            risk_size_cap *= _safe_float(runtime_thresholds.get("negative_gamma_size_multiplier"), 1.15)
+
+    risk_size_cap = float(_clip(risk_size_cap, 0.0, 1.0))
+    advisory_lots = max(0, int(base_lots * risk_size_cap))
+    if base_lots > 0 and advisory_lots == 0 and risk_size_cap > 0:
+        advisory_lots = 1
+
+    return {
+        "advisory_only": True,
+        "confidence_size_multiplier": round(float(confidence_size_mult), 4),
+        "advisory_position_size_multiplier": round(float(risk_size_cap), 4),
+        "effective_size_cap": round(float(risk_size_cap), 2),
+        "advisory_lots": advisory_lots,
+        "macro_size_applied": advisory_lots > 0 and advisory_lots < base_lots,
+    }
 
 
 def _apply_bearish_bias_threshold_adjustments(
@@ -2042,6 +2190,15 @@ def generate_trade(
     if iv_surface_residual_penalty_score > 0:
         adjusted_trade_strength = int(_clip(adjusted_trade_strength - iv_surface_residual_penalty_score, 0, 100))
 
+    iv_hv_adjustment_score = 0
+    iv_hv_regime = _as_upper(market_state.get("iv_hv_regime"))
+    if iv_hv_regime == "IV_CHEAP":
+        iv_hv_adjustment_score = int(_safe_float(runtime_thresholds.get("iv_hv_cheap_trade_strength_bonus"), 2.0))
+    elif iv_hv_regime == "IV_RICH":
+        iv_hv_adjustment_score = -abs(int(_safe_float(runtime_thresholds.get("iv_hv_rich_trade_strength_penalty"), 3.0)))
+    if iv_hv_adjustment_score != 0:
+        adjusted_trade_strength = int(_clip(adjusted_trade_strength + iv_hv_adjustment_score, 0, 100))
+
     structural_imbalance_audit = _compute_structural_imbalance_audit(
         market_state=market_state,
         direction=direction,
@@ -2051,6 +2208,7 @@ def generate_trade(
     scoring_breakdown["freshness_uncertainty_score"] = -freshness_score_penalty
     scoring_breakdown["at_flip_trade_strength_penalty"] = -at_flip_penalty_applied
     scoring_breakdown["iv_surface_residual_penalty"] = -iv_surface_residual_penalty_score
+    scoring_breakdown["iv_hv_adjustment_score"] = iv_hv_adjustment_score
     scoring_breakdown["total_score"] = adjusted_trade_strength
     signal_regime = classify_signal_regime(
         direction=direction,
@@ -2114,6 +2272,10 @@ def generate_trade(
         "volume_pcr": market_state.get("volume_pcr"),
         "volume_pcr_atm": market_state.get("volume_pcr_atm"),
         "volume_pcr_regime": market_state.get("volume_pcr_regime"),
+        "iv_hv_spread": market_state.get("iv_hv_spread"),
+        "iv_hv_spread_relative": market_state.get("iv_hv_spread_relative"),
+        "iv_hv_regime": market_state.get("iv_hv_regime", "UNAVAILABLE"),
+        "realized_hv_pct": market_state.get("realized_hv_pct"),
         "gamma_flip_drift": market_state.get("gamma_flip_drift"),
         "flow_signal": market_state["flow_signal_value"],
         "smart_money_flow": market_state["smart_money_signal_value"],
@@ -2921,7 +3083,8 @@ def generate_trade(
     )
 
     # Budget controls are applied after the signal is fully validated so they
-    # affect position size, not the informational content of the signal itself.
+    # affect only advisory sizing, not the informational content of the signal itself.
+    budget_signal_only = False
     if apply_budget_constraint:
         budget_info = optimize_lots(
             entry_price=entry_price,
@@ -2933,85 +3096,80 @@ def generate_trade(
         base_payload.update(budget_info)
 
         if not budget_info["budget_ok"]:
-            return _finalize(base_payload, "BUDGET_FAIL", "Trade filtered out due to budget constraint")
-
-        base_payload["number_of_lots"] = budget_info.get("optimized_lots", requested_lots)
+            budget_signal_only = True
+            base_payload["budget_signal_only"] = True
+            base_payload["number_of_lots"] = 0
+            base_payload["optimized_lots"] = 0
+        else:
+            base_payload["number_of_lots"] = budget_info.get("optimized_lots", requested_lots)
+            base_payload["optimized_lots"] = base_payload["number_of_lots"]
+            base_payload["budget_signal_only"] = False
     else:
         base_payload["number_of_lots"] = requested_lots
-        base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
-        base_payload["capital_required"] = round(entry_price * lot_size * requested_lots, 2)
+        base_payload["optimized_lots"] = requested_lots
+        base_payload["budget_signal_only"] = False
 
-    # Compute signal confidence early so it can inform sizing decisions.
-    # Confidence-based sizing is a proven lever: +140% cumulative return improvement
-    # (backtest: -2.60 bps flat sizing → +1.07 bps with confidence weighting).
+    base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
+    base_payload["capital_required"] = round(entry_price * lot_size * base_payload["number_of_lots"], 2)
+
+    # Compute signal confidence for diagnostics and advisory sizing only.
     pre_finalize_payload = dict(base_payload)
     signal_confidence = compute_signal_confidence(pre_finalize_payload)
     base_payload["signal_confidence_score"] = signal_confidence["confidence_score"]
     base_payload["signal_confidence_level"] = signal_confidence["confidence_level"]
 
-    # Confidence-to-size mapping: score 0-100 → multiplier 0.25-1.25×
-    # Conservative at extremes (protect capital when uncertain)
-    # Aggressive when alignment is strong (compound edge)
-    confidence_score = _safe_float(signal_confidence.get("confidence_score"), 50.0)
-    if confidence_score < 30.0:
-        confidence_size_mult = 0.25  # Very low: minimal/watchlist-only
-    elif confidence_score < 45.0:
-        confidence_size_mult = 0.50  # Low: quarter sizing
-    elif confidence_score < 55.0:
-        confidence_size_mult = 0.75  # Medium-low: three-quarters
-    elif confidence_score < 70.0:
-        confidence_size_mult = 1.00  # Medium-high: full sizing
-    else:
-        confidence_size_mult = 1.25  # High: 25% scale-up
-
-    # Macro and global-risk size caps can reduce exposure without vetoing the
-    # idea entirely, which is useful for elevated-risk but still actionable setups.
-    risk_size_cap = min(
-        _safe_float(global_risk["global_risk_size_cap"], 1.0),
-        _safe_float(at_flip_size_cap, 1.0),
-        _safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0),
-        _safe_float(freshness_size_cap, 1.0),
+    signal_probability_overlay = _build_signal_probability_overlay(
+        direction=direction,
+        adjusted_trade_strength=adjusted_trade_strength,
+        call_probability=bull_probability,
+        put_probability=bear_probability,
+        market_state=market_state,
+        runtime_thresholds=runtime_thresholds,
     )
-    # Apply confidence-based multiplier to the combined risk cap
-    risk_size_cap *= confidence_size_mult
+    base_payload.update(signal_probability_overlay)
 
-    if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
-        risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_early_size_mult"), 0.60)
-    elif reversal_stage == "CONFIRMED_REVERSAL":
-        risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_confirmed_size_mult"), 1.00)
-    if expansion_mode and expansion_direction == direction:
-        risk_size_cap *= _safe_float(runtime_thresholds.get("expansion_mode_size_mult"), 1.10)
-    
-    if bool(int(_safe_float(runtime_thresholds.get("enable_regime_conditional_thresholds"), 1.0))):
-        risk_size_cap *= _safe_float(regime_thresholds.get("position_size_multiplier"), 1.0)
-    else:
-        gamma_regime_upper = canonical_gamma_regime(market_state.get("gamma_regime"))
-        if gamma_regime_upper == "POSITIVE_GAMMA":
-            risk_size_cap *= _safe_float(runtime_thresholds.get("positive_gamma_size_multiplier"), 0.85)
-        elif gamma_regime_upper == "NEGATIVE_GAMMA":
-            risk_size_cap *= _safe_float(runtime_thresholds.get("negative_gamma_size_multiplier"), 1.15)
-    risk_size_cap = _clip(risk_size_cap, 0.0, 1.0)
-    base_payload["effective_size_cap"] = round(risk_size_cap, 2)
-    suggested_lots = max(0, int(base_payload["number_of_lots"] * risk_size_cap))
-    if base_payload["number_of_lots"] > 0 and suggested_lots == 0 and risk_size_cap > 0:
-        suggested_lots = 1
-    base_payload["macro_suggested_lots"] = suggested_lots
-    base_payload["macro_size_applied"] = suggested_lots > 0 and suggested_lots < base_payload["number_of_lots"]
-    if suggested_lots > 0:
-        base_payload["number_of_lots"] = min(base_payload["number_of_lots"], suggested_lots)
-
-    base_payload["optimized_lots"] = base_payload["number_of_lots"]
-
-    if "entry_price" in base_payload:
-        base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
-        base_payload["capital_required"] = round(entry_price * lot_size * base_payload["number_of_lots"], 2)
+    advisory_sizing = _derive_advisory_size_recommendation(
+        base_payload,
+        confidence_score=_safe_float(signal_confidence.get("confidence_score"), 50.0),
+        global_risk_size_cap=_safe_float(global_risk["global_risk_size_cap"], 1.0),
+        at_flip_size_cap=_safe_float(at_flip_size_cap, 1.0),
+        macro_size_multiplier=_safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0),
+        freshness_size_cap=_safe_float(freshness_size_cap, 1.0),
+        reversal_stage=reversal_stage,
+        expansion_mode=expansion_mode,
+        expansion_direction=expansion_direction,
+        direction=direction,
+        runtime_thresholds=runtime_thresholds,
+        regime_thresholds=regime_thresholds,
+        gamma_regime=market_state.get("gamma_regime"),
+    )
+    base_payload["effective_size_cap"] = advisory_sizing["effective_size_cap"]
+    base_payload["macro_suggested_lots"] = advisory_sizing["advisory_lots"]
+    base_payload["macro_size_applied"] = advisory_sizing["macro_size_applied"]
+    base_payload["advisory_only"] = advisory_sizing["advisory_only"]
+    base_payload["advisory_lots"] = advisory_sizing["advisory_lots"]
+    base_payload["confidence_size_multiplier"] = advisory_sizing["confidence_size_multiplier"]
+    base_payload["advisory_position_size_multiplier"] = advisory_sizing["advisory_position_size_multiplier"]
+    base_payload["advisory_capital_required"] = round(entry_price * lot_size * advisory_sizing["advisory_lots"], 2)
 
     if global_risk["risk_trade_status"] == "WATCHLIST":
         return _finalize(base_payload, "WATCHLIST", global_risk["risk_message"])
 
+    composite_probability_input = probability_state["hybrid_move_probability"]
+    overlay_probability = _safe_float(base_payload.get("signal_success_probability"), None)
+    if overlay_probability is not None:
+        if composite_probability_input is None:
+            composite_probability_input = overlay_probability
+        else:
+            composite_probability_input = round(
+                (float(composite_probability_input) + float(overlay_probability)) / 2.0,
+                4,
+            )
+    base_payload["runtime_probability_input"] = composite_probability_input
+
     runtime_composite_score = _compute_runtime_composite_score(
         trade_strength=adjusted_trade_strength,
-        hybrid_move_probability=probability_state["hybrid_move_probability"],
+        hybrid_move_probability=composite_probability_input,
         move_probability_score_cap=runtime_thresholds.get("move_probability_score_cap"),
         confirmation_status=confirmation["status"],
         data_quality_status=data_quality["status"],
@@ -3071,16 +3229,16 @@ def generate_trade(
         current_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
         guarded_cap = min(current_cap, guard_size_cap)
         base_payload["effective_size_cap"] = round(guarded_cap, 2)
-        current_lots = max(int(_safe_float(base_payload.get("number_of_lots"), 0.0)), 0)
+        current_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), 0.0)), 0)
         guarded_lots = max(int(current_lots * guarded_cap), 0)
         if current_lots > 0 and guarded_lots == 0 and guarded_cap > 0:
             guarded_lots = 1
-        if guarded_lots > 0:
-            base_payload["number_of_lots"] = min(current_lots, guarded_lots)
-            base_payload["optimized_lots"] = base_payload["number_of_lots"]
+        if guarded_lots > 0 or current_lots == 0:
+            base_payload["macro_suggested_lots"] = guarded_lots if current_lots == 0 else min(current_lots, guarded_lots)
+            base_payload["advisory_lots"] = base_payload["macro_suggested_lots"]
+            base_payload["advisory_position_size_multiplier"] = round(guarded_cap, 4)
             if "entry_price" in base_payload:
-                base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
-                base_payload["capital_required"] = round(entry_price * lot_size * base_payload["number_of_lots"], 2)
+                base_payload["advisory_capital_required"] = round(entry_price * lot_size * base_payload["advisory_lots"], 2)
     
     # Apply time-decay model if enabled
     enable_decay = bool(int(_safe_float(runtime_thresholds.get("enable_time_decay_model"), 1.0)))
@@ -3192,16 +3350,16 @@ def generate_trade(
         new_size_cap = min(current_size_cap, override_size_cap)
         base_payload["effective_size_cap"] = round(new_size_cap, 2)
 
-        original_lots = max(int(_safe_float(base_payload.get("number_of_lots"), requested_lots)), 0)
+        original_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), requested_lots)), 0)
         constrained_lots = max(int(original_lots * new_size_cap), 0)
         if original_lots > 0 and constrained_lots == 0 and new_size_cap > 0:
             constrained_lots = 1
-        base_payload["number_of_lots"] = constrained_lots
-        base_payload["optimized_lots"] = constrained_lots
+        base_payload["macro_suggested_lots"] = constrained_lots
+        base_payload["advisory_lots"] = constrained_lots
+        base_payload["advisory_position_size_multiplier"] = round(new_size_cap, 4)
 
         if "entry_price" in base_payload:
-            base_payload["capital_per_lot"] = round(entry_price * lot_size, 2)
-            base_payload["capital_required"] = round(entry_price * lot_size * constrained_lots, 2)
+            base_payload["advisory_capital_required"] = round(entry_price * lot_size * constrained_lots, 2)
 
         override_hold_cap = max(int(_safe_float(runtime_thresholds.get("provider_health_override_hold_cap_minutes"), 35.0)), 5)
         base_payload["recommended_hold_minutes"] = min(int(_safe_float(base_payload.get("recommended_hold_minutes"), override_hold_cap)), override_hold_cap)
@@ -3262,13 +3420,22 @@ def generate_trade(
             "Weak-data circuit breaker routed TRADE to WATCHLIST",
         )
 
+    if budget_signal_only:
+        base_payload["no_trade_reason_code"] = "BUDGET_SIGNAL_ONLY"
+        base_payload["no_trade_reason"] = "Signal remains valid, but execution sizing is withheld by the budget constraint"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Signal generated; execution sizing withheld due to budget constraint",
+        )
+
     if apply_budget_constraint:
-        base_payload["message"] = "Tradable signal generated with budget optimization"
+        base_payload["message"] = "Tradable signal generated with advisory sizing separation"
     else:
         base_payload["message"] = "Tradable signal generated"
 
     return _finalize(
         base_payload,
         "TRADE",
-        "Tradable signal generated with budget optimization" if apply_budget_constraint else "Tradable signal generated",
+        "Tradable signal generated with advisory sizing separation" if apply_budget_constraint else "Tradable signal generated",
     )
