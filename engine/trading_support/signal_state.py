@@ -706,15 +706,29 @@ def decide_direction(
         bullish_score = round(max(0.0, bullish_score - microstructure_penalty), 2)
         bearish_score = round(max(0.0, bearish_score - microstructure_penalty), 2)
     
-    # Apply regime-aware weighting: in elevated volatility, boost bearish (PUT) advantage
-    # to prevent extreme call bias in risk-off environments (fix for 6.55:1 call/put ratio)
+    # Apply regime-aware weighting more selectively: downside should only gain a
+    # volatility-shock edge when the structure is genuinely supportive of a bearish move.
     volatility_shock = float(volatility_shock_score or 0.0)
-    if volatility_shock > 0.3:
-        # Regime weight ranges from 1.0 (low vol) to 1.4 (extreme shock)
-        regime_multiplier = 1.0 + (min(volatility_shock, 1.0) * 0.4)
+    macro_risk_off = macro_regime == "RISK_OFF"
+    downside_structure_confirmed = (
+        spot_vs_flip == "BELOW_FLIP"
+        and hedging_bias == "DOWNSIDE_ACCELERATION"
+        and gamma_regime in {"NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"}
+    )
+    if volatility_shock > 0.3 and (macro_risk_off or downside_structure_confirmed):
+        regime_multiplier = 1.0 + (min(volatility_shock, 1.0) * 0.18)
         bearish_score = round(bearish_score * regime_multiplier, 2)
-    
+
     score_margin = round(abs(bullish_score - bearish_score), 2)
+
+    bearish_neutral_positive_gamma_surcharge = _safe_float(
+        runtime_thresholds.get("bearish_neutral_positive_gamma_margin_surcharge"),
+        0.25,
+    )
+    bearish_neutral_positive_gamma_score_surcharge = _safe_float(
+        runtime_thresholds.get("bearish_neutral_positive_gamma_score_surcharge"),
+        0.15,
+    )
 
     def build_source(votes):
         """
@@ -807,6 +821,14 @@ def decide_direction(
         return round(min_score, 4), round(min_margin, 4)
     call_min_score, call_min_margin = _effective_thresholds("CALL", bullish_expansion_mode)
     put_min_score, put_min_margin = _effective_thresholds("PUT", bearish_expansion_mode)
+
+    if (
+        macro_regime not in {"RISK_OFF"}
+        and gamma_regime == "POSITIVE_GAMMA"
+        and not bearish_expansion_mode
+    ):
+        put_min_margin = round(put_min_margin + bearish_neutral_positive_gamma_surcharge, 4)
+        put_min_score = round(put_min_score + bearish_neutral_positive_gamma_score_surcharge, 4)
 
     if (
         bullish_score >= call_min_score

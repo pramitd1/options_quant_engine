@@ -65,3 +65,53 @@ def test_direction_source_marks_microstructure_friction_when_direction_survives(
     assert direction == "CALL"
     assert source is not None
     assert "MICROSTRUCTURE_FRICTION" in source
+
+
+def test_vol_shock_alone_does_not_force_put_in_positive_gamma_neutral_context():
+    direction, source, *_ = decide_direction(
+        final_flow_signal="BEARISH_FLOW",
+        dealer_pos=None,
+        vol_regime="VOL_EXPANSION",
+        spot_vs_flip="AT_FLIP",
+        gamma_regime="POSITIVE_GAMMA",
+        hedging_bias="UPSIDE_ACCELERATION",
+        gamma_event="NONE",
+        vanna_regime=None,
+        charm_regime=None,
+        volatility_shock_score=0.95,
+        macro_news_state={"macro_regime": "MACRO_NEUTRAL", "news_confidence_score": 70},
+        global_risk_state={"global_risk_state": "MACRO_NEUTRAL"},
+        provider_health_summary="GOOD",
+        provider_health_blocking_status="PASS",
+        core_effective_priced_ratio=0.90,
+        core_one_sided_quote_ratio=0.05,
+        core_quote_integrity_health="GOOD",
+    )
+
+    assert direction is None
+    assert source is None
+
+
+def test_true_downside_context_still_allows_put_direction():
+    direction, source, *_ = decide_direction(
+        final_flow_signal="BEARISH_FLOW",
+        dealer_pos="Short Gamma",
+        vol_regime="VOL_EXPANSION",
+        spot_vs_flip="BELOW_FLIP",
+        gamma_regime="NEGATIVE_GAMMA",
+        hedging_bias="DOWNSIDE_ACCELERATION",
+        gamma_event="NONE",
+        vanna_regime="NEGATIVE_VANNA",
+        charm_regime="NEGATIVE_CHARM",
+        volatility_shock_score=0.95,
+        macro_news_state={"macro_regime": "RISK_OFF", "news_confidence_score": 80},
+        global_risk_state={"global_risk_state": "RISK_OFF"},
+        provider_health_summary="GOOD",
+        provider_health_blocking_status="PASS",
+        core_effective_priced_ratio=0.90,
+        core_one_sided_quote_ratio=0.05,
+        core_quote_integrity_health="GOOD",
+    )
+
+    assert direction == "PUT"
+    assert source is not None

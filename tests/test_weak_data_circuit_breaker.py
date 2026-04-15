@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from config.signal_policy import get_trade_runtime_thresholds
 from engine.signal_engine import (
     _apply_bearish_bias_threshold_adjustments,
     _evaluate_weak_data_circuit_breaker,
@@ -92,3 +93,12 @@ def test_weak_data_circuit_breaker_skips_when_data_quality_is_strong():
 
     assert triggered is False
     assert details["reason"] == "data_quality_not_in_breaker_scope"
+
+
+def test_runtime_defaults_no_longer_overpromote_negative_gamma_puts():
+    cfg = get_trade_runtime_thresholds()
+
+    assert float(cfg["regime_strength_relief_negative_gamma"]) == 0.0
+    assert float(cfg["regime_composite_relief_negative_gamma"]) == 0.0
+    assert float(cfg["negative_gamma_size_multiplier"]) <= 1.0
+    assert float(cfg["positive_gamma_size_multiplier"]) >= 0.95

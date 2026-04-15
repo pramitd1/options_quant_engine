@@ -149,15 +149,17 @@ TRADE_RUNTIME_THRESHOLDS = {
     "regime_strength_add_toxic": 8,
     "regime_composite_add_at_flip": 3,
     "regime_composite_add_toxic": 6,
-    # Positive gamma underperformed in recent evaluations; tighten gates there.
-    "regime_strength_add_positive_gamma": 5,
-    "regime_composite_add_positive_gamma": 3,
-    # Negative gamma performed strongly; modestly relax gates there.
-    "regime_strength_relief_negative_gamma": 2,
-    "regime_composite_relief_negative_gamma": 1,
-    # Regime-aware sizing multipliers.
-    "positive_gamma_size_multiplier": 0.85,
-    "negative_gamma_size_multiplier": 1.15,
+    # Positive gamma still deserves some caution, but the previous tightening
+    # was suppressing too many otherwise-valid CALL promotions.
+    "regime_strength_add_positive_gamma": 2,
+    "regime_composite_add_positive_gamma": 1,
+    # Remove automatic negative-gamma threshold relief so downside setups must
+    # clear the same base bars unless a separate governed overlay justifies it.
+    "regime_strength_relief_negative_gamma": 0,
+    "regime_composite_relief_negative_gamma": 0,
+    # Keep sizing regime-aware without mechanically boosting bearish exposure.
+    "positive_gamma_size_multiplier": 0.95,
+    "negative_gamma_size_multiplier": 1.00,
     "gamma_vol_normalization_scale": 100,
     "gamma_vol_winsor_lower": 12,
     "gamma_vol_winsor_upper": 88,
