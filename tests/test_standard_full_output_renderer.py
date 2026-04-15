@@ -190,7 +190,7 @@ def test_standard_mode_renders_confidence_note_and_consistency_check() -> None:
     assert "chain_confirm_delta" in output
     assert "atm_iv_health" in output
     assert "iv_parity_health" in output
-    assert "execution_usable" in output
+    assert "execution_suggestion_usable" in output
     assert "confidence_note" in output
     assert "CONSISTENCY CHECK" in output
     assert "FLOW_MACRO_REGIME_CONTRADICTION" not in output
@@ -226,3 +226,41 @@ def test_full_debug_mode_renders_confidence_note_and_consistency_check() -> None
     assert "confidence_note" in output
     assert "CONSISTENCY CHECK" in output
     assert "bullish flow signal (BULLISH_FLOW) conflicts with RISK_OFF macro/global regime" in output
+
+
+def test_compact_mode_uses_bias_and_execution_suggestion_wording() -> None:
+    payload = _base_payloads()
+    payload["trade"].update(
+        {
+            "decision_classification": "BLOCKED_SETUP",
+            "trade_status": "BLOCKED_SETUP",
+            "direction": "PUT",
+            "direction_source": "FLOW+MICROSTRUCTURE_FRICTION",
+            "confirmation_status": "NO_DIRECTION",
+            "no_trade_reason": "Provider health is blocking execution",
+            "blocked_by": ["provider_health"],
+            "iv_hv_regime": "IV_RICH",
+        }
+    )
+
+    with StringIO() as buffer, redirect_stdout(buffer):
+        render_snapshot(
+            "COMPACT",
+            result=payload["result"],
+            spot_summary=payload["spot_summary"],
+            spot_validation=payload["spot_validation"],
+            option_chain_validation=payload["option_chain_validation"],
+            macro_event_state=payload["macro_event_state"],
+            macro_news_state=payload["macro_news_state"],
+            global_risk_state=payload["global_risk_state"],
+            global_market_snapshot=payload["global_market_snapshot"],
+            headline_state=payload["headline_state"],
+            trade=payload["trade"],
+            execution_trade=None,
+        )
+        output = buffer.getvalue()
+
+    assert "direction_bias" in output
+    assert "execution_suggestion_usable" in output
+    assert "iv_hv_regime" in output
+    assert "MICROSTRUCTURE_FRICTION" not in output

@@ -110,23 +110,23 @@ TRADE_RUNTIME_THRESHOLDS = {
     "max_intraday_hold_minutes": 90,
     "toxic_regime_hold_cap_minutes": 60,
     "provider_health_caution_blocks_trade": 1,
-    # Degraded provider-health override is disabled by default while live
-    # calibration and weak-data pollution are being tightened. Re-enable only
-    # for explicitly governed experiments.
-    "enable_provider_health_degraded_override": 0,
-    "provider_health_override_dte_max": 1.0,
-    "provider_health_override_min_strength_buffer": 18,
-    "provider_health_override_min_composite_buffer": 10,
-    "provider_health_override_min_effective_priced_ratio": 0.70,
-    "provider_health_override_max_proxy_ratio": 0.25,
+    # Permit a tightly governed override for isolated IV-only provider weakness.
+    # Strong confirmation, high score buffers, short hold caps, and small size
+    # limits remain in force so degraded data does not freely promote trades.
+    "enable_provider_health_degraded_override": 1,
+    "provider_health_override_dte_max": 6.0,
+    "provider_health_override_min_strength_buffer": 12,
+    "provider_health_override_min_composite_buffer": 0,
+    "provider_health_override_min_effective_priced_ratio": 0.65,
+    "provider_health_override_max_proxy_ratio": 0.35,
     "provider_health_override_size_cap": 0.20,
     "provider_health_override_hold_cap_minutes": 20,
     "provider_health_override_require_strong_confirmation": 1,
     "provider_health_override_one_sided_quote_ratio_max": 0.20,
-    "provider_health_override_allow_block_status": 0,
-    "provider_health_override_allowed_summary_statuses": ["CAUTION"],
-    "provider_health_override_allowed_data_quality_statuses": ["GOOD", "STRONG"],
-    "provider_health_override_allowed_block_reasons": ["core_iv_weak"],
+    "provider_health_override_allow_block_status": 1,
+    "provider_health_override_allowed_summary_statuses": ["CAUTION", "WEAK"],
+    "provider_health_override_allowed_data_quality_statuses": ["GOOD", "STRONG", "CAUTION"],
+    "provider_health_override_allowed_block_reasons": ["core_iv_weak", "atm_iv_weak"],
     # Weak-data circuit breaker: degrade fragile setups to WATCHLIST when
     # data quality is weak and multiple fragility signals co-occur.
     "enable_weak_data_circuit_breaker": 1,

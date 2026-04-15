@@ -154,6 +154,6 @@ def test_render_data_usability_diagnostics_shows_usability_and_weights() -> None
 
     assert "DATA USABILITY" in output
     assert "analytics_usable" in output
-    assert "execution_usable" in output
+    assert "execution_suggestion_usable" in output
     assert "ANALYTICS_ONLY" in output
     assert "feature_weights" in output

@@ -1802,6 +1802,28 @@ def _humanize_requirement_token(token):
     return lowered.replace("_", " ")
 
 
+def _summarize_direction_source(direction_source):
+    """Keep supportive bias sources visible while moving friction tags out of the source label."""
+    raw = str(direction_source or "").strip()
+    if not raw:
+        return "UNKNOWN", []
+
+    tokens = [token.strip().upper().replace(" ", "_") for token in re.split(r"[+,|/]", raw) if token and token.strip()]
+    if not tokens:
+        return "UNKNOWN", []
+
+    penalty_markers = ("FRICTION", "PENALTY", "CONFLICT", "NOISE")
+    supportive = []
+    penalties = []
+    for token in tokens:
+        if any(marker in token for marker in penalty_markers):
+            penalties.append(token)
+        else:
+            supportive.append(token)
+
+    return "+".join(supportive) if supportive else "INFERRED", penalties
+
+
 def _build_directionality_diagnostics(trade, *, mode="standard"):
     """Build a concise directionality verdict with evidence and blockers."""
     if not isinstance(trade, dict):
@@ -1810,6 +1832,7 @@ def _build_directionality_diagnostics(trade, *, mode="standard"):
             "verdict_reason": "trade payload unavailable",
             "direction": "-",
             "direction_source": "-",
+            "direction_source_penalties": [],
             "confirmation": "-",
             "activation": None,
             "maturity": None,
@@ -1826,6 +1849,7 @@ def _build_directionality_diagnostics(trade, *, mode="standard"):
         or ""
     ).upper().strip()
     direction_source = str(trade.get("direction_source") or "UNKNOWN").strip()
+    direction_source, direction_source_penalties = _summarize_direction_source(direction_source)
     decision = str(trade.get("decision_classification") or "").upper().strip()
 
     activation = trade.get("setup_activation_score")
@@ -1901,6 +1925,8 @@ def _build_directionality_diagnostics(trade, *, mode="standard"):
     no_trade_reason = str(trade.get("no_trade_reason") or "").strip()
     if no_trade_reason:
         blockers.append(no_trade_reason)
+    if any("FRICTION" in item for item in direction_source_penalties):
+        blockers.append("microstructure friction elevated")
 
     evidence = []
     if direction in {"CALL", "PUT"}:
@@ -1946,6 +1972,7 @@ def _build_directionality_diagnostics(trade, *, mode="standard"):
         "verdict_reason": verdict_reason,
         "direction": direction if direction else "NONE",
         "direction_source": direction_source,
+        "direction_source_penalties": direction_source_penalties,
         "confirmation": confirmation if confirmation else "UNKNOWN",
         "activation": activation,
         "maturity": maturity,
@@ -1975,14 +2002,24 @@ def _render_directionality_diagnostics(trade, *, mode="standard"):
 
     base_fields = {
         "direction_verdict": f"{diag['verdict']} ({diag['verdict_reason']})",
-        "direction": diag.get("direction"),
-        "direction_source": diag.get("direction_source"),
         "confirmation": diag.get("confirmation"),
         "activation_score": diag.get("activation"),
         "activation_floor": diag.get("activation_floor"),
         "maturity_score": diag.get("maturity"),
         "maturity_floor": diag.get("maturity_floor"),
     }
+
+    if mode_key == "compact" and diag.get("verdict") != "TRUSTED":
+        direction_value = diag.get("direction")
+        if direction_value in {None, "", "NONE", "-"}:
+            direction_value = "AWAITING CONSENSUS"
+        else:
+            direction_value = f"{direction_value} bias"
+        base_fields["direction_bias"] = direction_value
+        base_fields["bias_source"] = diag.get("direction_source")
+    else:
+        base_fields["direction"] = diag.get("direction")
+        base_fields["direction_source"] = diag.get("direction_source")
 
     if mode_key != "compact":
         base_fields["flow_alignment"] = diag.get("flow_alignment")
@@ -1995,6 +2032,7 @@ def _render_directionality_diagnostics(trade, *, mode="standard"):
         base_fields["directional_resolution_needed"] = diag.get("directional_resolution_needed")
         base_fields["final_flow_signal"] = diag.get("final_flow_signal")
         base_fields["smart_money_flow"] = diag.get("smart_money_flow")
+        base_fields["direction_source_penalties"] = diag.get("direction_source_penalties")
         base_fields["no_trade_reason_code"] = diag.get("no_trade_reason_code")
 
     _print_section("DIRECTIONALITY DIAGNOSTICS", base_fields)
@@ -2598,10 +2636,24 @@ def _render_data_usability_diagnostics(trade, *, verbose=False):
     if analytics_usable is None and execution_usable is None and not tradable_data and not reliability:
         return
 
+    provider_health = trade.get("provider_health") if isinstance(trade.get("provider_health"), dict) else {}
+    blocked_by = {
+        str(item).strip().lower()
+        for item in (trade.get("blocked_by") or [])
+        if item is not None
+    }
+    provider_execution_blocked = bool(
+        provider_health.get("trade_blocking_status")
+        or "provider_health" in blocked_by
+        or str(trade.get("no_trade_reason_code") or "").upper().startswith("PROVIDER_HEALTH_")
+    )
+
     print("\nDATA USABILITY")
     print("---------------------------")
     print(f"{'analytics_usable':26}: {analytics_usable}")
-    print(f"{'execution_usable':26}: {execution_usable}")
+    print(f"{'execution_suggestion_usable':26}: {execution_usable}")
+    if provider_execution_blocked:
+        print(f"{'provider_exec_blocked':26}: {provider_execution_blocked}")
 
     status = tradable_data.get("status")
     score = tradable_data.get("score")
@@ -2814,7 +2866,17 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             _vol_pcr_str = f"{_vol_pcr_atm:.2f}"
             if _vol_pcr_regime:
                 _vol_pcr_str += f"  ({_vol_pcr_regime})"
-        _print_section("REGIME SUMMARY", {
+
+        iv_hv_regime = trade.get("iv_hv_regime")
+        _iv_hv_upper = str(iv_hv_regime or "").upper()
+        if "RICH" in _iv_hv_upper:
+            iv_hv_icon = "🟠"
+        elif "CHEAP" in _iv_hv_upper:
+            iv_hv_icon = "🔵"
+        else:
+            iv_hv_icon = ""
+
+        regime_fields = {
             "gamma_regime": f"{gamma_icon} {gamma_regime}".strip(),
             "spot_vs_flip": trade.get("spot_vs_flip"),
             "flow_signal": f"{flow_icon} {flow_signal}".strip(),
@@ -2827,7 +2889,11 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             "oi_velocity_regime": regime_extras.get("oi_velocity_regime"),
             "macro_regime": trade.get("macro_regime"),
             "global_risk": global_risk_state.get("global_risk_state"),
-        })
+        }
+        if iv_hv_regime:
+            regime_fields["iv_hv_regime"] = f"{iv_hv_icon} {iv_hv_regime}".strip()
+
+        _print_section("REGIME SUMMARY", regime_fields)
 
     # ── 3. TRADE DECISION ────────────────────────────────────────────────
     if trade:
