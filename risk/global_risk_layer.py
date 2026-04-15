@@ -162,7 +162,7 @@ def _fallback_global_risk_state(
     }
 
 
-def _result(*, state, score, level, action, size_cap, reasons, trade_status=None, message=None):
+def _result(*, state, score, level, action, size_cap, reasons, trade_status=None, message=None, portfolio_guard=None):
     """
     Purpose:
         Assemble the normalized global-risk result payload returned to the signal engine.
@@ -187,6 +187,17 @@ def _result(*, state, score, level, action, size_cap, reasons, trade_status=None
         Centralizing this payload assembly keeps downstream code focused on the reason for the decision instead of the mechanics of shaping the response.
     """
     state = state if isinstance(state, dict) else {}
+    portfolio_guard = portfolio_guard if isinstance(portfolio_guard, dict) else {
+        "enabled": False,
+        "verdict": "UNAVAILABLE",
+        "reason": "portfolio_context_unavailable",
+        "recent_signal_count": 0,
+        "same_direction_count": 0,
+        "same_direction_share": 0.0,
+        "heat_score": 0,
+        "heat_label": "COOL",
+        "regime_flags": [],
+    }
     return {
         "global_risk_state": state.get("global_risk_state", "GLOBAL_NEUTRAL"),
         "global_risk_score": int(_clip(score, 0, 100)),
@@ -202,9 +213,161 @@ def _result(*, state, score, level, action, size_cap, reasons, trade_status=None
         "global_risk_reasons": reasons,
         "global_risk_features": state.get("global_risk_features", {}),
         "global_risk_diagnostics": state.get("global_risk_diagnostics", {}),
+        "portfolio_concentration_guard": portfolio_guard,
         "risk_trade_status": trade_status,
         "risk_message": message,
     }
+
+
+def _evaluate_portfolio_concentration_guard(*, portfolio_context, cfg):
+    """Assess whether the recent options idea book is too concentrated in one direction."""
+    enabled = bool(int(_safe_float(getattr(cfg, "enable_portfolio_concentration_guard", 1), 1.0)))
+    context = portfolio_context if isinstance(portfolio_context, dict) else {}
+    direction = str(context.get("direction") or "").upper().strip()
+    recent_signal_count = max(int(_safe_float(context.get("recent_signal_count"), 0.0)), 0)
+    same_direction_count = max(int(_safe_float(context.get("same_direction_count"), 0.0)), 0)
+    same_direction_share = float(_clip(_safe_float(context.get("same_direction_share"), 0.0), 0.0, 1.0))
+    avg_close_bps = _safe_float(context.get("same_direction_avg_close_bps"), None)
+    avg_tradeability = _safe_float(context.get("same_direction_avg_tradeability_score"), None)
+    gamma_regime = str(context.get("gamma_regime") or "").upper().strip()
+    vol_regime = str(context.get("vol_regime") or context.get("volatility_regime") or "").upper().strip()
+    macro_regime = str(context.get("macro_regime") or "").upper().strip()
+    provider_health_summary = str(context.get("provider_health_summary") or "").upper().strip()
+    data_quality_status = str(context.get("data_quality_status") or "").upper().strip()
+
+    guard = {
+        "enabled": enabled,
+        "verdict": "PASS",
+        "action": "ALLOW",
+        "reason": "portfolio_concentration_within_limits",
+        "recent_signal_count": recent_signal_count,
+        "same_direction_count": same_direction_count,
+        "same_direction_share": round(same_direction_share, 4),
+        "same_direction_avg_close_bps": round(float(avg_close_bps), 2) if avg_close_bps is not None else None,
+        "same_direction_avg_tradeability_score": round(float(avg_tradeability), 2) if avg_tradeability is not None else None,
+        "direction": direction,
+        "size_cap": 1.0,
+        "reasons": [],
+        "heat_score": 0,
+        "heat_label": "COOL",
+        "regime_flags": [],
+        "regime_penalty": 0,
+    }
+
+    if not enabled:
+        guard.update({"verdict": "DISABLED", "reason": "guard_disabled"})
+        return guard
+
+    min_recent = max(int(_safe_float(getattr(cfg, "portfolio_concentration_min_recent_signals", 4), 4.0)), 2)
+    if direction not in {"CALL", "PUT"}:
+        guard.update({"verdict": "UNAVAILABLE", "reason": "direction_unavailable"})
+        return guard
+    if recent_signal_count < min_recent or same_direction_count < 2:
+        guard.update({"verdict": "UNAVAILABLE", "reason": "insufficient_recent_book_context"})
+        return guard
+
+    soft_count = max(int(_safe_float(getattr(cfg, "portfolio_concentration_soft_same_direction_count", 3), 3.0)), 2)
+    hard_count = max(int(_safe_float(getattr(cfg, "portfolio_concentration_hard_same_direction_count", 4), 4.0)), soft_count)
+    soft_share = float(_clip(_safe_float(getattr(cfg, "portfolio_concentration_soft_same_direction_share", 0.70), 0.70), 0.0, 1.0))
+    hard_share = float(_clip(_safe_float(getattr(cfg, "portfolio_concentration_hard_same_direction_share", 0.80), 0.80), soft_share, 1.0))
+    weak_close_threshold = _safe_float(getattr(cfg, "portfolio_concentration_weak_close_bps_threshold", 0.0), 0.0)
+    weak_tradeability_threshold = _safe_float(getattr(cfg, "portfolio_concentration_weak_tradeability_threshold", 55.0), 55.0)
+
+    weak_recent_edge = (
+        (avg_close_bps is not None and avg_close_bps <= weak_close_threshold)
+        or (avg_tradeability is not None and avg_tradeability < weak_tradeability_threshold)
+    )
+
+    regime_flags = []
+    regime_penalty = 0
+    if gamma_regime in {"NEGATIVE_GAMMA", "SHORT_GAMMA"}:
+        regime_flags.append("negative_gamma")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_negative_gamma_penalty", 12), 12.0))
+    if vol_regime in {"VOL_EXPANSION", "HIGH_VOL", "VOL_SHOCK", "PANIC_VOL", "EXTREME_VOL"}:
+        regime_flags.append("vol_expansion")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_vol_expansion_penalty", 10), 10.0))
+    if macro_regime in {"RISK_OFF", "EVENT_RISK", "STRESS"}:
+        regime_flags.append("risk_off")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_risk_off_penalty", 8), 8.0))
+    if provider_health_summary == "CAUTION":
+        regime_flags.append("provider_caution")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_provider_caution_penalty", 5), 5.0))
+    elif provider_health_summary in {"WEAK", "BLOCK"}:
+        regime_flags.append("provider_weak")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_provider_weak_penalty", 10), 10.0))
+    if data_quality_status == "CAUTION":
+        regime_flags.append("data_caution")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_data_caution_penalty", 5), 5.0))
+    elif data_quality_status in {"WEAK", "BAD"}:
+        regime_flags.append("data_weak")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_data_weak_penalty", 10), 10.0))
+    if weak_recent_edge:
+        regime_flags.append("recent_edge_weak")
+        regime_penalty += int(_safe_float(getattr(cfg, "portfolio_heat_edge_weak_penalty", 12), 12.0))
+
+    base_heat = (same_direction_share * 55.0) + (min(same_direction_count, 5) * 6.0) + (min(recent_signal_count, 6) * 2.0)
+    heat_score = int(round(_clip(base_heat + regime_penalty, 0.0, 100.0)))
+    warm_threshold = int(_safe_float(getattr(cfg, "portfolio_heat_warm_threshold", 40), 40.0))
+    hot_threshold = int(_safe_float(getattr(cfg, "portfolio_heat_hot_threshold", 60), 60.0))
+    critical_threshold = int(_safe_float(getattr(cfg, "portfolio_heat_critical_threshold", 80), 80.0))
+
+    if heat_score >= critical_threshold:
+        heat_label = "CRITICAL"
+    elif heat_score >= hot_threshold:
+        heat_label = "HOT"
+    elif heat_score >= warm_threshold:
+        heat_label = "WARM"
+    else:
+        heat_label = "COOL"
+
+    guard.update(
+        {
+            "heat_score": heat_score,
+            "heat_label": heat_label,
+            "regime_flags": regime_flags,
+            "regime_penalty": regime_penalty,
+        }
+    )
+
+    reasons = []
+    if same_direction_count >= soft_count or same_direction_share >= soft_share:
+        reasons.append("portfolio_same_way_concentration")
+    if regime_penalty > 0:
+        reasons.append("portfolio_regime_heat")
+    if weak_recent_edge:
+        reasons.append("portfolio_recent_edge_weak")
+    reasons = list(dict.fromkeys(reasons))
+
+    if same_direction_count >= hard_count and (same_direction_share >= hard_share or weak_recent_edge or heat_score >= critical_threshold):
+        critical_size_cap = float(_clip(_safe_float(getattr(cfg, "portfolio_heat_critical_size_cap", 0.35), 0.35), 0.0, 1.0))
+        watchlist_size_cap = float(_clip(_safe_float(getattr(cfg, "portfolio_concentration_watchlist_size_cap", 0.40), 0.40), 0.0, 1.0))
+        guard.update(
+            {
+                "verdict": "WATCHLIST",
+                "action": "WATCHLIST",
+                "reason": "Trade downgraded due to a concentrated same-way options book",
+                "size_cap": min(watchlist_size_cap, critical_size_cap if heat_score >= critical_threshold else watchlist_size_cap),
+                "reasons": reasons or ["portfolio_same_way_concentration"],
+            }
+        )
+        return guard
+
+    hot_size_cap = float(_clip(_safe_float(getattr(cfg, "portfolio_heat_hot_size_cap", 0.55), 0.55), 0.0, 1.0))
+    reduce_size_cap = float(_clip(_safe_float(getattr(cfg, "portfolio_concentration_reduce_size_cap", 0.65), 0.65), 0.0, 1.0))
+    reduce_due_to_heat = same_direction_count >= max(2, soft_count - 1) and heat_score >= hot_threshold
+    reduce_due_to_crowding = same_direction_count >= soft_count and same_direction_share >= soft_share
+    if reduce_due_to_crowding or reduce_due_to_heat:
+        guard.update(
+            {
+                "verdict": "REDUCE",
+                "action": "REDUCE",
+                "reason": "Position size reduced due to elevated same-way options concentration",
+                "size_cap": min(reduce_size_cap, hot_size_cap if heat_score >= hot_threshold else reduce_size_cap),
+                "reasons": reasons or ["portfolio_same_way_concentration"],
+            }
+        )
+
+    return guard
 
 
 def evaluate_global_risk_layer(
@@ -221,6 +384,7 @@ def evaluate_global_risk_layer(
     macro_news_adjustments=None,
     global_risk_state=None,
     holding_profile="AUTO",
+    portfolio_context=None,
 ):
     """
     Purpose:
@@ -266,6 +430,10 @@ def evaluate_global_risk_layer(
         )
 
     reasons = []
+    portfolio_guard = _evaluate_portfolio_concentration_guard(
+        portfolio_context=portfolio_context,
+        cfg=cfg,
+    )
     size_cap = min(
         _clip(_safe_float(macro_news_adjustments.get("macro_position_size_multiplier"), 1.0), 0.0, 1.0),
         _clip(_safe_float(global_risk_state.get("global_risk_position_size_multiplier"), 1.0), 0.0, 1.0),
@@ -287,6 +455,7 @@ def evaluate_global_risk_layer(
             reasons=["invalid_market_data"],
             trade_status="DATA_INVALID",
             message="Trade blocked due to invalid market data",
+            portfolio_guard=portfolio_guard,
         )
 
     if event_lockdown_flag or macro_news_adjustments.get("event_lockdown_flag", False):
@@ -299,6 +468,7 @@ def evaluate_global_risk_layer(
             reasons=["event_lockdown"],
             trade_status="EVENT_LOCKDOWN",
             message=f"Trade blocked due to scheduled macro event lockdown: {_event_name(active_event_name, next_event_name)}",
+            portfolio_guard=portfolio_guard,
         )
 
     if global_risk_state.get("global_risk_veto"):
@@ -312,6 +482,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="GLOBAL_RISK_BLOCKED",
             message="Trade blocked due to elevated global risk conditions",
+            portfolio_guard=portfolio_guard,
         )
 
     # Overnight handling is evaluated explicitly because some setups are
@@ -332,7 +503,27 @@ def evaluate_global_risk_layer(
             reasons=reasons or ["overnight_hold_not_allowed"],
             trade_status="WATCHLIST",
             message=f"Trade downgraded due to elevated overnight risk: {global_risk_state.get('overnight_hold_reason', 'overnight_hold_not_allowed')}",
+            portfolio_guard=portfolio_guard,
         )
+
+    portfolio_action = str(portfolio_guard.get("action") or "ALLOW").upper().strip()
+    if portfolio_action == "WATCHLIST":
+        reasons.extend(portfolio_guard.get("reasons", []))
+        return _result(
+            state=global_risk_state,
+            score=max(score, int(_safe_float(getattr(cfg, "portfolio_concentration_watch_score_floor", 68), 68.0))),
+            level="HIGH",
+            action="WATCHLIST",
+            size_cap=min(size_cap, _clip(_safe_float(portfolio_guard.get("size_cap"), 1.0), 0.0, 1.0)),
+            reasons=reasons,
+            trade_status="WATCHLIST",
+            message=portfolio_guard.get("reason") or "Trade downgraded due to a concentrated same-way options book",
+            portfolio_guard=portfolio_guard,
+        )
+    if portfolio_action == "REDUCE":
+        reasons.extend(portfolio_guard.get("reasons", []))
+        size_cap = min(size_cap, _clip(_safe_float(portfolio_guard.get("size_cap"), 1.0), 0.0, 1.0))
+        score = max(score, int(_safe_float(getattr(cfg, "portfolio_concentration_reduce_score_floor", 56), 56.0)))
 
     if confirmation.get("veto"):
         reasons.append("confirmation_veto")
@@ -345,6 +536,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to confirmation conflict",
+            portfolio_guard=portfolio_guard,
         )
 
     global_risk_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
@@ -366,6 +558,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to elevated macro uncertainty",
+            portfolio_guard=portfolio_guard,
         )
 
     if adjusted_trade_strength < min_trade_strength:
@@ -379,6 +572,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade filtered out due to low strength",
+            portfolio_guard=portfolio_guard,
         )
 
     if _safe_float(data_quality.get("score"), 0.0) < cfg.layer_weak_data_quality_score_threshold:
@@ -392,6 +586,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to weak data quality",
+            portfolio_guard=portfolio_guard,
         )
 
     if data_quality.get("status") == "CAUTION" and adjusted_trade_strength < (min_trade_strength + cfg.layer_caution_strength_buffer):
@@ -405,6 +600,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to cautionary data quality",
+            portfolio_guard=portfolio_guard,
         )
 
     if confirmation.get("status") == "CONFLICT" and adjusted_trade_strength < (min_trade_strength + cfg.layer_confirmation_conflict_strength_buffer):
@@ -418,6 +614,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to weak live confirmation",
+            portfolio_guard=portfolio_guard,
         )
 
     if size_cap < cfg.layer_caution_watch_size_cap and adjusted_trade_strength < (min_trade_strength + cfg.layer_size_reduction_strength_buffer):
@@ -431,6 +628,7 @@ def evaluate_global_risk_layer(
             reasons=reasons,
             trade_status="WATCHLIST",
             message="Trade downgraded to watchlist due to global risk reduction",
+            portfolio_guard=portfolio_guard,
         )
 
     reasons.extend(global_risk_state.get("global_risk_reasons", []))
@@ -453,4 +651,5 @@ def evaluate_global_risk_layer(
         action="REDUCE" if size_cap < 1.0 else "ALLOW",
         size_cap=size_cap,
         reasons=reasons,
+        portfolio_guard=portfolio_guard,
     )

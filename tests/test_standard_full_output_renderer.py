@@ -14,6 +14,36 @@ def _base_payloads():
         "hybrid_move_probability": 0.60,
         "data_quality_status": "CAUTION",
         "provider_health_summary": "WEAK",
+        "provider_health_score": 46.0,
+        "provider_health_tier": "FRAGILE",
+        "data_readiness_score": 46.0,
+        "data_confidence_tier": "FRAGILE",
+        "score_calibration_segment_key": "direction=CALL|gamma_regime=POSITIVE_GAMMA|vol_regime=VOL_EXPANSION",
+        "regime_segment_guard": {"verdict": "CAUTION", "reason": "segment fragile", "sample_size": 14},
+        "regime_segment_key": "direction=CALL|gamma_regime=POSITIVE_GAMMA|vol_regime=VOL_EXPANSION",
+        "regime_segment_samples": 14,
+        "regime_segment_hit_rate_60m": 0.43,
+        "regime_segment_avg_60m_bps": 12.0,
+        "regime_segment_avg_close_bps": -9.0,
+        "regime_segment_avg_tradeability_score": 49.0,
+        "historical_outcome_samples": 18,
+        "historical_best_horizon": "15m",
+        "historical_exit_bias": "TAKE_PROFIT_EARLY",
+        "historical_outcome_guard": {"verdict": "CAUTION", "reason": "early alpha decay", "best_horizon": "15m"},
+        "portfolio_book_heat_score": 74,
+        "portfolio_book_heat_label": "HOT",
+        "portfolio_priority_score": 63.0,
+        "portfolio_priority_bucket": "MEDIUM_PRIORITY",
+        "portfolio_allocation_tier": "TACTICAL",
+        "portfolio_capital_fraction_max": 0.15,
+        "portfolio_concentration_guard": {
+            "verdict": "REDUCE",
+            "same_direction_count": 4,
+            "recent_signal_count": 5,
+            "same_direction_share": 0.8,
+            "heat_score": 74,
+            "heat_label": "HOT",
+        },
         "final_flow_signal": "BULLISH_FLOW",
         "macro_regime": "RISK_OFF",
         "global_risk_state": "RISK_OFF",
@@ -36,6 +66,9 @@ def _base_payloads():
             "iv_parity_breach_ratio": 0.05,
             "iv_staleness_health": "GOOD",
             "iv_stale_ratio": 0.08,
+            "market_data_readiness_score": 46.0,
+            "market_data_readiness_tier": "FRAGILE",
+            "market_data_weak_components": ["core_iv", "atm_iv"],
         },
         "scoring_breakdown": {
             "feature_reliability_penalty": -3,
@@ -191,6 +224,14 @@ def test_standard_mode_renders_confidence_note_and_consistency_check() -> None:
     assert "atm_iv_health" in output
     assert "iv_parity_health" in output
     assert "execution_suggestion_usable" in output
+    assert "data_readiness_score" in output
+    assert "data_confidence_tier" in output
+    assert "historical_outcome_samples" in output
+    assert "historical_outcome_guard" in output
+    assert "regime_segment_guard" in output
+    assert "regime_segment_key" in output
+    assert "portfolio_book_heat" in output
+    assert "portfolio_priority" in output
     assert "confidence_note" in output
     assert "CONSISTENCY CHECK" in output
     assert "FLOW_MACRO_REGIME_CONTRADICTION" not in output
@@ -218,6 +259,11 @@ def test_full_debug_mode_renders_confidence_note_and_consistency_check() -> None
 
     assert "SIGNAL CONFIDENCE" in output
     assert "DATA USABILITY" in output
+    assert "data_readiness_score" in output
+    assert "historical_outcome_guard" in output
+    assert "regime_segment_guard" in output
+    assert "portfolio_book_heat" in output
+    assert "portfolio_priority" in output
     assert "RELIABILITY DAMPING" in output
     assert "gamma_vol_delta" in output
     assert "atm_iv_health" in output

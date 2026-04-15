@@ -189,16 +189,20 @@ def _data_integrity_component(trade: dict) -> float:
             100,
         )
     elif isinstance(ph, dict):
-        status = str(ph.get("summary_status") or "").upper().strip()
-        ph_map = {
-            "HEALTHY": 100,
-            "GOOD": 90,
-            "DEGRADED": 55,
-            "CAUTION": 45,
-            "WEAK": 20,
-            "UNHEALTHY": 15,
-        }
-        ph_score = ph_map.get(status, 50)
+        explicit_score = ph.get("market_data_readiness_score")
+        if explicit_score is not None:
+            ph_score = _clip(_safe_float(explicit_score, 50.0), 0, 100)
+        else:
+            status = str(ph.get("summary_status") or "").upper().strip()
+            ph_map = {
+                "HEALTHY": 100,
+                "GOOD": 90,
+                "DEGRADED": 55,
+                "CAUTION": 45,
+                "WEAK": 20,
+                "UNHEALTHY": 15,
+            }
+            ph_score = ph_map.get(status, 50)
     else:
         ph_score = 50.0
 

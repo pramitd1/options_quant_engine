@@ -20,6 +20,19 @@ The system is designed as a layered trade engine, not a single-factor signal scr
 
 The current repository does not contain a live order-routing engine. Broker integrations here are used for market data access, not for automatic execution.
 
+## Live Governance Layers
+
+The current options engine now includes a governed live decision stack on top of the raw signal logic:
+
+- market-data readiness scoring for operator triage
+- historical outcome and regime-segment guards before TRADE promotion
+- portfolio concentration and book-heat throttles for same-way crowding
+- session-level loss budget and cooldown controls
+- same-day trade-slot caps with constrained operator override support
+- a final promotion gate that can require replay validation before live TRADE routing
+
+These controls are designed to keep the engine evaluation-first and desk-safe while still preserving useful watchlist intelligence when a setup is not yet executable.
+
 ## Operational Doctrine
 
 Use this repository as a governed signal and research engine.

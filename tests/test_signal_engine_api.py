@@ -170,3 +170,64 @@ def test_advisory_sizing_stays_separate_from_signal_payload():
     assert sizing["advisory_only"] is True
     assert payload["number_of_lots"] == 4
     assert sizing["advisory_lots"] <= 4
+
+
+def test_advisory_sizing_uses_portfolio_heat_in_allocation_ladder():
+    payload = {
+        "number_of_lots": 4,
+        "trade_strength": 81,
+        "signal_success_probability": 0.66,
+        "portfolio_book_heat_score": 78,
+        "portfolio_book_heat_label": "HOT",
+    }
+
+    sizing = signal_engine._derive_advisory_size_recommendation(
+        payload,
+        confidence_score=71.0,
+        global_risk_size_cap=1.0,
+        at_flip_size_cap=1.0,
+        macro_size_multiplier=1.0,
+        freshness_size_cap=1.0,
+        reversal_stage="CONFIRMED_REVERSAL",
+        expansion_mode=False,
+        expansion_direction=None,
+        direction="CALL",
+        runtime_thresholds={},
+        regime_thresholds={"position_size_multiplier": 1.0},
+        gamma_regime="POSITIVE_GAMMA",
+    )
+
+    assert sizing["portfolio_priority_bucket"] in {"MEDIUM_PRIORITY", "LOW_PRIORITY"}
+    assert sizing["portfolio_allocation_tier"] in {"TACTICAL", "SMALL"}
+    assert sizing["effective_size_cap"] <= 0.55
+    assert sizing["advisory_lots"] < 4
+
+
+def test_advisory_sizing_promotes_high_priority_when_book_heat_is_cool():
+    payload = {
+        "number_of_lots": 4,
+        "trade_strength": 88,
+        "signal_success_probability": 0.74,
+        "portfolio_book_heat_score": 18,
+        "portfolio_book_heat_label": "COOL",
+    }
+
+    sizing = signal_engine._derive_advisory_size_recommendation(
+        payload,
+        confidence_score=78.0,
+        global_risk_size_cap=1.0,
+        at_flip_size_cap=1.0,
+        macro_size_multiplier=1.0,
+        freshness_size_cap=1.0,
+        reversal_stage="CONFIRMED_REVERSAL",
+        expansion_mode=False,
+        expansion_direction=None,
+        direction="CALL",
+        runtime_thresholds={},
+        regime_thresholds={"position_size_multiplier": 1.0},
+        gamma_regime="NEGATIVE_GAMMA",
+    )
+
+    assert sizing["portfolio_priority_bucket"] == "HIGH_PRIORITY"
+    assert sizing["portfolio_allocation_tier"] == "CORE"
+    assert sizing["portfolio_capital_fraction_max"] >= 0.2

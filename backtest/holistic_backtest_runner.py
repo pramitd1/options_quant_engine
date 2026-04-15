@@ -417,11 +417,12 @@ def evaluate_eod_outcomes(
                     updated["target_hit_date"] = str(wr["date"].date() if hasattr(wr["date"], "date") else wr["date"])
                     break
 
-        if "target_hit" not in updated:
+        if updated.get("target_hit") not in {True, False}:
             updated["target_hit"] = False
-        if "stop_loss_hit" not in updated:
+        if updated.get("stop_loss_hit") not in {True, False}:
             updated["stop_loss_hit"] = False
 
+    updated = compute_signal_evaluation_scores(updated)
     return updated
 
 

@@ -499,6 +499,21 @@ class OptionChainValidationTests(unittest.TestCase):
         staleness_warnings = [w for w in result["warnings"] if "iv_staleness_detected" in w]
         self.assertEqual(len(staleness_warnings), 1)
 
+    def test_market_data_readiness_score_degrades_when_atm_iv_breaks(self):
+        """Clean chains should score materially higher than chains with broken ATM IV."""
+        clean = self._make_full_chain(spot=22500)
+        clean["impliedVolatility"] = [15.0 + 0.05 * i for i in range(len(clean))]
+        clean_result = validate_option_chain(clean, spot=22500)
+
+        broken = clean.copy()
+        broken.loc[broken["strikePrice"].between(22350, 22650), "impliedVolatility"] = 0
+        broken_result = validate_option_chain(broken, spot=22500)
+
+        self.assertGreater(clean_result["market_data_readiness_score"], broken_result["market_data_readiness_score"])
+        self.assertIn(clean_result["market_data_readiness_tier"], {"HIGH", "MODERATE"})
+        self.assertIn(broken_result["market_data_readiness_tier"], {"LOW", "FRAGILE"})
+        self.assertEqual(clean_result["provider_health"]["market_data_readiness_score"], clean_result["market_data_readiness_score"])
+
     def test_atm_iv_summary_status_reflects_weak_atm_iv(self):
         """When ATM IV is absent (spot known), summary_status must be WEAK."""
         df = self._make_full_chain(spot=22500)

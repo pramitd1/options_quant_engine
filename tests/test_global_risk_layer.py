@@ -230,6 +230,197 @@ class GlobalRiskLayerStageOneTests(unittest.TestCase):
         self.assertEqual(decision["global_risk_action"], "WATCHLIST")
         self.assertIn("macro_uncertainty_window", decision["global_risk_reasons"])
 
+    def test_evaluate_global_risk_layer_watchlists_when_same_way_options_book_is_overcrowded(self):
+        global_risk_state = {
+            "global_risk_state": "GLOBAL_NEUTRAL",
+            "global_risk_score": 24,
+            "overnight_gap_risk_score": 8,
+            "volatility_expansion_risk_score": 15,
+            "overnight_hold_allowed": True,
+            "overnight_hold_reason": "overnight_risk_contained",
+            "overnight_risk_penalty": 0,
+            "global_risk_adjustment_score": 0,
+            "global_risk_veto": False,
+            "global_risk_position_size_multiplier": 1.0,
+            "global_risk_reasons": [],
+            "global_risk_features": {},
+            "global_risk_diagnostics": {},
+            "holding_context": {"overnight_relevant": False},
+        }
+
+        decision = evaluate_global_risk_layer(
+            data_quality={"score": 93, "status": "GOOD", "fatal": False},
+            confirmation={"status": "CONFIRMED", "veto": False},
+            adjusted_trade_strength=86,
+            min_trade_strength=45,
+            event_window_status="NO_EVENT_DATA",
+            macro_event_risk_score=8,
+            event_lockdown_flag=False,
+            next_event_name=None,
+            active_event_name=None,
+            macro_news_adjustments={"macro_position_size_multiplier": 1.0, "event_lockdown_flag": False},
+            global_risk_state=global_risk_state,
+            holding_profile="AUTO",
+            portfolio_context={
+                "direction": "CALL",
+                "recent_signal_count": 5,
+                "same_direction_count": 4,
+                "same_direction_share": 0.8,
+                "same_direction_avg_close_bps": -18.0,
+                "same_direction_avg_tradeability_score": 49.0,
+            },
+        )
+
+        self.assertEqual(decision["risk_trade_status"], "WATCHLIST")
+        self.assertEqual(decision["global_risk_action"], "WATCHLIST")
+        self.assertIn("portfolio_same_way_concentration", decision["global_risk_reasons"])
+
+    def test_evaluate_global_risk_layer_reduces_size_when_same_way_book_is_elevated(self):
+        global_risk_state = {
+            "global_risk_state": "GLOBAL_NEUTRAL",
+            "global_risk_score": 18,
+            "overnight_gap_risk_score": 5,
+            "volatility_expansion_risk_score": 10,
+            "overnight_hold_allowed": True,
+            "overnight_hold_reason": "overnight_risk_contained",
+            "overnight_risk_penalty": 0,
+            "global_risk_adjustment_score": 0,
+            "global_risk_veto": False,
+            "global_risk_position_size_multiplier": 1.0,
+            "global_risk_reasons": [],
+            "global_risk_features": {},
+            "global_risk_diagnostics": {},
+            "holding_context": {"overnight_relevant": False},
+        }
+
+        decision = evaluate_global_risk_layer(
+            data_quality={"score": 92, "status": "GOOD", "fatal": False},
+            confirmation={"status": "CONFIRMED", "veto": False},
+            adjusted_trade_strength=78,
+            min_trade_strength=45,
+            event_window_status="NO_EVENT_DATA",
+            macro_event_risk_score=5,
+            event_lockdown_flag=False,
+            next_event_name=None,
+            active_event_name=None,
+            macro_news_adjustments={"macro_position_size_multiplier": 0.95, "event_lockdown_flag": False},
+            global_risk_state=global_risk_state,
+            holding_profile="AUTO",
+            portfolio_context={
+                "direction": "PUT",
+                "recent_signal_count": 4,
+                "same_direction_count": 3,
+                "same_direction_share": 0.75,
+                "same_direction_avg_close_bps": 6.0,
+                "same_direction_avg_tradeability_score": 58.0,
+            },
+        )
+
+        self.assertEqual(decision["global_risk_action"], "REDUCE")
+        self.assertLess(decision["global_risk_size_cap"], 0.95)
+        self.assertIn("portfolio_same_way_concentration", decision["global_risk_reasons"])
+
+    def test_evaluate_global_risk_layer_escalates_book_heat_in_toxic_regime(self):
+        global_risk_state = {
+            "global_risk_state": "RISK_OFF",
+            "global_risk_score": 44,
+            "overnight_gap_risk_score": 18,
+            "volatility_expansion_risk_score": 32,
+            "overnight_hold_allowed": True,
+            "overnight_hold_reason": "overnight_risk_contained",
+            "overnight_risk_penalty": 0,
+            "global_risk_adjustment_score": -2,
+            "global_risk_veto": False,
+            "global_risk_position_size_multiplier": 0.9,
+            "global_risk_reasons": ["risk_off_pressure"],
+            "global_risk_features": {},
+            "global_risk_diagnostics": {},
+            "holding_context": {"overnight_relevant": False},
+        }
+
+        decision = evaluate_global_risk_layer(
+            data_quality={"score": 78, "status": "CAUTION", "fatal": False},
+            confirmation={"status": "CONFIRMED", "veto": False},
+            adjusted_trade_strength=82,
+            min_trade_strength=45,
+            event_window_status="NO_EVENT_DATA",
+            macro_event_risk_score=16,
+            event_lockdown_flag=False,
+            next_event_name=None,
+            active_event_name=None,
+            macro_news_adjustments={"macro_position_size_multiplier": 0.9, "event_lockdown_flag": False},
+            global_risk_state=global_risk_state,
+            holding_profile="AUTO",
+            portfolio_context={
+                "direction": "PUT",
+                "recent_signal_count": 5,
+                "same_direction_count": 3,
+                "same_direction_share": 0.60,
+                "same_direction_avg_close_bps": 4.0,
+                "same_direction_avg_tradeability_score": 57.0,
+                "gamma_regime": "NEGATIVE_GAMMA",
+                "vol_regime": "VOL_EXPANSION",
+                "macro_regime": "RISK_OFF",
+                "provider_health_summary": "CAUTION",
+                "data_quality_status": "CAUTION",
+            },
+        )
+
+        self.assertEqual(decision["global_risk_action"], "REDUCE")
+        self.assertIn(decision["portfolio_concentration_guard"]["heat_label"], {"HOT", "CRITICAL"})
+        self.assertGreaterEqual(decision["portfolio_concentration_guard"]["heat_score"], 60)
+        self.assertIn("portfolio_regime_heat", decision["global_risk_reasons"])
+
+    def test_evaluate_global_risk_layer_watchlists_when_book_heat_turns_critical(self):
+        global_risk_state = {
+            "global_risk_state": "RISK_OFF",
+            "global_risk_score": 46,
+            "overnight_gap_risk_score": 20,
+            "volatility_expansion_risk_score": 35,
+            "overnight_hold_allowed": True,
+            "overnight_hold_reason": "overnight_risk_contained",
+            "overnight_risk_penalty": 0,
+            "global_risk_adjustment_score": -3,
+            "global_risk_veto": False,
+            "global_risk_position_size_multiplier": 0.85,
+            "global_risk_reasons": ["risk_off_pressure"],
+            "global_risk_features": {},
+            "global_risk_diagnostics": {},
+            "holding_context": {"overnight_relevant": False},
+        }
+
+        decision = evaluate_global_risk_layer(
+            data_quality={"score": 71, "status": "CAUTION", "fatal": False},
+            confirmation={"status": "CONFIRMED", "veto": False},
+            adjusted_trade_strength=85,
+            min_trade_strength=45,
+            event_window_status="NO_EVENT_DATA",
+            macro_event_risk_score=20,
+            event_lockdown_flag=False,
+            next_event_name=None,
+            active_event_name=None,
+            macro_news_adjustments={"macro_position_size_multiplier": 0.85, "event_lockdown_flag": False},
+            global_risk_state=global_risk_state,
+            holding_profile="AUTO",
+            portfolio_context={
+                "direction": "PUT",
+                "recent_signal_count": 5,
+                "same_direction_count": 4,
+                "same_direction_share": 0.8,
+                "same_direction_avg_close_bps": -12.0,
+                "same_direction_avg_tradeability_score": 48.0,
+                "gamma_regime": "NEGATIVE_GAMMA",
+                "vol_regime": "VOL_EXPANSION",
+                "macro_regime": "RISK_OFF",
+                "provider_health_summary": "WEAK",
+                "data_quality_status": "CAUTION",
+            },
+        )
+
+        self.assertEqual(decision["risk_trade_status"], "WATCHLIST")
+        self.assertEqual(decision["portfolio_concentration_guard"]["heat_label"], "CRITICAL")
+        self.assertIn("portfolio_regime_heat", decision["global_risk_reasons"])
+
 
 if __name__ == "__main__":
     unittest.main()

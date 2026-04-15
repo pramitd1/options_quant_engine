@@ -298,3 +298,4 @@ def test_eod_outcomes_marks_same_bar_target_stop_as_ambiguous(monkeypatch):
 
     assert out.get("target_stop_same_bar_ambiguous") is True
     assert out.get("stop_loss_hit") is True
+    assert out.get("exit_quality_label") == "AMBIGUOUS"

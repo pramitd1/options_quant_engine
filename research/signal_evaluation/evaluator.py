@@ -546,12 +546,43 @@ def build_signal_evaluation_row(
     row["spot_session_close"] = pd.NA
     row["signed_return_session_close_bps"] = pd.NA
     row["correct_session_close"] = pd.NA
+    row["spot_1d"] = pd.NA
+    row["spot_2d"] = pd.NA
+    row["spot_3d"] = pd.NA
+    row["spot_5d"] = pd.NA
+    row["spot_at_expiry"] = pd.NA
+    row["return_1d_bps"] = pd.NA
+    row["return_2d_bps"] = pd.NA
+    row["return_3d_bps"] = pd.NA
+    row["return_5d_bps"] = pd.NA
+    row["return_at_expiry_bps"] = pd.NA
+    row["correct_1d"] = pd.NA
+    row["correct_2d"] = pd.NA
+    row["correct_3d"] = pd.NA
+    row["correct_5d"] = pd.NA
+    row["correct_at_expiry"] = pd.NA
     row["mfe_60m_bps"] = pd.NA
     row["mae_60m_bps"] = pd.NA
     row["mfe_120m_bps"] = pd.NA
     row["mae_120m_bps"] = pd.NA
     row["realized_range_60m_bps"] = pd.NA
     row["realized_range_120m_bps"] = pd.NA
+    row["eod_mfe_bps"] = pd.NA
+    row["eod_mae_bps"] = pd.NA
+    row["target_hit"] = False
+    row["target_hit_date"] = pd.NA
+    row["stop_loss_hit"] = False
+    row["stop_loss_hit_date"] = pd.NA
+    row["target_stop_same_bar_ambiguous"] = False
+    row["target_sl_delta_used"] = pd.NA
+    row["target_sl_delta_source"] = pd.NA
+    row["best_outcome_horizon"] = pd.NA
+    row["best_outcome_bps"] = pd.NA
+    row["peak_to_close_decay_bps"] = pd.NA
+    row["exit_efficiency_score"] = pd.NA
+    row["horizon_edge_label"] = pd.NA
+    row["tradeability_tier"] = pd.NA
+    row["exit_quality_label"] = pd.NA
     return row
 
 
@@ -764,6 +795,105 @@ def _clip_score(value: float) -> float:
     return round(max(0.0, min(100.0, float(value))), 2)
 
 
+def _classify_tradeability_tier(score) -> str | pd.NA:
+    score = _safe_float(score, None)
+    if score is None:
+        return pd.NA
+    if score >= 80.0:
+        return "HIGH"
+    if score >= 65.0:
+        return "USABLE"
+    if score >= 45.0:
+        return "FRAGILE"
+    return "POOR"
+
+
+def _resolve_best_outcome_profile(updated: dict) -> tuple[object, object, object, str]:
+    candidate_fields = [
+        ("5m", "signed_return_5m_bps"),
+        ("15m", "signed_return_15m_bps"),
+        ("30m", "signed_return_30m_bps"),
+        ("60m", "signed_return_60m_bps"),
+        ("120m", "signed_return_120m_bps"),
+        ("session_close", "signed_return_session_close_bps"),
+        ("1d", "return_1d_bps"),
+        ("2d", "return_2d_bps"),
+        ("3d", "return_3d_bps"),
+        ("5d", "return_5d_bps"),
+        ("expiry", "return_at_expiry_bps"),
+    ]
+    valid = []
+    for label, field_name in candidate_fields:
+        value = _safe_float(updated.get(field_name), None)
+        if value is None:
+            continue
+        valid.append((label, float(value)))
+
+    if not valid:
+        return pd.NA, pd.NA, pd.NA, "PENDING"
+
+    best_label, best_value = max(valid, key=lambda item: item[1])
+    close_value = _safe_float(updated.get("signed_return_session_close_bps"), None)
+    decay = None if close_value is None else round(float(close_value - best_value), 2)
+
+    if best_value <= 0:
+        profile = "NO_EDGE"
+    elif best_label in {"5m", "15m"}:
+        if close_value is not None and close_value < 0:
+            profile = "EARLY_ALPHA_DECAY"
+        elif close_value is not None and close_value >= 0.60 * best_value:
+            profile = "FAST_FOLLOWTHROUGH"
+        else:
+            profile = "FAST_SCALP"
+    elif best_label in {"30m", "60m", "120m", "session_close"}:
+        if close_value is not None and close_value < 0:
+            profile = "LATE_REVERSAL"
+        else:
+            profile = "INTRADAY_TREND"
+    else:
+        profile = "SWING_FOLLOWTHROUGH"
+
+    return best_label, round(float(best_value), 2), decay, profile
+
+
+def _resolve_exit_quality(updated: dict) -> tuple[object, object]:
+    if bool(updated.get("target_stop_same_bar_ambiguous", False)):
+        return "AMBIGUOUS", 15.0
+
+    target_hit = bool(updated.get("target_hit", False))
+    stop_loss_hit = bool(updated.get("stop_loss_hit", False))
+    best_value = _safe_float(updated.get("best_outcome_bps"), None)
+    close_value = _safe_float(updated.get("signed_return_session_close_bps"), None)
+
+    if stop_loss_hit and not target_hit:
+        return "STOPPED_OUT", 0.0
+    if target_hit and not stop_loss_hit:
+        if close_value is not None and close_value > 0:
+            return "TARGET_HIT", 100.0
+        return "EARLY_EXIT", 82.0
+    if best_value is None:
+        return pd.NA, pd.NA
+    if best_value <= 0:
+        return "NO_EDGE", 0.0
+    if close_value is None:
+        return "PENDING", 50.0
+
+    ratio = float(close_value) / max(float(best_value), 1e-6)
+    clipped_ratio = max(-1.0, min(1.0, ratio))
+    exit_efficiency = _clip_score(50.0 + 50.0 * clipped_ratio)
+
+    if close_value < 0 < best_value:
+        label = "EARLY_EXIT"
+    elif ratio >= 0.80:
+        label = "HOLD_WINNER"
+    elif ratio >= 0.40:
+        label = "USABLE_EXIT"
+    else:
+        label = "MISSED_EXIT"
+
+    return label, exit_efficiency
+
+
 def compute_signal_evaluation_scores(row: dict) -> dict:
     """
     Purpose:
@@ -878,6 +1008,17 @@ def compute_signal_evaluation_scores(row: dict) -> dict:
     updated["magnitude_score"] = magnitude_score
     updated["timing_score"] = timing_score
     updated["tradeability_score"] = tradeability_score
+    updated["tradeability_tier"] = _classify_tradeability_tier(tradeability_score)
+
+    best_horizon, best_outcome_bps, peak_to_close_decay_bps, horizon_edge_label = _resolve_best_outcome_profile(updated)
+    updated["best_outcome_horizon"] = best_horizon
+    updated["best_outcome_bps"] = best_outcome_bps
+    updated["peak_to_close_decay_bps"] = peak_to_close_decay_bps
+    updated["horizon_edge_label"] = horizon_edge_label
+
+    exit_quality_label, exit_efficiency_score = _resolve_exit_quality(updated)
+    updated["exit_quality_label"] = exit_quality_label
+    updated["exit_efficiency_score"] = exit_efficiency_score
 
     component_scores = {
         "direction_score": direction_score,

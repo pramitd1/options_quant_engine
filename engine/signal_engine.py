@@ -17,6 +17,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from config.settings import (
     BACKTEST_MIN_TRADE_STRENGTH,
@@ -63,7 +64,13 @@ from strategy.strike_selector import select_best_strike
 from engine.decision_journal import append_decision as _journal_append_decision
 from utils.regime_normalization import canonical_gamma_regime
 from utils.consistency_checks import collect_trade_consistency_findings, select_trade_escalation_findings
-from strategy.score_calibration import initialize_calibrator, apply_score_calibration, get_calibrator_runtime_metadata
+from strategy.score_calibration import (
+    initialize_calibrator,
+    apply_score_calibration,
+    get_calibrator_runtime_metadata,
+    create_calibration_segment_key,
+    normalize_calibration_context,
+)
 from strategy.time_decay_model import initialize_time_decay, apply_time_decay
 from strategy.path_aware_filtering import PathAwareFilter, PathPatternLibrary
 from strategy.regime_conditional_thresholds import initialize_regime_thresholds, compute_regime_thresholds
@@ -118,6 +125,11 @@ _PATH_SIGNAL_STATE = {}
 _PATH_FILTER = None
 _TIME_DECAY_MODEL_CONFIG_KEY = None
 _REGIME_THRESHOLDS_CONFIG_KEY = None
+_OUTCOME_HISTORY_CACHE = {
+    "path": None,
+    "mtime": None,
+    "frame": None,
+}
 
 
 def _coerce_timestamp(value):
@@ -345,6 +357,792 @@ def _build_signal_probability_overlay(
     }
 
 
+def _load_recent_outcome_history_frame():
+    try:
+        import pandas as _pd
+        from config.settings import BASE_DIR as _BASE_DIR
+    except Exception:
+        return None, "import_failed"
+
+    base_dir = Path(_BASE_DIR)
+    candidate_paths = [
+        base_dir / "research" / "signal_evaluation" / "signals_dataset_cumul.csv",
+        base_dir / "research" / "signal_evaluation" / "signals_dataset.csv",
+    ]
+    selected_path = next((path for path in candidate_paths if path.exists()), None)
+    if selected_path is None:
+        return None, "dataset_missing"
+
+    try:
+        mtime = selected_path.stat().st_mtime
+    except OSError:
+        mtime = None
+
+    if (
+        _OUTCOME_HISTORY_CACHE.get("path") == str(selected_path)
+        and _OUTCOME_HISTORY_CACHE.get("mtime") == mtime
+        and _OUTCOME_HISTORY_CACHE.get("frame") is not None
+    ):
+        return _OUTCOME_HISTORY_CACHE.get("frame"), "cache"
+
+    try:
+        frame = _pd.read_csv(selected_path, low_memory=False)
+    except Exception as exc:
+        _LOG.debug("signal_engine: unable to load outcome history frame: %s", exc)
+        return None, "load_failed"
+
+    if len(frame) > 15000:
+        frame = frame.tail(15000).copy()
+
+    _OUTCOME_HISTORY_CACHE["path"] = str(selected_path)
+    _OUTCOME_HISTORY_CACHE["mtime"] = mtime
+    _OUTCOME_HISTORY_CACHE["frame"] = frame
+    return frame, "loaded"
+
+
+def _evaluate_historical_outcome_guard(*, payload, history_frame, runtime_thresholds):
+    import pandas as _pd
+
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_historical_outcome_guard"), 1.0))):
+        return {"enabled": False, "verdict": "DISABLED", "reason": "guard_disabled"}
+
+    if history_frame is None or getattr(history_frame, "empty", True):
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "history_unavailable", "sample_size": 0}
+
+    symbol = _as_upper(payload.get("symbol"))
+    direction = _as_upper(payload.get("direction"))
+    if direction not in {"CALL", "PUT"}:
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "direction_unavailable", "sample_size": 0}
+
+    frame = history_frame.copy()
+    for key in ["symbol", "direction", "gamma_regime", "macro_regime", "spot_vs_flip", "signal_regime"]:
+        if key in frame.columns:
+            frame[key] = frame[key].astype(str).str.upper().str.strip()
+
+    subset = frame
+    if "symbol" in subset.columns and symbol:
+        subset = subset[subset["symbol"] == symbol]
+    if "direction" in subset.columns:
+        subset = subset[subset["direction"] == direction]
+
+    progressive_filters = [
+        ["gamma_regime", "macro_regime", "spot_vs_flip", "signal_regime"],
+        ["gamma_regime", "macro_regime", "spot_vs_flip"],
+        ["gamma_regime", "macro_regime"],
+        ["gamma_regime"],
+        [],
+    ]
+
+    min_samples = max(4, int(_safe_float(runtime_thresholds.get("historical_outcome_guard_min_samples"), 12.0)))
+    matched_on = ["symbol", "direction"]
+    chosen = subset
+    for extra_keys in progressive_filters:
+        candidate = subset
+        used_keys = ["symbol", "direction"]
+        for key in extra_keys:
+            value = _as_upper(payload.get(key))
+            if not value or key not in candidate.columns:
+                continue
+            candidate = candidate[candidate[key] == value]
+            used_keys.append(key)
+        if len(candidate) >= min_samples:
+            chosen = candidate
+            matched_on = used_keys
+            break
+        if len(candidate) > 0 and len(candidate) >= len(chosen):
+            chosen = candidate
+            matched_on = used_keys
+
+    if chosen.empty:
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "no_matching_history", "sample_size": 0}
+
+    close_bps = _pd.to_numeric(chosen["signed_return_session_close_bps"] if "signed_return_session_close_bps" in chosen.columns else _pd.Series(dtype="float64"), errors="coerce")
+    ret60_bps = _pd.to_numeric(chosen["signed_return_60m_bps"] if "signed_return_60m_bps" in chosen.columns else _pd.Series(dtype="float64"), errors="coerce")
+    tradeability = _pd.to_numeric(chosen["tradeability_score"] if "tradeability_score" in chosen.columns else _pd.Series(dtype="float64"), errors="coerce")
+    correct_60m = _pd.to_numeric(chosen["correct_60m"] if "correct_60m" in chosen.columns else _pd.Series(dtype="float64"), errors="coerce")
+    correct_close = _pd.to_numeric(chosen["correct_session_close"] if "correct_session_close" in chosen.columns else _pd.Series(dtype="float64"), errors="coerce")
+
+    avg_60m = round(float(ret60_bps.dropna().mean()), 2) if ret60_bps.notna().any() else None
+    avg_close = round(float(close_bps.dropna().mean()), 2) if close_bps.notna().any() else None
+    avg_tradeability = round(float(tradeability.dropna().mean()), 2) if tradeability.notna().any() else None
+    hit_rate_60m = round(float(correct_60m.dropna().mean()), 4) if correct_60m.notna().any() else None
+    hit_rate_close = round(float(correct_close.dropna().mean()), 4) if correct_close.notna().any() else None
+
+    if "horizon_edge_label" in chosen.columns and chosen["horizon_edge_label"].notna().any():
+        early_decay_share = float(chosen["horizon_edge_label"].astype(str).str.upper().eq("EARLY_ALPHA_DECAY").mean())
+    else:
+        early_decay_mask = ret60_bps.gt(0) & close_bps.lt(0)
+        early_decay_share = float(early_decay_mask.mean()) if len(early_decay_mask) else 0.0
+
+    if "exit_quality_label" in chosen.columns and chosen["exit_quality_label"].notna().any():
+        stopout_share = float(
+            chosen["exit_quality_label"].astype(str).str.upper().isin({"STOPPED_OUT", "AMBIGUOUS", "MISSED_EXIT"}).mean()
+        )
+    else:
+        stopout_share = 0.0
+
+    if "best_outcome_horizon" in chosen.columns and chosen["best_outcome_horizon"].notna().any():
+        best_horizon = str(chosen["best_outcome_horizon"].dropna().astype(str).mode().iloc[0])
+    else:
+        horizon_means = {}
+        for label, field_name in {
+            "5m": "signed_return_5m_bps",
+            "15m": "signed_return_15m_bps",
+            "30m": "signed_return_30m_bps",
+            "60m": "signed_return_60m_bps",
+            "120m": "signed_return_120m_bps",
+            "session_close": "signed_return_session_close_bps",
+        }.items():
+            if field_name in chosen.columns:
+                values = _pd.to_numeric(chosen[field_name], errors="coerce")
+                if values.notna().any():
+                    horizon_means[label] = float(values.mean())
+        best_horizon = max(horizon_means, key=horizon_means.get) if horizon_means else None
+
+    early_decay_threshold = _safe_float(runtime_thresholds.get("historical_outcome_guard_early_decay_share_threshold"), 0.55)
+    stopout_threshold = _safe_float(runtime_thresholds.get("historical_outcome_guard_stopout_share_threshold"), 0.35)
+    min_tradeability = _safe_float(runtime_thresholds.get("historical_outcome_guard_min_tradeability_score"), 55.0)
+    min_close_bps = _safe_float(runtime_thresholds.get("historical_outcome_guard_min_session_close_bps"), -5.0)
+
+    exit_bias = "TAKE_PROFIT_EARLY" if (best_horizon in {"5m", "15m", "30m"} or early_decay_share >= early_decay_threshold) else "HOLD_TREND"
+
+    if len(chosen) >= min_samples and (
+        stopout_share >= stopout_threshold
+        or ((avg_tradeability is not None and avg_tradeability < min_tradeability) and (avg_close is not None and avg_close < min_close_bps))
+    ):
+        verdict = "BLOCK"
+        reason = "Historical outcome guard: similar setups have weak realized tradeability"
+    elif len(chosen) >= max(6, min_samples // 2) and (
+        early_decay_share >= early_decay_threshold
+        or (avg_60m is not None and avg_close is not None and avg_60m > 0 and avg_close < 0)
+    ):
+        verdict = "CAUTION"
+        reason = "Historical outcome guard: similar setups tend to decay after the early move"
+    else:
+        verdict = "PASS"
+        reason = "Historical outcome profile is acceptable"
+
+    return {
+        "enabled": True,
+        "verdict": verdict,
+        "reason": reason,
+        "sample_size": int(len(chosen)),
+        "matched_on": matched_on,
+        "avg_60m_bps": avg_60m,
+        "avg_close_bps": avg_close,
+        "avg_tradeability_score": avg_tradeability,
+        "hit_rate_60m": hit_rate_60m,
+        "hit_rate_close": hit_rate_close,
+        "early_decay_share": round(float(early_decay_share), 4),
+        "stopout_share": round(float(stopout_share), 4),
+        "best_horizon": best_horizon,
+        "exit_bias": exit_bias,
+    }
+
+
+def _compute_historical_outcome_guard(*, payload, runtime_thresholds):
+    history_frame, source = _load_recent_outcome_history_frame()
+    details = _evaluate_historical_outcome_guard(
+        payload=payload,
+        history_frame=history_frame,
+        runtime_thresholds=runtime_thresholds,
+    )
+    details["history_source"] = source
+    return details
+
+
+def _evaluate_regime_segment_guard(*, payload, history_frame, runtime_thresholds):
+    import pandas as _pd
+
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_regime_segment_guard"), 1.0))):
+        return {"enabled": False, "verdict": "DISABLED", "reason": "guard_disabled", "sample_size": 0}
+
+    if history_frame is None or getattr(history_frame, "empty", True):
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "history_unavailable", "sample_size": 0}
+
+    base_context = payload.get("score_calibration_segment_context") if isinstance(payload.get("score_calibration_segment_context"), dict) else {}
+    if not base_context:
+        base_context = {
+            "direction": payload.get("direction"),
+            "gamma_regime": payload.get("gamma_regime"),
+            "vol_regime": payload.get("volatility_regime") or payload.get("vol_regime"),
+        }
+    segment_context = normalize_calibration_context(base_context)
+    segment_key = create_calibration_segment_key(segment_context)
+    if segment_key == "default":
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "segment_context_missing", "sample_size": 0, "segment_key": segment_key}
+
+    frame = history_frame.copy()
+    if "symbol" in frame.columns:
+        frame["symbol_norm"] = frame["symbol"].astype(str).str.upper().str.strip()
+    else:
+        frame["symbol_norm"] = ""
+    if "direction" in frame.columns:
+        frame["direction_norm"] = frame["direction"].astype(str).str.upper().str.strip()
+    else:
+        frame["direction_norm"] = "UNKNOWN"
+    if "gamma_regime" in frame.columns:
+        frame["gamma_regime_norm"] = frame["gamma_regime"].astype(str).str.upper().str.strip()
+    else:
+        frame["gamma_regime_norm"] = "UNKNOWN"
+
+    if "vol_regime" in frame.columns:
+        vol_source = frame["vol_regime"]
+    elif "volatility_regime" in frame.columns:
+        vol_source = frame["volatility_regime"]
+    else:
+        vol_source = _pd.Series(["UNKNOWN"] * len(frame), index=frame.index)
+    frame["vol_regime_norm"] = vol_source.astype(str).str.upper().str.strip()
+
+    subset = frame
+    symbol = _as_upper(payload.get("symbol"))
+    if symbol:
+        subset = subset[subset["symbol_norm"] == symbol]
+    if "direction" in segment_context:
+        subset = subset[subset["direction_norm"] == segment_context.get("direction")]
+    if "gamma_regime" in segment_context:
+        subset = subset[subset["gamma_regime_norm"] == segment_context.get("gamma_regime")]
+    if "vol_regime" in segment_context:
+        subset = subset[subset["vol_regime_norm"] == segment_context.get("vol_regime")]
+
+    sample_size = int(len(subset))
+    if sample_size == 0:
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "no_matching_segment", "sample_size": 0, "segment_key": segment_key}
+
+    close_bps = _pd.to_numeric(subset["signed_return_session_close_bps"] if "signed_return_session_close_bps" in subset.columns else _pd.Series(dtype="float64"), errors="coerce")
+    ret60_bps = _pd.to_numeric(subset["signed_return_60m_bps"] if "signed_return_60m_bps" in subset.columns else _pd.Series(dtype="float64"), errors="coerce")
+    tradeability = _pd.to_numeric(subset["tradeability_score"] if "tradeability_score" in subset.columns else _pd.Series(dtype="float64"), errors="coerce")
+    hit_rate_60m = _pd.to_numeric(subset["correct_60m"] if "correct_60m" in subset.columns else _pd.Series(dtype="float64"), errors="coerce")
+
+    avg_close_bps = round(float(close_bps.dropna().mean()), 2) if close_bps.notna().any() else None
+    avg_60m_bps = round(float(ret60_bps.dropna().mean()), 2) if ret60_bps.notna().any() else None
+    avg_tradeability_score = round(float(tradeability.dropna().mean()), 2) if tradeability.notna().any() else None
+    hit_rate_60m_value = round(float(hit_rate_60m.dropna().mean()), 4) if hit_rate_60m.notna().any() else None
+
+    min_samples = max(4, int(_safe_float(runtime_thresholds.get("regime_segment_guard_min_samples"), 10.0)))
+    min_hit_rate = _safe_float(runtime_thresholds.get("regime_segment_guard_min_hit_rate_60m"), 0.48)
+    min_tradeability = _safe_float(runtime_thresholds.get("regime_segment_guard_min_tradeability_score"), 55.0)
+    min_close_bps = _safe_float(runtime_thresholds.get("regime_segment_guard_min_avg_close_bps"), -10.0)
+
+    if sample_size < min_samples:
+        verdict = "UNAVAILABLE"
+        reason = "segment_sample_too_small"
+    elif (
+        hit_rate_60m_value is not None and hit_rate_60m_value < min_hit_rate
+        and ((avg_tradeability_score is not None and avg_tradeability_score < min_tradeability) or (avg_close_bps is not None and avg_close_bps < min_close_bps))
+    ):
+        verdict = "BLOCK"
+        reason = "Regime segment underperforms on hit rate and realized edge"
+    elif (
+        (avg_tradeability_score is not None and avg_tradeability_score < min_tradeability)
+        or (avg_close_bps is not None and avg_close_bps < 0)
+        or (hit_rate_60m_value is not None and hit_rate_60m_value < min_hit_rate)
+    ):
+        verdict = "CAUTION"
+        reason = "Regime segment is fragile; require tighter promotion and faster exits"
+    else:
+        verdict = "PASS"
+        reason = "Regime segment is within acceptable performance bounds"
+
+    return {
+        "enabled": True,
+        "verdict": verdict,
+        "reason": reason,
+        "sample_size": sample_size,
+        "segment_key": segment_key,
+        "segment_context": segment_context,
+        "hit_rate_60m": hit_rate_60m_value,
+        "avg_60m_bps": avg_60m_bps,
+        "avg_close_bps": avg_close_bps,
+        "avg_tradeability_score": avg_tradeability_score,
+    }
+
+
+def _compute_regime_segment_guard(*, payload, runtime_thresholds):
+    history_frame, source = _load_recent_outcome_history_frame()
+    details = _evaluate_regime_segment_guard(
+        payload=payload,
+        history_frame=history_frame,
+        runtime_thresholds=runtime_thresholds,
+    )
+    details["history_source"] = source
+    return details
+
+
+def _evaluate_session_risk_governor(*, payload, history_frame, runtime_thresholds):
+    import pandas as _pd
+
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_session_risk_governor"), 1.0))):
+        return {"enabled": False, "verdict": "DISABLED", "reason": "guard_disabled", "recent_signal_count": 0}
+
+    if history_frame is None or getattr(history_frame, "empty", True):
+        return {"enabled": True, "verdict": "UNAVAILABLE", "reason": "history_unavailable", "recent_signal_count": 0}
+
+    symbol = _as_upper((payload or {}).get("symbol"))
+    direction = _as_upper((payload or {}).get("direction"))
+    valuation_time = _coerce_timestamp((payload or {}).get("valuation_time") or (payload or {}).get("as_of"))
+
+    frame = history_frame.copy()
+    if "symbol" in frame.columns:
+        frame["symbol_norm"] = frame["symbol"].astype(str).str.upper().str.strip()
+    else:
+        frame["symbol_norm"] = ""
+    if "direction" in frame.columns:
+        frame["direction_norm"] = frame["direction"].astype(str).str.upper().str.strip()
+    else:
+        frame["direction_norm"] = "UNKNOWN"
+
+    timestamp_col = None
+    for candidate in ["timestamp", "as_of", "valuation_time", "signal_timestamp"]:
+        if candidate in frame.columns:
+            timestamp_col = candidate
+            frame[candidate] = _pd.to_datetime(frame[candidate], errors="coerce")
+            break
+
+    subset = frame
+    if symbol and "symbol_norm" in subset.columns:
+        symbol_subset = subset[subset["symbol_norm"] == symbol]
+        if not symbol_subset.empty:
+            subset = symbol_subset
+
+    if timestamp_col is not None and valuation_time is not None:
+        day_subset = subset[subset[timestamp_col].dt.date == valuation_time.date()]
+        if not day_subset.empty:
+            subset = day_subset
+
+    lookback = max(3, int(_safe_float(runtime_thresholds.get("session_risk_lookback_signals"), 6.0)))
+    recent = subset.tail(lookback).copy()
+    recent_signal_count = int(len(recent))
+    min_samples = max(2, int(_safe_float(runtime_thresholds.get("session_risk_min_samples"), 4.0)))
+    if recent_signal_count < min_samples:
+        return {
+            "enabled": True,
+            "verdict": "UNAVAILABLE",
+            "reason": "insufficient_recent_session_samples",
+            "recent_signal_count": recent_signal_count,
+        }
+
+    close_bps = _pd.to_numeric(
+        recent["signed_return_session_close_bps"] if "signed_return_session_close_bps" in recent.columns else _pd.Series(dtype="float64"),
+        errors="coerce",
+    )
+    avg_close_bps = round(float(close_bps.dropna().mean()), 2) if close_bps.notna().any() else None
+    loss_share = float(close_bps.lt(0).mean()) if len(close_bps) else 0.0
+
+    if "exit_quality_label" in recent.columns:
+        exit_labels = recent["exit_quality_label"].astype(str).str.upper().fillna("")
+        stopout_mask = exit_labels.isin({"STOPPED_OUT", "MISSED_EXIT", "AMBIGUOUS"})
+    else:
+        stopout_mask = close_bps.lt(0)
+    stopout_share = float(stopout_mask.mean()) if len(stopout_mask) else 0.0
+
+    stopout_streak = 0
+    max_stopout_streak = 0
+    for is_stop in stopout_mask.astype(bool).tolist():
+        if is_stop:
+            stopout_streak += 1
+            max_stopout_streak = max(max_stopout_streak, stopout_streak)
+        else:
+            stopout_streak = 0
+
+    same_direction_count = 0
+    if direction in {"CALL", "PUT"} and "direction_norm" in recent.columns:
+        same_direction_count = int(recent[recent["direction_norm"] == direction].shape[0])
+
+    drawdown_component = 0.0
+    if avg_close_bps is not None and avg_close_bps < 0:
+        drawdown_component = min(abs(float(avg_close_bps)) / 25.0, 1.0)
+    budget_consumed = min(100.0, (loss_share * 40.0) + (stopout_share * 35.0) + (drawdown_component * 25.0))
+    budget_remaining_pct = round(max(0.0, 100.0 - budget_consumed), 1)
+
+    block_streak = max(1, int(_safe_float(runtime_thresholds.get("session_risk_max_stopout_streak"), 2.0)))
+    max_loss_share = _clip(_safe_float(runtime_thresholds.get("session_risk_max_loss_share"), 0.60), 0.0, 1.0)
+    min_avg_close_bps = _safe_float(runtime_thresholds.get("session_risk_min_avg_close_bps"), -5.0)
+    caution_size_cap = _clip(_safe_float(runtime_thresholds.get("session_risk_caution_size_cap"), 0.60), 0.0, 1.0)
+    block_size_cap = _clip(_safe_float(runtime_thresholds.get("session_risk_block_size_cap"), 0.35), 0.0, 1.0)
+    cooldown_minutes = max(5, int(_safe_float(runtime_thresholds.get("session_risk_cooldown_minutes"), 30.0)))
+
+    if max_stopout_streak >= block_streak and (avg_close_bps is None or avg_close_bps <= min_avg_close_bps):
+        verdict = "BLOCK"
+        reason = "Session risk governor: recent stop-out streak and drawdown require cooldown"
+        size_cap = block_size_cap
+        cooldown_active = True
+    elif loss_share >= max_loss_share or stopout_share >= max_loss_share or budget_remaining_pct < 45.0:
+        verdict = "CAUTION"
+        reason = "Session risk governor: recent realized outcomes require reduced risk"
+        size_cap = caution_size_cap
+        cooldown_active = False
+    else:
+        verdict = "PASS"
+        reason = "Session risk budget is within acceptable bounds"
+        size_cap = 1.0
+        cooldown_active = False
+
+    return {
+        "enabled": True,
+        "verdict": verdict,
+        "reason": reason,
+        "recent_signal_count": recent_signal_count,
+        "same_direction_count": same_direction_count,
+        "avg_close_bps": avg_close_bps,
+        "loss_share": round(float(loss_share), 4),
+        "stopout_share": round(float(stopout_share), 4),
+        "stopout_streak": int(max_stopout_streak),
+        "budget_remaining_pct": budget_remaining_pct,
+        "size_cap": round(float(size_cap), 4),
+        "cooldown_minutes": cooldown_minutes,
+        "cooldown_active": bool(cooldown_active),
+    }
+
+
+def _compute_session_risk_governor(*, payload, runtime_thresholds):
+    history_frame, source = _load_recent_outcome_history_frame()
+    details = _evaluate_session_risk_governor(
+        payload=payload,
+        history_frame=history_frame,
+        runtime_thresholds=runtime_thresholds,
+    )
+    details["history_source"] = source
+    return details
+
+
+def _evaluate_trade_slot_governor(*, payload, history_frame, runtime_thresholds):
+    import pandas as _pd
+
+    payload = payload if isinstance(payload, dict) else {}
+    operator_control_state = payload.get("operator_control_state") if isinstance(payload.get("operator_control_state"), dict) else {}
+
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_trade_slot_governor"), 1.0))):
+        return {
+            "enabled": False,
+            "verdict": "DISABLED",
+            "reason": "guard_disabled",
+            "active_signal_count": 0,
+            "same_direction_count": 0,
+            "operator_override_active": False,
+        }
+
+    max_total_signals = max(1, int(_safe_float(runtime_thresholds.get("trade_slot_max_total_signals"), 3.0)))
+    max_same_direction_signals = max(1, int(_safe_float(runtime_thresholds.get("trade_slot_max_same_direction_signals"), 2.0)))
+    caution_size_cap = _clip(_safe_float(runtime_thresholds.get("trade_slot_caution_size_cap"), 0.55), 0.0, 1.0)
+    override_size_cap = _clip(_safe_float(runtime_thresholds.get("trade_slot_override_size_cap"), 0.30), 0.0, 1.0)
+    hold_cap_minutes = max(5, int(_safe_float(runtime_thresholds.get("trade_slot_hold_cap_minutes"), 20.0)))
+    override_hold_cap_minutes = max(5, int(_safe_float(runtime_thresholds.get("trade_slot_override_hold_cap_minutes"), 15.0)))
+
+    override_controls_enabled = bool(int(_safe_float(runtime_thresholds.get("enable_operator_override_controls"), 1.0)))
+    override_mode = _as_upper(
+        operator_control_state.get("slot_override")
+        or operator_control_state.get("operator_override")
+        or operator_control_state.get("action")
+    )
+    override_reason = str(
+        operator_control_state.get("override_reason")
+        or operator_control_state.get("note")
+        or ""
+    ).strip() or None
+
+    if override_controls_enabled and (
+        bool(operator_control_state.get("force_watchlist"))
+        or override_mode == "FORCE_WATCHLIST"
+    ):
+        return {
+            "enabled": True,
+            "verdict": "BLOCK",
+            "reason": "Trade slot governor: operator desk control forced the setup to WATCHLIST",
+            "active_signal_count": 0,
+            "same_direction_count": 0,
+            "max_total_signals": max_total_signals,
+            "max_same_direction_signals": max_same_direction_signals,
+            "size_cap": 0.0,
+            "hold_cap_minutes": hold_cap_minutes,
+            "intraday_only": True,
+            "operator_override_active": True,
+            "override_mode": "FORCE_WATCHLIST",
+            "override_reason": override_reason,
+        }
+
+    if history_frame is None or getattr(history_frame, "empty", True):
+        return {
+            "enabled": True,
+            "verdict": "UNAVAILABLE",
+            "reason": "history_unavailable",
+            "active_signal_count": 0,
+            "same_direction_count": 0,
+            "max_total_signals": max_total_signals,
+            "max_same_direction_signals": max_same_direction_signals,
+            "size_cap": 1.0,
+            "hold_cap_minutes": hold_cap_minutes,
+            "intraday_only": False,
+            "operator_override_active": False,
+        }
+
+    symbol = _as_upper(payload.get("symbol"))
+    direction = _as_upper(payload.get("direction"))
+    valuation_time = _coerce_timestamp(payload.get("valuation_time") or payload.get("as_of"))
+
+    frame = history_frame.copy()
+    if "symbol" in frame.columns:
+        frame["symbol_norm"] = frame["symbol"].astype(str).str.upper().str.strip()
+    else:
+        frame["symbol_norm"] = ""
+    if "direction" in frame.columns:
+        frame["direction_norm"] = frame["direction"].astype(str).str.upper().str.strip()
+    else:
+        frame["direction_norm"] = "UNKNOWN"
+
+    timestamp_col = None
+    for candidate in ["timestamp", "as_of", "valuation_time", "signal_timestamp"]:
+        if candidate in frame.columns:
+            timestamp_col = candidate
+            frame[candidate] = _pd.to_datetime(frame[candidate], errors="coerce")
+            break
+
+    subset = frame
+    if symbol:
+        symbol_subset = subset[subset["symbol_norm"] == symbol]
+        if not symbol_subset.empty:
+            subset = symbol_subset
+
+    if timestamp_col is not None and valuation_time is not None:
+        day_subset = subset[subset[timestamp_col].dt.date == valuation_time.date()]
+        if not day_subset.empty:
+            subset = day_subset
+            subset = subset.sort_values(timestamp_col)
+
+    if "trade_status" in subset.columns:
+        active_statuses = {"TRADE", "EXECUTED", "FILLED", "OPEN", "DEGRADED_PROVIDER_TRADE"}
+        status_subset = subset[subset["trade_status"].astype(str).str.upper().str.strip().isin(active_statuses)]
+        if not status_subset.empty:
+            subset = status_subset
+
+    lookback = max(3, int(_safe_float(runtime_thresholds.get("trade_slot_lookback_signals"), 6.0)))
+    recent = subset.tail(lookback).copy()
+    active_signal_count = int(len(recent))
+    same_direction_count = 0
+    if direction in {"CALL", "PUT"} and "direction_norm" in recent.columns:
+        same_direction_count = int(recent[recent["direction_norm"] == direction].shape[0])
+
+    min_samples = max(1, int(_safe_float(runtime_thresholds.get("trade_slot_min_samples"), 3.0)))
+    if active_signal_count < min_samples:
+        return {
+            "enabled": True,
+            "verdict": "PASS",
+            "reason": "Trade slot capacity is available",
+            "active_signal_count": active_signal_count,
+            "same_direction_count": same_direction_count,
+            "max_total_signals": max_total_signals,
+            "max_same_direction_signals": max_same_direction_signals,
+            "size_cap": 1.0,
+            "hold_cap_minutes": hold_cap_minutes,
+            "intraday_only": False,
+            "operator_override_active": False,
+        }
+
+    utilization = max(
+        float(active_signal_count / max(max_total_signals, 1)),
+        float(same_direction_count / max(max_same_direction_signals, 1)),
+    )
+
+    if active_signal_count > max_total_signals or same_direction_count > max_same_direction_signals:
+        verdict = "BLOCK"
+        reason = "Trade slot governor: symbol book already has too many same-way ideas"
+        size_cap = 0.0
+        intraday_only = True
+    elif active_signal_count == max_total_signals or same_direction_count == max_same_direction_signals:
+        verdict = "CAUTION"
+        reason = "Trade slot governor: symbol book is near its governed capacity"
+        size_cap = caution_size_cap
+        intraday_only = True
+    else:
+        verdict = "PASS"
+        reason = "Trade slot capacity is available"
+        size_cap = 1.0
+        intraday_only = False
+
+    operator_override_active = False
+    if verdict == "BLOCK" and override_controls_enabled and override_mode in {"ALLOW", "FORCE_ALLOW", "OVERRIDE"}:
+        verdict = "CAUTION"
+        reason = "Trade slot governor: operator override permits reduced-size entry despite a full symbol book"
+        size_cap = override_size_cap
+        hold_cap_minutes = min(hold_cap_minutes, override_hold_cap_minutes)
+        intraday_only = True
+        operator_override_active = True
+
+    return {
+        "enabled": True,
+        "verdict": verdict,
+        "reason": reason,
+        "active_signal_count": active_signal_count,
+        "same_direction_count": same_direction_count,
+        "max_total_signals": max_total_signals,
+        "max_same_direction_signals": max_same_direction_signals,
+        "utilization_ratio": round(utilization, 4),
+        "size_cap": round(float(size_cap), 4),
+        "hold_cap_minutes": hold_cap_minutes,
+        "intraday_only": bool(intraday_only),
+        "operator_override_active": bool(operator_override_active),
+        "override_mode": override_mode if operator_override_active else None,
+        "override_reason": override_reason if operator_override_active else None,
+    }
+
+
+def _compute_trade_slot_governor(*, payload, runtime_thresholds):
+    history_frame, source = _load_recent_outcome_history_frame()
+    details = _evaluate_trade_slot_governor(
+        payload=payload,
+        history_frame=history_frame,
+        runtime_thresholds=runtime_thresholds,
+    )
+    details["history_source"] = source
+    return details
+
+
+def _evaluate_trade_promotion_governor(*, payload, runtime_thresholds):
+    payload = payload if isinstance(payload, dict) else {}
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_trade_promotion_governor"), 1.0))):
+        return {
+            "enabled": False,
+            "verdict": "DISABLED",
+            "reason": "guard_disabled",
+            "promotion_state": "DISABLED",
+            "replay_validation_required": False,
+            "size_cap": 1.0,
+        }
+
+    trade_strength = _safe_float(payload.get("trade_strength"), 0.0)
+    runtime_composite_score = _safe_float(payload.get("runtime_composite_score"), 0.0)
+    success_probability = _safe_float(
+        payload.get("signal_success_probability"),
+        _safe_float(payload.get("hybrid_move_probability"), 0.0),
+    )
+    confirmation_status = _as_upper(payload.get("confirmation_status"))
+    data_quality_status = _as_upper(payload.get("data_quality_status"))
+    live_calibration_gate = payload.get("live_calibration_gate") if isinstance(payload.get("live_calibration_gate"), dict) else {}
+    live_directional_gate = payload.get("live_directional_gate") if isinstance(payload.get("live_directional_gate"), dict) else {}
+
+    min_trade_strength = int(_safe_float(runtime_thresholds.get("min_trade_strength"), 62.0))
+    min_composite_score = int(_safe_float(runtime_thresholds.get("min_composite_score"), 58.0))
+    min_probability = _clip(_safe_float(runtime_thresholds.get("trade_promotion_min_probability"), 0.60), 0.0, 1.0)
+    caution_size_cap = _clip(_safe_float(runtime_thresholds.get("trade_promotion_caution_size_cap"), 0.50), 0.0, 1.0)
+    hold_cap_minutes = max(5, int(_safe_float(runtime_thresholds.get("trade_promotion_hold_cap_minutes"), 20.0)))
+    require_confirmed = bool(int(_safe_float(runtime_thresholds.get("trade_promotion_require_confirmed_status"), 1.0)))
+
+    replay_required_reasons = []
+    if trade_strength < min_trade_strength + 4:
+        replay_required_reasons.append("trade_strength_near_gate")
+    if runtime_composite_score < min_composite_score + 5:
+        replay_required_reasons.append("runtime_composite_near_gate")
+    if success_probability < min_probability:
+        replay_required_reasons.append("success_probability_below_promotion_floor")
+    if require_confirmed and confirmation_status not in {"CONFIRMED", "STRONG_CONFIRMATION"}:
+        replay_required_reasons.append("confirmation_not_strong_enough")
+    if data_quality_status in {"CAUTION", "WEAK"}:
+        replay_required_reasons.append("data_quality_not_clean")
+    if _as_upper(live_calibration_gate.get("verdict")) == "BLOCK":
+        replay_required_reasons.append("live_calibration_blocked")
+    if _as_upper(live_directional_gate.get("verdict")) == "BLOCK":
+        replay_required_reasons.append("live_directional_blocked")
+
+    if replay_required_reasons:
+        return {
+            "enabled": True,
+            "verdict": "BLOCK",
+            "reason": "Trade promotion governor: replay validation is required before live promotion",
+            "promotion_state": "REPLAY_REQUIRED",
+            "replay_validation_required": True,
+            "reasons": replay_required_reasons,
+            "size_cap": caution_size_cap,
+            "hold_cap_minutes": hold_cap_minutes,
+        }
+
+    return {
+        "enabled": True,
+        "verdict": "PASS",
+        "reason": "Promotion evidence is sufficient for live TRADE routing",
+        "promotion_state": "PROMOTE",
+        "replay_validation_required": False,
+        "reasons": [],
+        "size_cap": 1.0,
+        "hold_cap_minutes": None,
+    }
+
+
+def _compute_portfolio_concentration_context(*, payload, runtime_thresholds):
+    import pandas as _pd
+
+    context = {
+        "enabled": bool(int(_safe_float(runtime_thresholds.get("enable_portfolio_concentration_guard"), 1.0))),
+        "history_source": None,
+        "reason": None,
+        "symbol": _as_upper((payload or {}).get("symbol")),
+        "direction": _as_upper((payload or {}).get("direction")),
+        "gamma_regime": _as_upper((payload or {}).get("gamma_regime")),
+        "vol_regime": _as_upper((payload or {}).get("volatility_regime") or (payload or {}).get("vol_regime")),
+        "macro_regime": _as_upper((payload or {}).get("macro_regime")),
+        "provider_health_summary": _as_upper((payload or {}).get("provider_health_summary")),
+        "data_quality_status": _as_upper((payload or {}).get("data_quality_status")),
+        "recent_signal_count": 0,
+        "same_direction_count": 0,
+        "same_direction_share": 0.0,
+        "same_direction_avg_close_bps": None,
+        "same_direction_avg_tradeability_score": None,
+    }
+    if not context["enabled"]:
+        context["reason"] = "guard_disabled"
+        return context
+    if context["direction"] not in {"CALL", "PUT"}:
+        context["reason"] = "direction_unavailable"
+        return context
+
+    history_frame, source = _load_recent_outcome_history_frame()
+    context["history_source"] = source
+    if history_frame is None or getattr(history_frame, "empty", True):
+        context["reason"] = "history_unavailable"
+        return context
+
+    frame = history_frame.copy()
+    if "direction" not in frame.columns:
+        context["reason"] = "direction_history_unavailable"
+        return context
+
+    if "symbol" in frame.columns:
+        frame["symbol_norm"] = frame["symbol"].astype(str).str.upper().str.strip()
+    else:
+        frame["symbol_norm"] = ""
+    frame["direction_norm"] = frame["direction"].astype(str).str.upper().str.strip()
+    frame = frame[frame["direction_norm"].isin(["CALL", "PUT"])]
+
+    if context["symbol"]:
+        symbol_slice = frame[frame["symbol_norm"] == context["symbol"]]
+        if not symbol_slice.empty:
+            frame = symbol_slice
+
+    lookback = max(3, int(_safe_float(runtime_thresholds.get("portfolio_concentration_lookback_signals"), 6.0)))
+    recent = frame.tail(lookback).copy()
+    context["recent_signal_count"] = int(len(recent))
+    if recent.empty:
+        context["reason"] = "no_recent_signals"
+        return context
+
+    same_direction = recent[recent["direction_norm"] == context["direction"]]
+    same_count = int(len(same_direction))
+    context["same_direction_count"] = same_count
+    context["same_direction_share"] = round(float(same_count / len(recent)), 4) if len(recent) else 0.0
+
+    if "signed_return_session_close_bps" in same_direction.columns:
+        close_bps = _pd.to_numeric(same_direction["signed_return_session_close_bps"], errors="coerce")
+        if close_bps.notna().any():
+            context["same_direction_avg_close_bps"] = round(float(close_bps.dropna().mean()), 2)
+
+    if "tradeability_score" in same_direction.columns:
+        tradeability = _pd.to_numeric(same_direction["tradeability_score"], errors="coerce")
+        if tradeability.notna().any():
+            context["same_direction_avg_tradeability_score"] = round(float(tradeability.dropna().mean()), 2)
+
+    context["reason"] = "ok"
+    return context
+
+
 def _derive_advisory_size_recommendation(
     payload,
     *,
@@ -362,7 +1160,8 @@ def _derive_advisory_size_recommendation(
     gamma_regime,
 ):
     """Compute sizing as a pure recommendation without mutating the signal payload."""
-    base_lots = max(int(_safe_float((payload or {}).get("number_of_lots"), 0.0)), 0)
+    payload = payload if isinstance(payload, dict) else {}
+    base_lots = max(int(_safe_float(payload.get("number_of_lots"), 0.0)), 0)
 
     confidence_value = _safe_float(confidence_score, 50.0)
     if confidence_value < 30.0:
@@ -401,6 +1200,77 @@ def _derive_advisory_size_recommendation(
         elif gamma_regime_upper == "NEGATIVE_GAMMA":
             risk_size_cap *= _safe_float(runtime_thresholds.get("negative_gamma_size_multiplier"), 1.15)
 
+    heat_score = _safe_float(
+        payload.get("portfolio_book_heat_score"),
+        _safe_float((payload.get("portfolio_concentration_guard") or {}).get("heat_score"), 0.0),
+    )
+    heat_label = _as_upper(
+        payload.get("portfolio_book_heat_label")
+        or (payload.get("portfolio_concentration_guard") or {}).get("heat_label")
+        or "COOL"
+    )
+    trade_strength = _safe_float(payload.get("trade_strength"), 50.0)
+    success_probability = _safe_float(
+        payload.get("signal_success_probability"),
+        _safe_float(payload.get("hybrid_move_probability"), 0.50),
+    )
+    success_probability = float(_clip(success_probability, 0.0, 1.0))
+
+    priority_score = (
+        0.40 * trade_strength
+        + 0.30 * confidence_value
+        + 0.20 * (success_probability * 100.0)
+        + 0.10 * (100.0 - heat_score)
+    )
+    if heat_label == "COOL":
+        priority_score += _safe_float(runtime_thresholds.get("portfolio_heat_cool_priority_bonus"), 4.0)
+    elif heat_label == "HOT":
+        priority_score -= _safe_float(runtime_thresholds.get("portfolio_heat_hot_priority_penalty"), 8.0)
+    elif heat_label == "CRITICAL":
+        priority_score -= _safe_float(runtime_thresholds.get("portfolio_heat_critical_priority_penalty"), 16.0)
+    priority_score = float(_clip(priority_score, 0.0, 100.0))
+
+    high_threshold = _safe_float(runtime_thresholds.get("portfolio_priority_high_threshold"), 75.0)
+    medium_threshold = _safe_float(runtime_thresholds.get("portfolio_priority_medium_threshold"), 60.0)
+    low_threshold = _safe_float(runtime_thresholds.get("portfolio_priority_low_threshold"), 45.0)
+
+    if bool(int(_safe_float(runtime_thresholds.get("enable_portfolio_allocation_ladder"), 1.0))) is False:
+        priority_bucket = "STANDARD_PRIORITY"
+        allocation_tier = "STANDARD"
+        capital_fraction_max = 0.10
+        allocation_multiplier = 1.0
+    elif priority_score >= high_threshold:
+        priority_bucket = "HIGH_PRIORITY"
+        allocation_tier = "CORE"
+        capital_fraction_max = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_core_fraction_max"), 0.25), 0.0, 1.0)
+        allocation_multiplier = 1.0
+    elif priority_score >= medium_threshold:
+        priority_bucket = "MEDIUM_PRIORITY"
+        allocation_tier = "TACTICAL"
+        capital_fraction_max = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_tactical_fraction_max"), 0.15), 0.0, 1.0)
+        allocation_multiplier = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_medium_mult"), 0.75), 0.0, 1.0)
+    elif priority_score >= low_threshold:
+        priority_bucket = "LOW_PRIORITY"
+        allocation_tier = "SMALL"
+        capital_fraction_max = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_small_fraction_max"), 0.08), 0.0, 1.0)
+        allocation_multiplier = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_low_mult"), 0.50), 0.0, 1.0)
+    else:
+        priority_bucket = "DEFER"
+        allocation_tier = "PROBE"
+        capital_fraction_max = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_probe_fraction_max"), 0.04), 0.0, 1.0)
+        allocation_multiplier = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_probe_mult"), 0.25), 0.0, 1.0)
+
+    risk_size_cap *= allocation_multiplier
+    if heat_label == "HOT":
+        risk_size_cap = min(
+            risk_size_cap,
+            _clip(_safe_float(runtime_thresholds.get("portfolio_heat_hot_allocation_cap"), 0.55), 0.0, 1.0),
+        )
+    elif heat_label == "CRITICAL":
+        risk_size_cap = min(
+            risk_size_cap,
+            _clip(_safe_float(runtime_thresholds.get("portfolio_heat_critical_allocation_cap"), 0.35), 0.0, 1.0),
+        )
     risk_size_cap = float(_clip(risk_size_cap, 0.0, 1.0))
     advisory_lots = max(0, int(base_lots * risk_size_cap))
     if base_lots > 0 and advisory_lots == 0 and risk_size_cap > 0:
@@ -413,6 +1283,12 @@ def _derive_advisory_size_recommendation(
         "effective_size_cap": round(float(risk_size_cap), 2),
         "advisory_lots": advisory_lots,
         "macro_size_applied": advisory_lots > 0 and advisory_lots < base_lots,
+        "portfolio_priority_score": round(float(priority_score), 2),
+        "portfolio_priority_bucket": priority_bucket,
+        "portfolio_allocation_tier": allocation_tier,
+        "portfolio_capital_fraction_max": round(float(capital_fraction_max), 4),
+        "portfolio_heat_score": round(float(heat_score), 2),
+        "portfolio_heat_label": heat_label,
     }
 
 
@@ -1180,6 +2056,11 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
     gamma_flip = payload.get("gamma_flip")
     live_calibration_gate = payload.get("live_calibration_gate") if isinstance(payload.get("live_calibration_gate"), dict) else {}
     live_directional_gate = payload.get("live_directional_gate") if isinstance(payload.get("live_directional_gate"), dict) else {}
+    historical_outcome_guard = payload.get("historical_outcome_guard") if isinstance(payload.get("historical_outcome_guard"), dict) else {}
+    session_risk_governor = payload.get("session_risk_governor") if isinstance(payload.get("session_risk_governor"), dict) else {}
+    trade_slot_governor = payload.get("trade_slot_governor") if isinstance(payload.get("trade_slot_governor"), dict) else {}
+    trade_promotion_governor = payload.get("trade_promotion_governor") if isinstance(payload.get("trade_promotion_governor"), dict) else {}
+    portfolio_concentration_guard = payload.get("portfolio_concentration_guard") if isinstance(payload.get("portfolio_concentration_guard"), dict) else {}
 
     activation_score = 0
     acfg = get_activation_score_policy_config()
@@ -1387,7 +2268,56 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
             )
             watchlist_message = str(payload.get("message") or "").strip()
 
-            if provider_health_blocked:
+            historical_guard_verdict = _as_upper(historical_outcome_guard.get("verdict"))
+            session_risk_verdict = _as_upper(session_risk_governor.get("verdict"))
+            trade_slot_verdict = _as_upper(trade_slot_governor.get("verdict"))
+            trade_promotion_verdict = _as_upper(trade_promotion_governor.get("verdict"))
+            portfolio_guard_verdict = _as_upper(portfolio_concentration_guard.get("verdict"))
+            regime_segment_guard = payload.get("regime_segment_guard") if isinstance(payload.get("regime_segment_guard"), dict) else {}
+            regime_guard_verdict = _as_upper(regime_segment_guard.get("verdict"))
+            if trade_promotion_verdict == "BLOCK" or incoming_no_trade_reason_code == "TRADE_PROMOTION_GOVERNOR":
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Trade promotion governor requires replay validation"
+                blocked_by.append("trade_promotion_governor")
+                no_trade_reason_code = "TRADE_PROMOTION_GOVERNOR"
+                no_trade_reason = trade_promotion_governor.get("reason") or watchlist_message or "Trade promotion governor downgraded this setup"
+            elif trade_slot_verdict == "BLOCK" or incoming_no_trade_reason_code == "TRADE_SLOT_GOVERNOR":
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Trade slot governor downgraded the setup"
+                blocked_by.append("trade_slot_governor")
+                no_trade_reason_code = "TRADE_SLOT_GOVERNOR"
+                no_trade_reason = trade_slot_governor.get("reason") or watchlist_message or "Trade slot governor downgraded this setup"
+            elif session_risk_verdict == "BLOCK" or incoming_no_trade_reason_code == "SESSION_RISK_GOVERNOR":
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Session risk governor downgraded the setup"
+                blocked_by.append("session_risk_governor")
+                no_trade_reason_code = "SESSION_RISK_GOVERNOR"
+                no_trade_reason = session_risk_governor.get("reason") or watchlist_message or "Session risk governor downgraded this setup"
+            elif portfolio_guard_verdict == "WATCHLIST" or incoming_no_trade_reason_code == "PORTFOLIO_CONCENTRATION_GUARD":
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Portfolio concentration guard downgraded the setup"
+                blocked_by.append("portfolio_concentration_guard")
+                no_trade_reason_code = "PORTFOLIO_CONCENTRATION_GUARD"
+                no_trade_reason = portfolio_concentration_guard.get("reason") or watchlist_message or "Portfolio concentration guard downgraded this setup"
+            elif regime_guard_verdict == "BLOCK" or incoming_no_trade_reason_code == "REGIME_SEGMENT_GUARD":
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Regime segment guard downgraded the setup"
+                blocked_by.append("regime_segment_guard")
+                no_trade_reason_code = "REGIME_SEGMENT_GUARD"
+                no_trade_reason = regime_segment_guard.get("reason") or watchlist_message or "Regime segment guard downgraded this setup"
+            elif historical_guard_verdict == "BLOCK" or incoming_no_trade_reason_code == "HISTORICAL_OUTCOME_GUARD":
+                decision_classification = "BLOCKED_SETUP"
+                setup_state = "RISK_BLOCKED"
+                watchlist_reason = "Historical outcome guard downgraded the setup"
+                blocked_by.append("historical_outcome_guard")
+                no_trade_reason_code = "HISTORICAL_OUTCOME_GUARD"
+                no_trade_reason = historical_outcome_guard.get("reason") or watchlist_message or "Historical outcome guard downgraded this setup"
+            elif provider_health_blocked:
                 provider_blocker = provider_health_summary
                 if provider_blocker not in {"CAUTION", "WEAK"}:
                     provider_blocker = "CAUTION" if "PROVIDER_HEALTH_CAUTION" in global_risk_overlay_reasons else "WEAK"
@@ -1518,6 +2448,125 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
         blocked_by.append("live_directional_gate")
         reason_details.append("secondary_blocker: live directional gate blocked (stickiness/imbalance/flip-lag)")
 
+    trade_promotion_verdict = _as_upper(trade_promotion_governor.get("verdict"))
+    if trade_promotion_verdict == "BLOCK":
+        blocked_by.append("trade_promotion_governor")
+        promotion_state = trade_promotion_governor.get("promotion_state")
+        reason_details.append(
+            f"secondary_blocker: trade promotion governor blocked — replay validation required before live promotion [{promotion_state}]"
+        )
+
+    trade_slot_verdict = _as_upper(trade_slot_governor.get("verdict"))
+    if trade_slot_verdict == "BLOCK":
+        blocked_by.append("trade_slot_governor")
+        slot_count = trade_slot_governor.get("active_signal_count")
+        same_direction_count = trade_slot_governor.get("same_direction_count")
+        slot_bits = []
+        if slot_count is not None:
+            slot_bits.append(f"{slot_count} active ideas")
+        if same_direction_count is not None:
+            slot_bits.append(f"{same_direction_count} same-way")
+        slot_suffix = f" ({', '.join(slot_bits)})" if slot_bits else ""
+        reason_details.append(
+            "secondary_blocker: trade slot governor blocked — the symbol book is already full"
+            f"{slot_suffix}"
+        )
+    elif trade_slot_verdict == "CAUTION":
+        slot_count = trade_slot_governor.get("active_signal_count")
+        override_active = bool(trade_slot_governor.get("operator_override_active"))
+        slot_suffix = f" ({slot_count} active ideas)" if slot_count is not None else ""
+        if override_active:
+            reason_details.append(f"note: trade slot governor allowed a reduced-size operator override{slot_suffix}")
+        else:
+            reason_details.append(f"note: trade slot governor is tightening size because the symbol book is near capacity{slot_suffix}")
+
+    session_risk_verdict = _as_upper(session_risk_governor.get("verdict"))
+    if session_risk_verdict == "BLOCK":
+        blocked_by.append("session_risk_governor")
+        cooldown_active = bool(session_risk_governor.get("cooldown_active"))
+        stopout_streak = session_risk_governor.get("stopout_streak")
+        budget_remaining_pct = session_risk_governor.get("budget_remaining_pct")
+        session_bits = []
+        if stopout_streak is not None:
+            session_bits.append(f"stopout streak {stopout_streak}")
+        if budget_remaining_pct is not None:
+            session_bits.append(f"budget {budget_remaining_pct}% remaining")
+        if cooldown_active:
+            session_bits.append("cooldown active")
+        session_suffix = f" ({', '.join(session_bits)})" if session_bits else ""
+        reason_details.append(
+            "secondary_blocker: session risk governor blocked — recent realized losses require cooling-off"
+            f"{session_suffix}"
+        )
+    elif session_risk_verdict == "CAUTION":
+        budget_remaining_pct = session_risk_governor.get("budget_remaining_pct")
+        budget_suffix = f" ({budget_remaining_pct}% remaining)" if budget_remaining_pct is not None else ""
+        reason_details.append(f"note: session risk governor is reducing risk after recent losses{budget_suffix}")
+
+    regime_segment_guard = payload.get("regime_segment_guard") if isinstance(payload.get("regime_segment_guard"), dict) else {}
+    regime_guard_verdict = _as_upper(regime_segment_guard.get("verdict"))
+    if regime_guard_verdict == "BLOCK":
+        blocked_by.append("regime_segment_guard")
+        segment_reason = str(regime_segment_guard.get("reason") or "active regime segment is underperforming")
+        segment_samples = regime_segment_guard.get("sample_size")
+        segment_suffix = f" ({segment_samples} matched samples)" if segment_samples is not None else ""
+        reason_details.append(f"secondary_blocker: regime segment guard blocked — {segment_reason}{segment_suffix}")
+    elif regime_guard_verdict == "CAUTION":
+        segment_key = regime_segment_guard.get("segment_key")
+        segment_suffix = f" [{segment_key}]" if segment_key not in (None, "", "nan") else ""
+        reason_details.append(f"note: regime segment guard recommends tighter promotion and faster exits{segment_suffix}")
+
+    portfolio_guard_verdict = _as_upper(portfolio_concentration_guard.get("verdict"))
+    if portfolio_guard_verdict == "WATCHLIST":
+        blocked_by.append("portfolio_concentration_guard")
+        same_count = portfolio_concentration_guard.get("same_direction_count")
+        recent_total = portfolio_concentration_guard.get("recent_signal_count")
+        same_share = _safe_float(portfolio_concentration_guard.get("same_direction_share"), None)
+        heat_score = _safe_float(portfolio_concentration_guard.get("heat_score"), None)
+        heat_label = str(portfolio_concentration_guard.get("heat_label") or "").upper().strip()
+        profile_bits = []
+        if same_count is not None and recent_total is not None:
+            profile_bits.append(f"{same_count}/{recent_total} same-way")
+        if same_share is not None:
+            profile_bits.append(f"share {same_share:.0%}")
+        if heat_label:
+            heat_text = heat_label.lower()
+            if heat_score is not None:
+                heat_text = f"{heat_text} heat {int(round(heat_score))}/100"
+            profile_bits.append(heat_text)
+        profile_suffix = f" ({', '.join(profile_bits)})" if profile_bits else ""
+        reason_details.append(
+            "secondary_blocker: portfolio concentration guard blocked — concentrated same-way options book"
+            f"{profile_suffix}"
+        )
+    elif portfolio_guard_verdict == "REDUCE":
+        same_share = _safe_float(portfolio_concentration_guard.get("same_direction_share"), None)
+        heat_score = _safe_float(portfolio_concentration_guard.get("heat_score"), None)
+        heat_label = str(portfolio_concentration_guard.get("heat_label") or "").upper().strip()
+        detail_bits = []
+        if same_share is not None:
+            detail_bits.append(f"same-way share {same_share:.0%}")
+        if heat_label:
+            heat_text = heat_label.lower()
+            if heat_score is not None:
+                heat_text = f"{heat_text} heat {int(round(heat_score))}/100"
+            detail_bits.append(heat_text)
+        share_suffix = f" ({', '.join(detail_bits)})" if detail_bits else ""
+        reason_details.append(f"note: portfolio concentration guard reduced size due to crowding{share_suffix}")
+
+    historical_guard_verdict = _as_upper(historical_outcome_guard.get("verdict"))
+    if historical_guard_verdict == "BLOCK":
+        blocked_by.append("historical_outcome_guard")
+        guard_reason = str(historical_outcome_guard.get("reason") or "historical regime outcomes are weak")
+        samples = historical_outcome_guard.get("sample_size")
+        sample_suffix = f" ({samples} matched samples)" if samples is not None else ""
+        reason_details.append(f"secondary_blocker: historical outcome guard blocked — {guard_reason}{sample_suffix}")
+    elif historical_guard_verdict == "CAUTION":
+        exit_bias = str(historical_outcome_guard.get("exit_bias") or "TAKE_PROFIT_EARLY").lower().replace("_", " ")
+        best_horizon = historical_outcome_guard.get("best_horizon")
+        horizon_suffix = f" near {best_horizon}" if best_horizon not in (None, "", "nan") else ""
+        reason_details.append(f"note: historical outcome profile suggests {exit_bias}{horizon_suffix}")
+
     dealer_liquidity_map = payload.get("dealer_liquidity_map") if isinstance(payload.get("dealer_liquidity_map"), dict) else {}
     band_reason = _as_upper(dealer_liquidity_map.get("band_reason"))
     if direction == "CALL" and band_reason == "MOVE_TO_SUPPORT":
@@ -1646,6 +2695,7 @@ def generate_trade(
     valuation_time=None,
     target_profit_percent=TARGET_PROFIT_PERCENT,
     stop_loss_percent=STOP_LOSS_PERCENT,
+    operator_control_state=None,
 ):
     """
     Purpose:
@@ -2298,6 +3348,10 @@ def generate_trade(
         "spot_validation": spot_validation,
         "option_chain_validation": option_chain_validation,
         "provider_health": option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else None,
+        "provider_health_score": provider_health.get("market_data_readiness_score"),
+        "provider_health_tier": provider_health.get("market_data_readiness_tier"),
+        "data_readiness_score": provider_health.get("market_data_readiness_score"),
+        "data_confidence_tier": provider_health.get("market_data_readiness_tier"),
         "analytics_usable": bool(option_chain_validation.get("analytics_usable")) if isinstance(option_chain_validation, dict) else False,
         "execution_suggestion_usable": bool(option_chain_validation.get("execution_suggestion_usable")) if isinstance(option_chain_validation, dict) else False,
         "tradable_data": option_chain_validation.get("tradable_data") if isinstance(option_chain_validation, dict) else None,
@@ -2475,8 +3529,19 @@ def generate_trade(
         "time_decay_factor": None,
         "live_calibration_gate": live_calibration_gate if isinstance(live_calibration_gate, dict) else {},
         "live_directional_gate": live_directional_gate if isinstance(live_directional_gate, dict) else {},
+        "operator_control_state": operator_control_state if isinstance(operator_control_state, dict) else {},
         "backtest_mode": backtest_mode,
     }
+
+    portfolio_concentration_context = _compute_portfolio_concentration_context(
+        payload={
+            **base_payload,
+            "direction": direction,
+            "gamma_regime": market_state.get("gamma_regime"),
+            "volatility_regime": market_state.get("vol_regime"),
+        },
+        runtime_thresholds=runtime_thresholds,
+    )
 
     # The global risk layer is the final pre-trade gate. It can block, downgrade
     # to watchlist, or cap size even when the analytics stack is directionally strong.
@@ -2493,6 +3558,7 @@ def generate_trade(
         macro_news_adjustments=macro_news_adjustments,
         global_risk_state=global_risk_state,
         holding_profile=holding_profile,
+        portfolio_context=portfolio_concentration_context,
     )
     base_payload.update(
         {
@@ -2580,6 +3646,12 @@ def generate_trade(
             "global_risk_reasons": global_risk["global_risk_reasons"],
             "global_risk_features": global_risk["global_risk_features"],
             "global_risk_diagnostics": global_risk["global_risk_diagnostics"],
+            "portfolio_concentration_guard": global_risk.get("portfolio_concentration_guard", portfolio_concentration_context),
+            "portfolio_concentration_recent_signal_count": (global_risk.get("portfolio_concentration_guard") or {}).get("recent_signal_count"),
+            "portfolio_concentration_same_direction_count": (global_risk.get("portfolio_concentration_guard") or {}).get("same_direction_count"),
+            "portfolio_concentration_same_direction_share": (global_risk.get("portfolio_concentration_guard") or {}).get("same_direction_share"),
+            "portfolio_book_heat_score": (global_risk.get("portfolio_concentration_guard") or {}).get("heat_score"),
+            "portfolio_book_heat_label": (global_risk.get("portfolio_concentration_guard") or {}).get("heat_label"),
             "gamma_vol_reasons": gamma_vol_state.get("gamma_vol_reasons", []) if isinstance(gamma_vol_state, dict) else [],
             "gamma_vol_features": gamma_vol_state.get("gamma_vol_features", {}) if isinstance(gamma_vol_state, dict) else {},
             "gamma_vol_diagnostics": gamma_vol_state.get("gamma_vol_diagnostics", {}) if isinstance(gamma_vol_state, dict) else {},
@@ -3151,6 +4223,12 @@ def generate_trade(
     base_payload["confidence_size_multiplier"] = advisory_sizing["confidence_size_multiplier"]
     base_payload["advisory_position_size_multiplier"] = advisory_sizing["advisory_position_size_multiplier"]
     base_payload["advisory_capital_required"] = round(entry_price * lot_size * advisory_sizing["advisory_lots"], 2)
+    base_payload["portfolio_priority_score"] = advisory_sizing.get("portfolio_priority_score")
+    base_payload["portfolio_priority_bucket"] = advisory_sizing.get("portfolio_priority_bucket")
+    base_payload["portfolio_allocation_tier"] = advisory_sizing.get("portfolio_allocation_tier")
+    base_payload["portfolio_capital_fraction_max"] = advisory_sizing.get("portfolio_capital_fraction_max")
+    base_payload["portfolio_book_heat_score"] = advisory_sizing.get("portfolio_heat_score", base_payload.get("portfolio_book_heat_score"))
+    base_payload["portfolio_book_heat_label"] = advisory_sizing.get("portfolio_heat_label", base_payload.get("portfolio_book_heat_label"))
 
     if global_risk["risk_trade_status"] == "WATCHLIST":
         return _finalize(base_payload, "WATCHLIST", global_risk["risk_message"])
@@ -3213,6 +4291,18 @@ def generate_trade(
         base_payload["score_calibration_segment_key"] = calibration_metadata.get("selected_segment_key")
         base_payload["score_calibration_segment_context"] = calibration_metadata.get("selected_segment_context") or {}
 
+    regime_segment_guard = _compute_regime_segment_guard(
+        payload={**base_payload, "direction": direction, "vol_regime": calibration_context.get("vol_regime")},
+        runtime_thresholds=runtime_thresholds,
+    )
+    base_payload["regime_segment_guard"] = regime_segment_guard
+    base_payload["regime_segment_key"] = regime_segment_guard.get("segment_key")
+    base_payload["regime_segment_samples"] = regime_segment_guard.get("sample_size")
+    base_payload["regime_segment_hit_rate_60m"] = regime_segment_guard.get("hit_rate_60m")
+    base_payload["regime_segment_avg_60m_bps"] = regime_segment_guard.get("avg_60m_bps")
+    base_payload["regime_segment_avg_close_bps"] = regime_segment_guard.get("avg_close_bps")
+    base_payload["regime_segment_avg_tradeability_score"] = regime_segment_guard.get("avg_tradeability_score")
+
     effective_min_trade_strength, effective_min_composite_score, bearish_bias_guard = _apply_bearish_bias_threshold_adjustments(
         runtime_thresholds=runtime_thresholds,
         direction=direction,
@@ -3221,6 +4311,24 @@ def generate_trade(
         base_min_trade_strength=min_trade_strength,
         base_min_composite_score=min_composite_score,
     )
+    regime_segment_verdict = _as_upper(regime_segment_guard.get("verdict"))
+    if regime_segment_verdict == "CAUTION":
+        effective_min_trade_strength = int(_clip(
+            effective_min_trade_strength + int(_safe_float(runtime_thresholds.get("regime_segment_guard_caution_strength_add"), 3.0)),
+            0,
+            100,
+        ))
+        effective_min_composite_score = int(_clip(
+            effective_min_composite_score + int(_safe_float(runtime_thresholds.get("regime_segment_guard_caution_composite_add"), 3.0)),
+            0,
+            100,
+        ))
+        hold_cap = max(int(_safe_float(runtime_thresholds.get("regime_segment_guard_hold_cap_minutes"), 35.0)), 5)
+        base_payload["recommended_hold_minutes"] = min(int(_safe_float(base_payload.get("recommended_hold_minutes"), hold_cap)), hold_cap)
+        base_payload["max_hold_minutes"] = min(int(_safe_float(base_payload.get("max_hold_minutes"), hold_cap)), hold_cap)
+        current_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        segment_cap = _clip(_safe_float(runtime_thresholds.get("regime_segment_guard_size_cap"), 0.75), 0.0, 1.0)
+        base_payload["effective_size_cap"] = round(min(current_cap, segment_cap), 2)
     base_payload["bearish_bias_guard"] = bearish_bias_guard
     base_payload["effective_min_trade_strength_threshold"] = int(effective_min_trade_strength)
     base_payload["effective_min_composite_score_threshold"] = int(effective_min_composite_score)
@@ -3282,6 +4390,15 @@ def generate_trade(
         base_payload["time_decay_factor"] = 1.0
     
     base_payload["runtime_composite_score"] = runtime_composite_score
+
+    if regime_segment_verdict == "BLOCK":
+        base_payload["no_trade_reason_code"] = "REGIME_SEGMENT_GUARD"
+        base_payload["no_trade_reason"] = regime_segment_guard.get("reason") or "Regime segment guard downgraded the setup"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Regime segment guard routed TRADE to WATCHLIST",
+        )
 
     if adjusted_trade_strength < effective_min_trade_strength:
         return _finalize(
@@ -3418,6 +4535,148 @@ def generate_trade(
             base_payload,
             "WATCHLIST",
             "Weak-data circuit breaker routed TRADE to WATCHLIST",
+        )
+
+    historical_outcome_guard = _compute_historical_outcome_guard(
+        payload=base_payload,
+        runtime_thresholds=runtime_thresholds,
+    )
+    base_payload["historical_outcome_guard"] = historical_outcome_guard
+    base_payload["historical_outcome_samples"] = historical_outcome_guard.get("sample_size")
+    base_payload["historical_best_horizon"] = historical_outcome_guard.get("best_horizon")
+    base_payload["historical_exit_bias"] = historical_outcome_guard.get("exit_bias")
+    base_payload["historical_avg_60m_bps"] = historical_outcome_guard.get("avg_60m_bps")
+    base_payload["historical_avg_close_bps"] = historical_outcome_guard.get("avg_close_bps")
+    base_payload["historical_avg_tradeability_score"] = historical_outcome_guard.get("avg_tradeability_score")
+
+    outcome_guard_verdict = _as_upper(historical_outcome_guard.get("verdict"))
+    if outcome_guard_verdict == "CAUTION":
+        hold_cap = max(int(_safe_float(runtime_thresholds.get("historical_outcome_guard_hold_cap_minutes"), 30.0)), 5)
+        size_cap = _clip(_safe_float(runtime_thresholds.get("historical_outcome_guard_size_cap"), 0.70), 0.0, 1.0)
+        base_payload["recommended_hold_minutes"] = min(int(_safe_float(base_payload.get("recommended_hold_minutes"), hold_cap)), hold_cap)
+        base_payload["max_hold_minutes"] = min(int(_safe_float(base_payload.get("max_hold_minutes"), hold_cap)), hold_cap)
+        base_payload["overnight_hold_allowed"] = False
+        base_payload["historical_outcome_guard_active"] = True
+        base_payload["historical_outcome_guard_mode"] = "EARLY_EXIT_BIAS"
+        current_size_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        new_size_cap = min(current_size_cap, size_cap)
+        base_payload["effective_size_cap"] = round(new_size_cap, 2)
+        existing_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), 0.0)), 0)
+        resized_lots = max(int(existing_lots * new_size_cap), 0)
+        if existing_lots > 0 and resized_lots == 0 and new_size_cap > 0:
+            resized_lots = 1
+        if existing_lots > 0:
+            base_payload["macro_suggested_lots"] = min(existing_lots, resized_lots)
+            base_payload["advisory_lots"] = base_payload["macro_suggested_lots"]
+            base_payload["advisory_position_size_multiplier"] = round(new_size_cap, 4)
+    elif outcome_guard_verdict == "BLOCK":
+        base_payload["historical_outcome_guard_active"] = True
+        base_payload["no_trade_reason_code"] = "HISTORICAL_OUTCOME_GUARD"
+        base_payload["no_trade_reason"] = historical_outcome_guard.get("reason") or "Historical outcome guard downgraded the setup"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Historical outcome guard routed TRADE to WATCHLIST",
+        )
+
+    session_risk_governor = _compute_session_risk_governor(
+        payload={**base_payload, "valuation_time": valuation_time, "direction": direction},
+        runtime_thresholds=runtime_thresholds,
+    )
+    base_payload["session_risk_governor"] = session_risk_governor
+    base_payload["session_risk_recent_signal_count"] = session_risk_governor.get("recent_signal_count")
+    base_payload["session_risk_stopout_streak"] = session_risk_governor.get("stopout_streak")
+    base_payload["session_risk_budget_remaining_pct"] = session_risk_governor.get("budget_remaining_pct")
+    base_payload["session_risk_cooldown_active"] = session_risk_governor.get("cooldown_active")
+
+    session_risk_verdict = _as_upper(session_risk_governor.get("verdict"))
+    if session_risk_verdict == "CAUTION":
+        hold_cap = max(int(_safe_float(runtime_thresholds.get("session_risk_hold_cap_minutes"), 25.0)), 5)
+        size_cap = _clip(_safe_float(session_risk_governor.get("size_cap"), _safe_float(runtime_thresholds.get("session_risk_caution_size_cap"), 0.60)), 0.0, 1.0)
+        base_payload["recommended_hold_minutes"] = min(int(_safe_float(base_payload.get("recommended_hold_minutes"), hold_cap)), hold_cap)
+        base_payload["max_hold_minutes"] = min(int(_safe_float(base_payload.get("max_hold_minutes"), hold_cap)), hold_cap)
+        current_size_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        new_size_cap = min(current_size_cap, size_cap)
+        base_payload["effective_size_cap"] = round(new_size_cap, 2)
+        existing_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), 0.0)), 0)
+        resized_lots = max(int(existing_lots * new_size_cap), 0)
+        if existing_lots > 0 and resized_lots == 0 and new_size_cap > 0:
+            resized_lots = 1
+        if existing_lots > 0:
+            base_payload["macro_suggested_lots"] = min(existing_lots, resized_lots)
+            base_payload["advisory_lots"] = base_payload["macro_suggested_lots"]
+            base_payload["advisory_position_size_multiplier"] = round(new_size_cap, 4)
+    elif session_risk_verdict == "BLOCK":
+        base_payload["no_trade_reason_code"] = "SESSION_RISK_GOVERNOR"
+        base_payload["no_trade_reason"] = session_risk_governor.get("reason") or "Session risk governor downgraded the setup"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Session risk governor routed TRADE to WATCHLIST",
+        )
+
+    trade_slot_governor = _compute_trade_slot_governor(
+        payload={
+            **base_payload,
+            "valuation_time": valuation_time,
+            "direction": direction,
+            "operator_control_state": operator_control_state if isinstance(operator_control_state, dict) else {},
+        },
+        runtime_thresholds=runtime_thresholds,
+    )
+    base_payload["trade_slot_governor"] = trade_slot_governor
+    base_payload["trade_slot_active_signal_count"] = trade_slot_governor.get("active_signal_count")
+    base_payload["trade_slot_same_direction_count"] = trade_slot_governor.get("same_direction_count")
+    base_payload["operator_override_active"] = trade_slot_governor.get("operator_override_active")
+    base_payload["operator_override_reason"] = trade_slot_governor.get("override_reason")
+    base_payload["operator_override_mode"] = trade_slot_governor.get("override_mode")
+
+    trade_slot_verdict = _as_upper(trade_slot_governor.get("verdict"))
+    if trade_slot_verdict == "CAUTION":
+        hold_cap = max(int(_safe_float(trade_slot_governor.get("hold_cap_minutes"), _safe_float(runtime_thresholds.get("trade_slot_hold_cap_minutes"), 20.0))), 5)
+        size_cap = _clip(_safe_float(trade_slot_governor.get("size_cap"), _safe_float(runtime_thresholds.get("trade_slot_caution_size_cap"), 0.55)), 0.0, 1.0)
+        base_payload["recommended_hold_minutes"] = min(int(_safe_float(base_payload.get("recommended_hold_minutes"), hold_cap)), hold_cap)
+        base_payload["max_hold_minutes"] = min(int(_safe_float(base_payload.get("max_hold_minutes"), hold_cap)), hold_cap)
+        current_size_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        new_size_cap = min(current_size_cap, size_cap)
+        base_payload["effective_size_cap"] = round(new_size_cap, 2)
+        existing_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), 0.0)), 0)
+        resized_lots = max(int(existing_lots * new_size_cap), 0)
+        if existing_lots > 0 and resized_lots == 0 and new_size_cap > 0:
+            resized_lots = 1
+        if existing_lots > 0:
+            base_payload["macro_suggested_lots"] = min(existing_lots, resized_lots)
+            base_payload["advisory_lots"] = base_payload["macro_suggested_lots"]
+            base_payload["advisory_position_size_multiplier"] = round(new_size_cap, 4)
+        if bool(trade_slot_governor.get("intraday_only")):
+            base_payload["overnight_hold_allowed"] = False
+            base_payload["overnight_trade_block"] = True
+            base_payload["overnight_hold_reason"] = "trade_slot_governor_requires_intraday_only"
+    elif trade_slot_verdict == "BLOCK":
+        base_payload["no_trade_reason_code"] = "TRADE_SLOT_GOVERNOR"
+        base_payload["no_trade_reason"] = trade_slot_governor.get("reason") or "Trade slot governor downgraded the setup"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Trade slot governor routed TRADE to WATCHLIST",
+        )
+
+    trade_promotion_governor = _evaluate_trade_promotion_governor(
+        payload=base_payload,
+        runtime_thresholds=runtime_thresholds,
+    )
+    base_payload["trade_promotion_governor"] = trade_promotion_governor
+    base_payload["replay_validation_required"] = trade_promotion_governor.get("replay_validation_required")
+    base_payload["promotion_state"] = trade_promotion_governor.get("promotion_state")
+
+    trade_promotion_verdict = _as_upper(trade_promotion_governor.get("verdict"))
+    if trade_promotion_verdict == "BLOCK":
+        base_payload["no_trade_reason_code"] = "TRADE_PROMOTION_GOVERNOR"
+        base_payload["no_trade_reason"] = trade_promotion_governor.get("reason") or "Trade promotion governor downgraded the setup"
+        return _finalize(
+            base_payload,
+            "WATCHLIST",
+            "Trade promotion governor routed TRADE to WATCHLIST",
         )
 
     if budget_signal_only:

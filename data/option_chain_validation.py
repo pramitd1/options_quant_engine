@@ -419,6 +419,100 @@ def _as_bool(value, default=False):
     return default
 
 
+def _score_health_label(value, *, na_score: float = 0.65) -> float:
+    label = str(value or "").upper().strip()
+    mapping = {
+        "GOOD": 1.00,
+        "HEALTHY": 1.00,
+        "STRONG": 1.00,
+        "THIN": 0.72,
+        "CAUTION": 0.58,
+        "DEGRADED": 0.50,
+        "WEAK": 0.22,
+        "UNHEALTHY": 0.12,
+        "N/A": na_score,
+        "NA": na_score,
+        "": na_score,
+    }
+    return float(mapping.get(label, na_score))
+
+
+def _compute_market_data_readiness(provider_health: dict, *, critical_failures: list[str] | None = None) -> dict:
+    if not isinstance(provider_health, dict) or not provider_health:
+        return {
+            "score": 0.0,
+            "tier": "FRAGILE",
+            "weak_components": ["provider_health_unavailable"],
+            "component_scores": {},
+        }
+
+    components = {
+        "row": _score_health_label(provider_health.get("row_health"), na_score=0.60),
+        "pricing": _score_health_label(provider_health.get("pricing_health")),
+        "core_marketability": _score_health_label(provider_health.get("core_marketability_health")),
+        "core_pairing": _score_health_label(provider_health.get("core_pairing_health")),
+        "core_iv": _score_health_label(provider_health.get("core_iv_health")),
+        "atm_iv": _score_health_label(provider_health.get("atm_iv_health"), na_score=0.68),
+        "iv_parity": _score_health_label(provider_health.get("iv_parity_health"), na_score=0.70),
+        "iv_staleness": _score_health_label(provider_health.get("iv_staleness_health"), na_score=0.70),
+        "duplicate": _score_health_label(provider_health.get("duplicate_health"), na_score=0.80),
+        "quote_integrity": _score_health_label(provider_health.get("core_quote_integrity_health"), na_score=0.72),
+    }
+    weights = {
+        "row": 0.08,
+        "pricing": 0.14,
+        "core_marketability": 0.18,
+        "core_pairing": 0.14,
+        "core_iv": 0.14,
+        "atm_iv": 0.12,
+        "iv_parity": 0.08,
+        "iv_staleness": 0.06,
+        "duplicate": 0.03,
+        "quote_integrity": 0.03,
+    }
+
+    weighted = sum(components[key] * weights[key] for key in weights)
+    score = 100.0 * weighted
+
+    critical_failures = critical_failures or []
+    if critical_failures:
+        score -= min(28.0, 7.0 * float(len(critical_failures)))
+
+    severe_failure_set = {
+        str(item).strip().lower()
+        for item in critical_failures
+        if str(item).strip()
+    }
+    if severe_failure_set.intersection({"atm_iv_weak", "core_iv_weak", "core_marketability_weak"}):
+        score = min(score, 64.0)
+    if len(severe_failure_set) >= 2:
+        score = min(score, 49.0)
+
+    summary_status = str(provider_health.get("summary_status") or "").upper().strip()
+    if summary_status == "WEAK":
+        score -= 8.0
+    elif summary_status == "CAUTION":
+        score -= 3.0
+
+    score = round(max(0.0, min(100.0, score)), 1)
+    if score >= 85.0:
+        tier = "HIGH"
+    elif score >= 70.0:
+        tier = "MODERATE"
+    elif score >= 50.0:
+        tier = "LOW"
+    else:
+        tier = "FRAGILE"
+
+    weak_components = [key for key, value in components.items() if value < 0.40]
+    return {
+        "score": score,
+        "tier": tier,
+        "weak_components": weak_components,
+        "component_scores": {key: round(value * 100.0, 1) for key, value in components.items()},
+    }
+
+
 def validate_option_chain(option_chain, spot=None, india_vix_level=None):
     """
     Purpose:
@@ -855,6 +949,15 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         provider_health["summary_status"] = "CAUTION"
         provider_health["row_health_escalation_applied"] = True
 
+    readiness = _compute_market_data_readiness(
+        provider_health,
+        critical_failures=critical_failures,
+    )
+    provider_health["market_data_readiness_score"] = readiness["score"]
+    provider_health["market_data_readiness_tier"] = readiness["tier"]
+    provider_health["market_data_weak_components"] = readiness["weak_components"]
+    provider_health["market_data_component_scores"] = readiness["component_scores"]
+
     analytics_usable = bool(tradable_data.get("analytics_usable")) and len(issues) == 0
     execution_suggestion_usable = bool(tradable_data.get("execution_suggestion_usable")) and len(issues) == 0
 
@@ -887,6 +990,8 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         "expiry_count": expiry_count,
         "expiry_missing_rows": expiry_missing_rows,
         "provider_health": provider_health,
+        "market_data_readiness_score": readiness["score"],
+        "market_data_readiness_tier": readiness["tier"],
         "tradable_data": tradable_data,
     }
 

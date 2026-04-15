@@ -362,6 +362,29 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertGreater(enriched["composite_signal_score"], 0)
         self.assertEqual(enriched["correct_session_close"], 1)
 
+    def test_evaluate_signal_outcomes_labels_early_alpha_decay_and_exit_pressure(self):
+        row = build_signal_evaluation_row(self._sample_result())
+        realized_path = pd.DataFrame(
+            {
+                "timestamp": [
+                    "2026-03-14T10:05:00+05:30",
+                    "2026-03-14T10:15:00+05:30",
+                    "2026-03-14T10:30:00+05:30",
+                    "2026-03-14T11:00:00+05:30",
+                    "2026-03-14T15:25:00+05:30",
+                ],
+                "spot": [22040, 22110, 22070, 22015, 21980],
+            }
+        )
+
+        enriched = evaluate_signal_outcomes(row, realized_path, as_of="2026-03-14T15:25:00+05:30")
+
+        self.assertEqual(enriched["best_outcome_horizon"], "15m")
+        self.assertEqual(enriched["horizon_edge_label"], "EARLY_ALPHA_DECAY")
+        self.assertEqual(enriched["exit_quality_label"], "EARLY_EXIT")
+        self.assertLess(float(enriched["peak_to_close_decay_bps"]), 0)
+        self.assertIn(enriched["tradeability_tier"], {"HIGH", "USABLE", "FRAGILE"})
+
     def test_evaluate_signal_outcomes_respects_as_of_without_future_leakage(self):
         row = build_signal_evaluation_row(self._sample_result())
         realized_path = pd.DataFrame(

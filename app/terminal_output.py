@@ -2576,6 +2576,14 @@ def _render_provider_health_compact_detail(trade):
             "    iv quality: "
             f"atm={atm_str}, parity={parity_str}, staleness={stale_str}"
         )
+    readiness_score = provider_health.get("market_data_readiness_score")
+    readiness_tier = provider_health.get("market_data_readiness_tier")
+    weak_components = provider_health.get("market_data_weak_components")
+    if readiness_score is not None or readiness_tier:
+        readiness_text = f"{float(readiness_score):.1f}" if isinstance(readiness_score, (int, float)) else "-"
+        print(f"    readiness : {readiness_text}/100 ({readiness_tier or '-'})")
+    if isinstance(weak_components, list) and weak_components:
+        print(f"    weak comps: {', '.join(str(item) for item in weak_components[:5])}")
     block_status = provider_health.get("trade_blocking_status")
     if block_status:
         print(f"    block st  : {block_status}")
@@ -3211,6 +3219,67 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             risk_fields["degrade_mode"] = f"ACTIVE ({_override_mode}) [{_override_constraints_text}]"
         else:
             risk_fields["degrade_mode"] = f"ACTIVE ({_override_mode})"
+    _session_guard = trade.get("session_risk_governor") if isinstance(trade.get("session_risk_governor"), dict) else {}
+    _session_verdict = str(_session_guard.get("verdict") or "").upper().strip()
+    if _session_verdict in {"CAUTION", "BLOCK"}:
+        _budget_remaining = _session_guard.get("budget_remaining_pct", trade.get("session_risk_budget_remaining_pct"))
+        _stopout_streak = _session_guard.get("stopout_streak", trade.get("session_risk_stopout_streak"))
+        _session_bits = []
+        if _stopout_streak is not None:
+            _session_bits.append(f"streak {_stopout_streak}")
+        if _budget_remaining is not None:
+            _session_bits.append(f"budget {_budget_remaining}%")
+        risk_fields["session_risk"] = f"{_session_verdict}{' (' + ', '.join(_session_bits) + ')' if _session_bits else ''}"
+    _slot_guard = trade.get("trade_slot_governor") if isinstance(trade.get("trade_slot_governor"), dict) else {}
+    _slot_verdict = str(_slot_guard.get("verdict") or "").upper().strip()
+    if _slot_verdict in {"CAUTION", "BLOCK"}:
+        _slot_count = _slot_guard.get("active_signal_count", trade.get("trade_slot_active_signal_count"))
+        _same_way = _slot_guard.get("same_direction_count", trade.get("trade_slot_same_direction_count"))
+        _slot_bits = []
+        if _slot_count is not None:
+            _slot_bits.append(f"{_slot_count} active")
+        if _same_way is not None:
+            _slot_bits.append(f"{_same_way} same-way")
+        risk_fields["trade_slots"] = f"{_slot_verdict}{' (' + ', '.join(_slot_bits) + ')' if _slot_bits else ''}"
+    if trade.get("operator_override_active"):
+        _override_mode = trade.get("operator_override_mode") or (_slot_guard.get("override_mode") if isinstance(_slot_guard, dict) else None) or "ACTIVE"
+        _override_reason = trade.get("operator_override_reason") or (_slot_guard.get("override_reason") if isinstance(_slot_guard, dict) else None)
+        risk_fields["operator_override"] = f"{_override_mode}{f' ({_override_reason})' if _override_reason else ''}"
+    _promotion_guard = trade.get("trade_promotion_governor") if isinstance(trade.get("trade_promotion_governor"), dict) else {}
+    _promotion_verdict = str(_promotion_guard.get("verdict") or "").upper().strip()
+    if _promotion_verdict == "BLOCK":
+        _promotion_state = _promotion_guard.get("promotion_state") or trade.get("promotion_state") or "REPLAY_REQUIRED"
+        risk_fields["promotion_gate"] = f"BLOCK ({_promotion_state})"
+    _portfolio_guard = trade.get("portfolio_concentration_guard") if isinstance(trade.get("portfolio_concentration_guard"), dict) else {}
+    _portfolio_verdict = str(_portfolio_guard.get("verdict") or "").upper().strip()
+    _portfolio_heat_score = _portfolio_guard.get("heat_score", trade.get("portfolio_book_heat_score"))
+    _portfolio_heat_label = str(_portfolio_guard.get("heat_label") or trade.get("portfolio_book_heat_label") or "").upper().strip()
+    if _portfolio_verdict in {"WATCHLIST", "REDUCE"}:
+        _same_count = _portfolio_guard.get("same_direction_count")
+        _recent_total = _portfolio_guard.get("recent_signal_count")
+        _share_value = _portfolio_guard.get("same_direction_share")
+        _share_text = None
+        if isinstance(_share_value, (int, float)):
+            _share_text = f"{float(_share_value):.0%}"
+        _portfolio_parts = []
+        if _same_count is not None and _recent_total is not None:
+            _portfolio_parts.append(f"{_same_count}/{_recent_total} same-way")
+        if _share_text:
+            _portfolio_parts.append(_share_text)
+        _portfolio_suffix = f" ({', '.join(_portfolio_parts)})" if _portfolio_parts else ""
+        risk_fields["portfolio_concentration"] = f"{_portfolio_verdict}{_portfolio_suffix}"
+    if _portfolio_heat_label or isinstance(_portfolio_heat_score, (int, float)):
+        _heat_display = _portfolio_heat_label or "WARM"
+        if isinstance(_portfolio_heat_score, (int, float)):
+            _heat_display = f"{_heat_display} ({float(_portfolio_heat_score):.0f}/100)"
+        risk_fields["portfolio_book_heat"] = _heat_display
+    _priority_bucket = trade.get("portfolio_priority_bucket")
+    _allocation_tier = trade.get("portfolio_allocation_tier")
+    if _priority_bucket or _allocation_tier:
+        if _priority_bucket and _allocation_tier:
+            risk_fields["portfolio_priority"] = f"{_priority_bucket} / {_allocation_tier}"
+        else:
+            risk_fields["portfolio_priority"] = _priority_bucket or _allocation_tier
     no_trade = trade.get("no_trade_reason")
     if no_trade:
         risk_fields["no_trade_reason"] = no_trade
@@ -3382,6 +3451,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "premium_efficiency_score": trade.get("premium_efficiency_score"),
         "strike_efficiency_score": trade.get("strike_efficiency_score"),
         "capital_required": trade.get("capital_required"),
+        "data_readiness_score": trade.get("data_readiness_score", trade.get("provider_health_score")),
+        "data_confidence_tier": trade.get("data_confidence_tier", trade.get("provider_health_tier")),
         "parameter_pack_name": trade.get("parameter_pack_name"),
         "effective_strength_gate": _describe_effective_strength_gate(trade),
         "slippage_bps": trade.get("slippage_bps"),
@@ -3405,6 +3476,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         "option_efficiency_reason": trade.get("option_efficiency_reason"),
         "global_risk_status": trade.get("global_risk_status"),
         "global_risk_reason": trade.get("global_risk_reason"),
+        "session_risk_governor": trade.get("session_risk_governor"),
+        "trade_slot_governor": trade.get("trade_slot_governor"),
         "macro_news_status": trade.get("macro_news_status"),
         "macro_news_reason": trade.get("macro_news_reason"),
     })
@@ -3726,6 +3799,8 @@ def _render_full_signal_summary(trade, option_chain_frame=None):
         "capital_required": trade.get("capital_required"),
         "data_quality_score": trade.get("data_quality_score"),
         "data_quality_status": trade.get("data_quality_status"),
+        "data_readiness_score": trade.get("data_readiness_score", trade.get("provider_health_score")),
+        "data_confidence_tier": trade.get("data_confidence_tier", trade.get("provider_health_tier")),
         "message": trade.get("message"),
         "parameter_pack_name": trade.get("parameter_pack_name"),
         "effective_strength_gate": _describe_effective_strength_gate(trade),
@@ -3750,6 +3825,8 @@ def _render_full_signal_summary(trade, option_chain_frame=None):
         "option_efficiency_reason": trade.get("option_efficiency_reason"),
         "global_risk_status": trade.get("global_risk_status"),
         "global_risk_reason": trade.get("global_risk_reason"),
+        "session_risk_governor": trade.get("session_risk_governor"),
+        "trade_slot_governor": trade.get("trade_slot_governor"),
         "macro_news_status": trade.get("macro_news_status"),
         "macro_news_reason": trade.get("macro_news_reason"),
     }
