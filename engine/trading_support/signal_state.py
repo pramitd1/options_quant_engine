@@ -38,6 +38,106 @@ def _has_stale_warning(items):
     return False
 
 
+def _build_fast_reversal_alert(
+    *,
+    direction,
+    previous_direction,
+    reversal_stage,
+    expansion_mode,
+    expansion_direction,
+    breakout_evidence,
+    direction_vote_count,
+    breakout_vote_count,
+    confirmation,
+    final_flow_signal,
+    hedging_bias,
+    global_risk_state,
+    head_direction,
+    head_confidence,
+    runtime_thresholds,
+):
+    """Classify reversal conditions into warning-only versus promotion-ready states."""
+    runtime_thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
+    confirmation = confirmation if isinstance(confirmation, dict) else {}
+    previous_direction_clean = str(previous_direction or "").strip().upper()
+    direction_clean = str(direction or "").strip().upper()
+    head_direction_clean = str(head_direction or "").strip().upper()
+    candidate_direction = direction_clean if direction_clean in {"CALL", "PUT"} else head_direction_clean
+
+    alert = {
+        "fast_reversal_active": False,
+        "fast_reversal_alert_level": "NONE",
+        "fast_reversal_warning_direction": None,
+        "fast_reversal_prior_direction": previous_direction_clean if previous_direction_clean in {"CALL", "PUT"} else None,
+        "fast_reversal_evidence_score": 0.0,
+        "fast_reversal_reasons": [],
+        "fast_reversal_promotion_bias": "NORMAL",
+    }
+    if previous_direction_clean not in {"CALL", "PUT"} or candidate_direction not in {"CALL", "PUT"}:
+        return alert
+    if previous_direction_clean == candidate_direction:
+        return alert
+
+    alert["fast_reversal_active"] = True
+    alert["fast_reversal_warning_direction"] = candidate_direction
+    reasons: list[str] = ["reversal_context"]
+    evidence_score = 0.0
+
+    final_flow = str(final_flow_signal or "").strip().upper()
+    hedge = str(hedging_bias or "").strip().upper()
+    risk_state = str(
+        (global_risk_state or {}).get("global_risk_state")
+        if isinstance(global_risk_state, dict)
+        else (global_risk_state or "")
+    ).strip().upper()
+    confirmation_status = str(confirmation.get("status") or "").strip().upper()
+
+    if expansion_mode and expansion_direction == candidate_direction:
+        evidence_score += 1.0
+        reasons.append("expansion_mode")
+    if int(_safe_float(direction_vote_count, 0.0)) >= max(1, int(_safe_float(runtime_thresholds.get("reversal_warning_vote_count_floor"), 2.0))):
+        evidence_score += 0.75
+        reasons.append("vote_breadth")
+    if int(_safe_float(breakout_vote_count, 0.0)) > 0 or _safe_float(breakout_evidence, 0.0) >= 1.0:
+        evidence_score += 1.0
+        reasons.append("range_expansion")
+
+    if (candidate_direction == "PUT" and final_flow == "BEARISH_FLOW") or (candidate_direction == "CALL" and final_flow == "BULLISH_FLOW"):
+        evidence_score += 1.0
+        reasons.append("flow_alignment")
+    if (candidate_direction == "PUT" and hedge == "DOWNSIDE_ACCELERATION") or (candidate_direction == "CALL" and hedge == "UPSIDE_ACCELERATION"):
+        evidence_score += 0.5
+        reasons.append("hedging_alignment")
+    if risk_state in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"}:
+        evidence_score += 0.35
+        reasons.append("macro_risk_off")
+    if candidate_direction == head_direction_clean and _safe_float(head_confidence, 0.0) >= _safe_float(runtime_thresholds.get("reversal_warning_head_confidence_floor"), 0.60):
+        evidence_score += 0.5
+        reasons.append("direction_head_alignment")
+
+    high_evidence_floor = _safe_float(runtime_thresholds.get("reversal_warning_breakout_evidence_high"), 1.5)
+    if reversal_stage == "CONFIRMED_REVERSAL":
+        alert_level = "HIGH"
+        promotion_bias = "READY_TO_PROMOTE"
+    elif evidence_score >= 2.0 or _safe_float(breakout_evidence, 0.0) >= high_evidence_floor:
+        alert_level = "HIGH"
+        promotion_bias = "WAIT_FOR_CONFIRMATION"
+    else:
+        alert_level = "WATCH"
+        promotion_bias = "WAIT_FOR_CONFIRMATION"
+
+    if confirmation_status in {"STRONG_CONFIRMATION", "CONFIRMED"} and reversal_stage == "CONFIRMED_REVERSAL":
+        reasons.append("confirmation_ready")
+    elif confirmation_status in {"MIXED", "CONFLICT", "NO_DIRECTION"}:
+        reasons.append("confirmation_pending")
+
+    alert["fast_reversal_alert_level"] = alert_level
+    alert["fast_reversal_evidence_score"] = round(float(evidence_score), 3)
+    alert["fast_reversal_reasons"] = reasons
+    alert["fast_reversal_promotion_bias"] = promotion_bias
+    return alert
+
+
 def _compute_data_quality(*, spot_validation, option_chain_validation, analytics_state, probability_state):
     """
     Purpose:
@@ -426,6 +526,7 @@ def decide_direction(
     macro_news_state = macro_news_state if isinstance(macro_news_state, dict) else {}
     global_risk_state = global_risk_state if isinstance(global_risk_state, dict) else {}
     global_risk_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state.get("global_risk_features"), dict) else {}
+    flow_signal = str(final_flow_signal or "").upper().strip()
 
     def _flag_enabled(name, default=True):
         value = runtime_thresholds.get(name, 1 if default else 0)
@@ -461,9 +562,9 @@ def decide_direction(
 
     # Votes are intentionally additive so operators can inspect which market
     # mechanisms aligned behind the final direction.
-    if final_flow_signal == "BULLISH_FLOW":
+    if flow_signal == "BULLISH_FLOW":
         add_vote("BULLISH", "FLOW")
-    elif final_flow_signal == "BEARISH_FLOW":
+    elif flow_signal == "BEARISH_FLOW":
         add_vote("BEARISH", "FLOW")
 
     if gamma_regime in {"NEGATIVE_GAMMA", "SHORT_GAMMA_ZONE"}:
@@ -485,7 +586,11 @@ def decide_direction(
         add_vote("BEARISH", "GAMMA_FLIP")
 
     if dealer_pos == "Short Gamma" and vol_regime == "VOL_EXPANSION":
-        if spot_vs_flip == "ABOVE_FLIP":
+        if flow_signal == "BULLISH_FLOW":
+            add_vote("BULLISH", "DEALER_VOL")
+        elif flow_signal == "BEARISH_FLOW":
+            add_vote("BEARISH", "DEALER_VOL")
+        elif spot_vs_flip == "ABOVE_FLIP":
             add_vote("BULLISH", "DEALER_VOL")
         elif spot_vs_flip == "BELOW_FLIP":
             add_vote("BEARISH", "DEALER_VOL")
@@ -564,7 +669,13 @@ def decide_direction(
         bearish_breakout_evidence += 1.0
 
     if range_value is not None and range_value >= range_floor:
-        if spot_vs_flip == "ABOVE_FLIP":
+        if flow_signal == "BULLISH_FLOW":
+            add_vote("BULLISH", "RANGE_EXPANSION")
+            bullish_breakout_evidence += 0.6
+        elif flow_signal == "BEARISH_FLOW":
+            add_vote("BEARISH", "RANGE_EXPANSION")
+            bearish_breakout_evidence += 0.6
+        elif spot_vs_flip == "ABOVE_FLIP":
             add_vote("BULLISH", "RANGE_EXPANSION")
             bullish_breakout_evidence += 0.6
         elif spot_vs_flip == "BELOW_FLIP":
@@ -1003,11 +1114,32 @@ def _compute_signal_state(
         final_call_probability = _safe_float(direction_head.get("probability_up"), vote_bull_probability)
         final_put_probability = _safe_float(direction_head.get("probability_down"), vote_bear_probability)
 
+    direction_vote_count = len(vote_direction_source.split("+")) if vote_direction_source else 0
+    source_tokens = {token.strip().upper() for token in (vote_direction_source or "").split("+") if token}
+    breakout_vote_count = sum(1 for token in source_tokens if token in {"BREAKOUT_STRUCTURE", "RANGE_EXPANSION"})
+    fast_reversal_alert = _build_fast_reversal_alert(
+        direction=direction,
+        previous_direction=previous_direction,
+        reversal_stage="NONE",
+        expansion_mode=bool(expansion_mode),
+        expansion_direction=expansion_direction,
+        breakout_evidence=breakout_evidence,
+        direction_vote_count=direction_vote_count,
+        breakout_vote_count=breakout_vote_count,
+        confirmation=empty_confirmation_state(),
+        final_flow_signal=market_state["final_flow_signal"],
+        hedging_bias=market_state["hedging_bias"],
+        global_risk_state=global_risk_state,
+        head_direction=head_direction,
+        head_confidence=direction_head.get("confidence"),
+        runtime_thresholds=runtime_thresholds,
+    )
+
     if direction is None:
         return {
             "direction": None,
             "direction_source": None,
-            "direction_vote_count": 0,
+            "direction_vote_count": direction_vote_count,
             "expansion_mode": bool(expansion_mode),
             "expansion_direction": expansion_direction,
             "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
@@ -1028,6 +1160,13 @@ def _compute_signal_state(
             "direction_head_calibration_applied": direction_head.get("calibration_applied"),
             "direction_head_calibration_segment": direction_head.get("calibration_segment"),
             "direction_head_used_for_final": direction_head_used_for_final,
+            "fast_reversal_active": fast_reversal_alert.get("fast_reversal_active"),
+            "fast_reversal_alert_level": fast_reversal_alert.get("fast_reversal_alert_level"),
+            "fast_reversal_warning_direction": fast_reversal_alert.get("fast_reversal_warning_direction"),
+            "fast_reversal_prior_direction": fast_reversal_alert.get("fast_reversal_prior_direction"),
+            "fast_reversal_evidence_score": fast_reversal_alert.get("fast_reversal_evidence_score"),
+            "fast_reversal_reasons": fast_reversal_alert.get("fast_reversal_reasons"),
+            "fast_reversal_promotion_bias": fast_reversal_alert.get("fast_reversal_promotion_bias"),
             "trade_strength": 0,
             "scoring_breakdown": empty_scoring_breakdown(),
             "confirmation": empty_confirmation_state(),
@@ -1091,13 +1230,8 @@ def _compute_signal_state(
     # chosen direction.  A thin base (e.g. 2 sources) indicates that fewer
     # independent market mechanisms are aligned, which downstream consumers
     # can use to temper sizing or urgency.
-    direction_vote_count = len(vote_direction_source.split("+")) if vote_direction_source else 0
-
-    runtime_thresholds = get_trade_runtime_thresholds()
     previous_direction_clean = str(previous_direction or "").strip().upper()
     reversal_context = previous_direction_clean in {"CALL", "PUT"} and previous_direction_clean != direction
-    source_tokens = {token.strip().upper() for token in (vote_direction_source or "").split("+") if token}
-    breakout_vote_count = sum(1 for token in source_tokens if token in {"BREAKOUT_STRUCTURE", "RANGE_EXPANSION"})
     min_vote_count = max(1, int(_safe_float(runtime_thresholds.get("reversal_stage_min_vote_count"), 3.0)))
     min_breakout_votes = max(0, int(_safe_float(runtime_thresholds.get("reversal_stage_min_breakout_votes"), 1.0)))
     confirmation_status = str(confirmation.get("status") or "").upper().strip()
@@ -1114,6 +1248,24 @@ def _compute_signal_state(
             reversal_stage = "EARLY_REVERSAL_CANDIDATE"
         else:
             reversal_stage = "REVERSAL_UNRESOLVED"
+
+    fast_reversal_alert = _build_fast_reversal_alert(
+        direction=direction,
+        previous_direction=previous_direction,
+        reversal_stage=reversal_stage,
+        expansion_mode=bool(expansion_mode),
+        expansion_direction=expansion_direction,
+        breakout_evidence=breakout_evidence,
+        direction_vote_count=direction_vote_count,
+        breakout_vote_count=breakout_vote_count,
+        confirmation=confirmation,
+        final_flow_signal=market_state["final_flow_signal"],
+        hedging_bias=market_state["hedging_bias"],
+        global_risk_state=global_risk_state,
+        head_direction=head_direction,
+        head_confidence=direction_head.get("confidence"),
+        runtime_thresholds=runtime_thresholds,
+    )
 
     return {
         "direction": direction,
@@ -1139,6 +1291,13 @@ def _compute_signal_state(
         "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
         "reversal_context": reversal_context,
         "reversal_stage": reversal_stage,
+        "fast_reversal_active": fast_reversal_alert.get("fast_reversal_active"),
+        "fast_reversal_alert_level": fast_reversal_alert.get("fast_reversal_alert_level"),
+        "fast_reversal_warning_direction": fast_reversal_alert.get("fast_reversal_warning_direction"),
+        "fast_reversal_prior_direction": fast_reversal_alert.get("fast_reversal_prior_direction"),
+        "fast_reversal_evidence_score": fast_reversal_alert.get("fast_reversal_evidence_score"),
+        "fast_reversal_reasons": fast_reversal_alert.get("fast_reversal_reasons"),
+        "fast_reversal_promotion_bias": fast_reversal_alert.get("fast_reversal_promotion_bias"),
         "breakout_vote_count": int(breakout_vote_count),
         "bull_probability": final_call_probability,
         "bear_probability": final_put_probability,

@@ -2,12 +2,19 @@
     "_comment": "Regime-conditional parameter auto-switching map. PROJECT CHECKPOINT 2026-03-24: keep disabled in production until explicit relaunch approval.",
     "_format": "Entries can match gamma/vol and optional macro-risk dimensions. Use '*' wildcard per field. Highest specificity wins; priority breaks ties.",
     "enabled": false,
+    "shadow_enabled": true,
+    "shadow_min_regime_confidence": 0.55,
     "fallback_pack": "baseline_v1",
     "switch_policy": {
         "required_consecutive": 3,
         "cooldown_seconds": 900,
         "min_dwell_seconds": 1200,
         "min_regime_confidence": 0.6,
+        "decision_disagreement_alert": 0.20,
+        "trade_status_disagreement_alert": 0.25,
+        "signal_presence_disagreement_alert": 0.15,
+        "overnight_disagreement_alert": 0.20,
+        "session_alert_min_snapshots": 2,
         "log_decisions": true,
         "decision_log_path": "logs/regime_switch_decisions.jsonl"
     },
@@ -31,6 +38,16 @@
             "overnight_bucket": "*",
             "pack_layers": ["baseline_v1", "macro_overlay_v1"],
             "priority": 25
+        },
+        {
+            "gamma_regime": "POSITIVE_GAMMA",
+            "vol_regime": "NORMAL_VOL",
+            "global_risk_state": "*",
+            "macro_regime": "*",
+            "event_risk_bucket": "*",
+            "overnight_bucket": "*",
+            "pack_layers": ["baseline_v1", "experimental_v1"],
+            "priority": 22
         },
         {
             "gamma_regime": "*",

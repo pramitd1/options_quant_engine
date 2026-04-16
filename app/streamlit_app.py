@@ -1168,6 +1168,85 @@ def _render_option_chain_charts(option_chain: pd.DataFrame):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _render_regime_rollout_panel(result: dict):
+    """Render shadow-rollout diagnostics and the session-by-session validation table."""
+    if not isinstance(result, dict):
+        return
+
+    regime_eval = result.get("regime_pack_evaluation") or {}
+    shadow_comparison = result.get("shadow_comparison") or {}
+    shadow_summary = result.get("shadow_validation_summary") or {}
+    latest_session = shadow_summary.get("latest_session_validation") or {}
+
+    if not regime_eval and not shadow_comparison and not shadow_summary:
+        return
+
+    st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
+    st.subheader("Regime Rollout Validation")
+
+    policy_alert_count = int(shadow_summary.get("policy_alert_count") or 0)
+    if latest_session.get("policy_alert"):
+        breaches = ", ".join(latest_session.get("breached_limits") or []) or "policy limits"
+        st.error(f"Session alert: disagreement rates breached policy limits for {latest_session.get('session_date') or '-'} ({breaches}).")
+    elif policy_alert_count > 0:
+        st.warning(f"Historical rollout alert sessions detected: {policy_alert_count}. Review the session summary below.")
+    elif latest_session.get("alert_level") == "WATCH":
+        st.warning("Session disagreement is elevated versus the clean baseline. Review the rollout diagnostics.")
+    elif latest_session:
+        st.success("Latest session is within rollout policy limits.")
+
+    headline_cols = st.columns(7)
+    headline_cols[0].metric("Shadow Candidate", _safe_metric_value(regime_eval.get("shadow_candidate_pack")))
+    headline_cols[1].metric("Route Reason", _safe_metric_value(regime_eval.get("reason")))
+    headline_cols[2].metric("Log Status", _safe_metric_value(result.get("shadow_log_status")))
+    headline_cols[3].metric("Latest Session", _safe_metric_value(latest_session.get("session_date")))
+    headline_cols[4].metric("Alert Level", _safe_metric_value(latest_session.get("alert_level")))
+    headline_cols[5].metric("Policy Alerts", _safe_metric_value(policy_alert_count))
+    headline_cols[6].metric("Total Evaluations", _safe_metric_value(shadow_summary.get("shadow_event_count")))
+
+    if shadow_comparison:
+        detail_cols = st.columns(4)
+        detail_cols[0].metric("Validation Status", _safe_metric_value(shadow_comparison.get("validation_status")))
+        detail_cols[1].metric("Delta Strength", _safe_metric_value(shadow_comparison.get("delta_trade_strength")))
+        detail_cols[2].metric("Decision Diverged", _safe_metric_value("YES" if shadow_comparison.get("decision_disagreement_flag") else "NO"))
+        detail_cols[3].metric("Status Diverged", _safe_metric_value("YES" if shadow_comparison.get("trade_status_disagreement_flag") else "NO"))
+
+    session_rows = shadow_summary.get("session_validation_summary") or []
+    if session_rows:
+        session_frame = pd.DataFrame(session_rows)
+        preferred_cols = [
+            "session_date",
+            "baseline_pack_name",
+            "shadow_pack_name",
+            "snapshot_count",
+            "decision_disagreement_rate",
+            "trade_status_disagreement_rate",
+            "average_delta_trade_strength",
+            "validation_status",
+            "alert_level",
+            "policy_alert",
+            "breached_limits",
+            "session_buckets_observed",
+        ]
+        present_cols = [col for col in preferred_cols if col in session_frame.columns]
+        st.caption("Session-by-session shadow validation summary")
+        _render_dataframe(session_frame[present_cols] if present_cols else session_frame)
+    else:
+        st.caption("Session-by-session shadow validation will populate as shadow comparisons are logged.")
+
+    with st.expander("Rollout Diagnostics", expanded=False):
+        st.json(
+            {
+                "regime_pack_evaluation": regime_eval,
+                "shadow_comparison": shadow_comparison,
+                "latest_session_validation": latest_session,
+            },
+            expanded=False,
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def _render_signal_processing_diagnostics(trade: dict):
     """
     Purpose:
@@ -1437,6 +1516,7 @@ def _render_workstation(result: dict):
         if trade:
             _render_explainability_scorecard(trade)
             _render_signal_processing_diagnostics(trade)
+        _render_regime_rollout_panel(result)
 
         top_left, top_right = st.columns(2)
         with top_left:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tuning.shadow as shadow_utils
+
 from tuning.promotion import (
     evaluate_promotion,
     get_active_live_pack,
@@ -234,6 +236,85 @@ def test_shadow_mode_comparison_and_logging_are_side_by_side(tmp_path):
     summary = summarize_shadow_log(shadow_log_path)
     assert summary["shadow_event_count"] == 1
     assert summary["decision_disagreement_rate"] == 1.0
+    assert comparison["session_date"] == "2026-03-14"
+    assert comparison["validation_status"] == "DIVERGED"
+    assert summary["latest_session_validation"]["session_date"] == "2026-03-14"
+
+
+def test_shadow_summary_includes_session_by_session_rollup(tmp_path):
+    shadow_log_path = tmp_path / "shadow_mode_log.jsonl"
+    append_shadow_log(
+        {
+            "evaluation_timestamp": "2026-03-14T09:20:00+05:30",
+            "baseline_pack_name": "baseline_v1",
+            "shadow_pack_name": "macro_overlay_v1",
+            "decision_disagreement_flag": False,
+            "trade_status_disagreement_flag": True,
+            "signal_presence_disagreement_flag": False,
+            "delta_trade_strength": 2.0,
+        },
+        shadow_log_path,
+    )
+    append_shadow_log(
+        {
+            "evaluation_timestamp": "2026-03-14T13:45:00+05:30",
+            "baseline_pack_name": "baseline_v1",
+            "shadow_pack_name": "macro_overlay_v1",
+            "decision_disagreement_flag": True,
+            "trade_status_disagreement_flag": True,
+            "signal_presence_disagreement_flag": True,
+            "delta_trade_strength": -1.0,
+        },
+        shadow_log_path,
+    )
+
+    summary = summarize_shadow_log(shadow_log_path)
+
+    assert summary["shadow_event_count"] == 2
+    assert summary["session_validation_summary"]
+    latest = summary["latest_session_validation"]
+    assert latest["session_date"] == "2026-03-14"
+    assert latest["snapshot_count"] == 2
+    assert latest["decision_disagreement_rate"] == 0.5
+    assert summary["dominant_disagreement_drivers"][0]["driver"] == "trade_status_disagreement"
+    assert "OPEN" in {row["session_bucket"] for row in summary["session_bucket_summary"]}
+
+
+def test_shadow_summary_flags_policy_limit_breaches(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        shadow_utils,
+        "_resolve_shadow_alert_policy",
+        lambda: {
+            "decision_disagreement_alert": 0.20,
+            "trade_status_disagreement_alert": 0.25,
+            "signal_presence_disagreement_alert": 0.15,
+            "overnight_disagreement_alert": 0.20,
+            "session_alert_min_snapshots": 1,
+        },
+    )
+
+    shadow_log_path = tmp_path / "shadow_mode_log.jsonl"
+    append_shadow_log(
+        {
+            "evaluation_timestamp": "2026-03-14T09:20:00+05:30",
+            "baseline_pack_name": "baseline_v1",
+            "shadow_pack_name": "macro_overlay_v1",
+            "decision_disagreement_flag": True,
+            "trade_status_disagreement_flag": True,
+            "signal_presence_disagreement_flag": False,
+            "overnight_disagreement_flag": False,
+            "delta_trade_strength": -5.0,
+        },
+        shadow_log_path,
+    )
+
+    summary = summarize_shadow_log(shadow_log_path)
+    latest = summary["latest_session_validation"]
+
+    assert latest["policy_alert"] is True
+    assert latest["alert_level"] == "ALERT"
+    assert "decision_disagreement_rate" in latest["breached_limits"]
+    assert summary["policy_alert_count"] == 1
 
 
 def test_reporting_surfaces_current_live_shadow_and_events(tmp_path):

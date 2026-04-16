@@ -115,3 +115,35 @@ def test_true_downside_context_still_allows_put_direction():
 
     assert direction == "PUT"
     assert source is not None
+
+
+def test_risk_off_downside_rupture_can_flip_put_even_before_crossing_gamma_flip():
+    direction, source, *_ = decide_direction(
+        final_flow_signal="BEARISH_FLOW",
+        dealer_pos="Short Gamma",
+        vol_regime="VOL_EXPANSION",
+        spot_vs_flip="ABOVE_FLIP",
+        gamma_regime="POSITIVE_GAMMA",
+        hedging_bias="UPSIDE_PINNING",
+        gamma_event="NONE",
+        vanna_regime="NEUTRAL_VANNA",
+        charm_regime="NEUTRAL_CHARM",
+        volatility_shock_score=0.95,
+        intraday_range_pct=0.85,
+        macro_news_state={
+            "macro_regime": "RISK_OFF",
+            "news_confidence_score": 85,
+            "macro_sentiment_score": -18,
+            "global_risk_bias": 22,
+        },
+        global_risk_state={"global_risk_state": "RISK_OFF"},
+        provider_health_summary="GOOD",
+        provider_health_blocking_status="PASS",
+        core_effective_priced_ratio=0.90,
+        core_one_sided_quote_ratio=0.05,
+        core_quote_integrity_health="GOOD",
+    )
+
+    assert direction == "PUT"
+    assert source is not None
+    assert "FLOW" in source

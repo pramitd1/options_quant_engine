@@ -2749,6 +2749,80 @@ def _render_signal_confidence(trade, *, show_components=True):
         print(f"{'option_efficiency':26}: {result['option_efficiency_component']}")
 
 
+def _render_regime_rollout_status(result):
+    """Render shadow-rollout diagnostics and recent validation session summary."""
+    if not isinstance(result, dict):
+        return
+
+    regime_eval = result.get("regime_pack_evaluation") if isinstance(result.get("regime_pack_evaluation"), dict) else {}
+    shadow_comparison = result.get("shadow_comparison") if isinstance(result.get("shadow_comparison"), dict) else {}
+    shadow_summary = result.get("shadow_validation_summary") if isinstance(result.get("shadow_validation_summary"), dict) else {}
+    latest_session = shadow_summary.get("latest_session_validation") if isinstance(shadow_summary.get("latest_session_validation"), dict) else {}
+
+    if not regime_eval and not shadow_comparison and not shadow_summary:
+        return
+
+    fields = {
+        "shadow_candidate": regime_eval.get("shadow_candidate_pack"),
+        "route_reason": regime_eval.get("reason"),
+        "shadow_mode_active": result.get("shadow_mode_active"),
+        "shadow_log_status": result.get("shadow_log_status"),
+        "validation_status": shadow_comparison.get("validation_status"),
+        "delta_trade_strength": shadow_comparison.get("delta_trade_strength"),
+        "decision_disagreement": shadow_comparison.get("decision_disagreement_flag"),
+        "latest_session": latest_session.get("session_date"),
+        "session_snapshots": latest_session.get("snapshot_count"),
+        "alert_level": latest_session.get("alert_level"),
+        "policy_alert": latest_session.get("policy_alert"),
+        "policy_alert_count": shadow_summary.get("policy_alert_count"),
+    }
+    if all(value is None for value in fields.values()):
+        return
+
+    _print_section("REGIME ROLLOUT", fields)
+
+    session_rows = shadow_summary.get("session_validation_summary") or []
+    if latest_session.get("policy_alert"):
+        breaches = ", ".join(latest_session.get("breached_limits") or []) or "policy_limit_breach"
+        print(f"  ALERT: session disagreement exceeded policy limits -> {breaches}")
+
+    if session_rows:
+        print("  Recent validation sessions:")
+        for row in session_rows[:3]:
+            session_date = row.get("session_date") or "-"
+            snapshot_count = row.get("snapshot_count", 0)
+            decision_rate = float(row.get("decision_disagreement_rate") or 0.0)
+            trade_rate = float(row.get("trade_status_disagreement_rate") or 0.0)
+            validation_status = row.get("validation_status") or "-"
+            alert_level = row.get("alert_level") or "OK"
+            print(
+                f"    • {session_date}: {snapshot_count} evals | "
+                f"decision {decision_rate:.0%} | status {trade_rate:.0%} | {validation_status} | {alert_level}"
+            )
+
+    dominant_drivers = shadow_summary.get("dominant_disagreement_drivers") or []
+    if dominant_drivers:
+        leader = dominant_drivers[0]
+        print(
+            "  Dominant drift: "
+            f"{leader.get('driver', '-')} ({float(leader.get('rate') or 0.0):.0%}, "
+            f"n={int(leader.get('count') or 0)})"
+        )
+
+    bucket_summary = shadow_summary.get("session_bucket_summary") or []
+    if bucket_summary:
+        top_bucket = max(
+            bucket_summary,
+            key=lambda row: float(row.get("decision_disagreement_rate") or 0.0)
+            + float(row.get("trade_status_disagreement_rate") or 0.0),
+        )
+        print(
+            "  Bucket under watch: "
+            f"{top_bucket.get('session_bucket', 'UNKNOWN')} "
+            f"(decision {float(top_bucket.get('decision_disagreement_rate') or 0.0):.0%}, "
+            f"status {float(top_bucket.get('trade_status_disagreement_rate') or 0.0):.0%})"
+        )
+
 # ---------------------------------------------------------------------------
 # COMPACT mode — fast-execution trading dashboard
 # ---------------------------------------------------------------------------
@@ -2903,6 +2977,8 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 
         _print_section("REGIME SUMMARY", regime_fields)
 
+    _render_regime_rollout_status(result)
+
     # ── 3. TRADE DECISION ────────────────────────────────────────────────
     if trade:
         confidence = compute_signal_confidence(trade)
@@ -2920,6 +2996,8 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             "trade_strength": display.get("trade_strength") if display else None,
             "signal_quality": display.get("signal_quality") if display else None,
             "confirmation": trade.get("confirmation_status"),
+            "reversal_stage": trade.get("reversal_stage"),
+            "reversal_alert": trade.get("fast_reversal_alert_level"),
             "move_probability": prob_str,
             "confidence": f"{conf_icon} {confidence['confidence_score']} ({confidence['confidence_level']})",
             "data_quality": trade.get("data_quality_status"),
@@ -3377,6 +3455,8 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
             "auto_pack_suggested": trade.get("auto_pack_suggested"),
             "effective_strength_gate": _describe_effective_strength_gate(trade),
         })
+
+    _render_regime_rollout_status(result)
 
     if not trade:
         print("\n  ▸ NO TRADE SIGNAL")
@@ -3938,6 +4018,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
     _render_data_usability_diagnostics(trade, verbose=True)
+    _render_regime_rollout_status(result)
 
     if not trade:
         print("\n  ▸ NO TRADE SIGNAL")

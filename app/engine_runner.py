@@ -29,6 +29,7 @@ from app.runtime_sinks import (
     ShadowEvaluationSink,
     SignalCaptureSink,
 )
+from config.policy_resolver import get_regime_switch_policy, suggest_regime_pack
 from config.settings import STOP_LOSS_PERCENT, TARGET_PROFIT_PERCENT
 from data import spot_downloader
 from data.spot_history import append_spot_observation
@@ -555,6 +556,81 @@ def _resolve_runtime_pack_selection(
     )
 
 
+def _resolve_regime_shadow_pack(
+    *,
+    trade: dict | None,
+    authoritative_pack_name: Optional[str],
+) -> tuple[Optional[str], dict[str, object]]:
+    """Resolve a shadow-only regime pack suggestion for rollout validation."""
+    diagnostics: dict[str, object] = {
+        "mode": "shadow",
+        "shadow_enabled": False,
+        "shadow_candidate_pack": None,
+        "reason": "shadow_policy_disabled",
+    }
+
+    if not isinstance(trade, dict):
+        diagnostics["reason"] = "no_trade_payload"
+        return None, diagnostics
+
+    policy = get_regime_switch_policy()
+    diagnostics["shadow_enabled"] = bool(policy.get("shadow_enabled", False))
+    if not diagnostics["shadow_enabled"]:
+        return None, diagnostics
+
+    gamma_regime = trade.get("gamma_regime")
+    vol_regime = trade.get("vol_surface_regime")
+    global_risk_state = trade.get("global_risk_state")
+    macro_regime = trade.get("macro_regime")
+    event_risk_bucket = trade.get("event_risk_bucket")
+    overnight_bucket = "OVERNIGHT_ALLOWED" if bool(trade.get("overnight_hold_allowed")) else "OVERNIGHT_BLOCKED"
+    regime_confidence = trade.get("regime_confidence")
+    confidence_floor = float(policy.get("shadow_min_regime_confidence", policy.get("min_regime_confidence", 0.0)) or 0.0)
+
+    diagnostics.update(
+        {
+            "gamma_regime": gamma_regime,
+            "vol_regime": vol_regime,
+            "global_risk_state": global_risk_state,
+            "macro_regime": macro_regime,
+            "event_risk_bucket": event_risk_bucket,
+            "overnight_bucket": overnight_bucket,
+            "regime_confidence": regime_confidence,
+            "confidence_floor": confidence_floor,
+        }
+    )
+
+    try:
+        if regime_confidence is not None and float(regime_confidence) < confidence_floor:
+            diagnostics["reason"] = "confidence_below_shadow_floor"
+            return None, diagnostics
+    except Exception:
+        diagnostics["reason"] = "invalid_regime_confidence"
+        return None, diagnostics
+
+    suggested_pack = suggest_regime_pack(
+        gamma_regime,
+        vol_regime,
+        global_risk_state=global_risk_state,
+        macro_regime=macro_regime,
+        event_risk_bucket=event_risk_bucket,
+        overnight_bucket=overnight_bucket,
+        evaluation_mode="shadow",
+    )
+    diagnostics["shadow_candidate_pack"] = suggested_pack
+
+    if not suggested_pack:
+        diagnostics["reason"] = "no_matching_shadow_route"
+        return None, diagnostics
+
+    if str(suggested_pack).strip() == str(authoritative_pack_name or "").strip():
+        diagnostics["reason"] = "already_authoritative"
+        return None, diagnostics
+
+    diagnostics["reason"] = "shadow_candidate_selected"
+    return str(suggested_pack), diagnostics
+
+
 def _load_market_inputs(
     *,
     replay_mode: bool,
@@ -824,6 +900,8 @@ def _build_result_payload(
         "trade_audit": trade_audit,
         "authoritative_parameter_pack": authoritative_pack_name,
         "shadow_mode_active": False,
+        "regime_pack_evaluation": None,
+        "shadow_validation_summary": None,
         "trader_view_rows": _trade_view_rows(trade) if trade else pd.DataFrame(columns=["field", "value"]),
         "ranked_strikes": pd.DataFrame((trade_audit or {}).get("ranked_strike_candidates", [])) if trade else pd.DataFrame(),
         "headline_records": pd.DataFrame(headline_state_payload["records"]),
@@ -1348,6 +1426,18 @@ def run_preloaded_engine_snapshot(
         global_risk_state = authoritative_eval["global_risk_state"]
         trade = authoritative_eval["trade"]
 
+        regime_pack_evaluation = {
+            "mode": "explicit" if shadow_pack_name else "shadow",
+            "shadow_enabled": bool(shadow_pack_name),
+            "shadow_candidate_pack": shadow_pack_name,
+            "reason": "preconfigured_shadow_pack" if shadow_pack_name else "shadow_policy_disabled",
+        }
+        if not shadow_pack_name:
+            shadow_pack_name, regime_pack_evaluation = _resolve_regime_shadow_pack(
+                trade=trade,
+                authoritative_pack_name=authoritative_eval["parameter_pack_name"],
+            )
+
         result_payload = _build_result_payload(
             mode=mode,
             source=source,
@@ -1377,6 +1467,8 @@ def run_preloaded_engine_snapshot(
             signal_capture_policy=signal_capture_policy,
             fatal_runtime_block=bool(authoritative_eval.get("overlay_fail_closed_blocked")),
         )
+
+        result_payload["regime_pack_evaluation"] = regime_pack_evaluation
 
         _maybe_attach_shadow_evaluation(
             result_payload=result_payload,

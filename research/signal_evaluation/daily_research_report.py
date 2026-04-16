@@ -1090,6 +1090,112 @@ def _section_tradeability(day_df: pd.DataFrame) -> list[str]:
     return lines
 
 
+def _section_premium_analytics(day_df: pd.DataFrame) -> list[str]:
+    dir_rows = _directional_rows(day_df)
+
+    lines = [
+        "## 12. Premium Analytics",
+        "",
+        "*Option premium levels determine capital efficiency, convexity exposure, and the practical "
+        "risk-reward profile of each signal. This section tracks entry premium, target premium, "
+        "stop-loss premium, and premium as a share of the underlying spot so the research workflow "
+        "can distinguish efficient convexity from expensive chase setups.*",
+        "",
+        "Dedicated premium diagnostics for the selected option contracts:",
+        "",
+        "### Premium Level Summary",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+    ]
+
+    if dir_rows.empty:
+        lines.append("| (insufficient data) | — |")
+        lines.append("")
+        return lines
+
+    entry = _numeric(dir_rows.get("option_entry_premium", dir_rows.get("entry_price", pd.Series(dtype=float))))
+    if not entry.notna().any():
+        entry = _numeric(dir_rows.get("selected_option_last_price", pd.Series(dtype=float)))
+    target = _numeric(dir_rows.get("option_target_premium", dir_rows.get("target", pd.Series(dtype=float))))
+    stop = _numeric(dir_rows.get("option_stop_loss_premium", dir_rows.get("stop_loss", pd.Series(dtype=float))))
+    premium_pct = _numeric(dir_rows.get("option_premium_pct_of_spot", pd.Series(dtype=float)))
+    target_ret = _numeric(dir_rows.get("target_premium_return_pct", pd.Series(dtype=float)))
+    stop_ret = _numeric(dir_rows.get("stop_loss_premium_return_pct", pd.Series(dtype=float)))
+    premium_eff = _numeric(dir_rows.get("premium_efficiency_score", pd.Series(dtype=float)))
+
+    premium_pct_display = _r(premium_pct.mean(), 4)
+    if premium_pct_display != "—":
+        premium_pct_display = f"{premium_pct_display}%"
+
+    target_ret_display = _r(target_ret.mean(), 2)
+    if target_ret_display != "—":
+        target_ret_display = f"{target_ret_display}%"
+
+    stop_ret_display = _r(stop_ret.mean(), 2)
+    if stop_ret_display != "—":
+        stop_ret_display = f"{stop_ret_display}%"
+
+    lines.append(f"| Avg Entry Premium | {_r(entry.mean(), 2)} |")
+    lines.append(f"| Median Entry Premium | {_r(entry.median(), 2)} |")
+    lines.append(f"| Avg Target Premium | {_r(target.mean(), 2)} |")
+    lines.append(f"| Avg Stop-Loss Premium | {_r(stop.mean(), 2)} |")
+    lines.append(f"| Avg Premium as % of Spot | {premium_pct_display} |")
+    lines.append(f"| Avg Target Premium Return | {target_ret_display} |")
+    lines.append(f"| Avg Stop-Loss Premium Return | {stop_ret_display} |")
+    lines.append(f"| Avg Premium Efficiency Score | {_r(premium_eff.mean(), 1)} |")
+    lines.append("")
+
+    lines.extend([
+        "### Premium Band Performance",
+        "",
+        "| Premium Band | N | Avg Entry Premium | Hit Rate 60m | Avg Signed Return 60m (bps) |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ])
+
+    working = dir_rows.copy()
+    working["__entry_premium__"] = entry
+    working["__premium_pct__"] = premium_pct
+    working["correct_60m"] = _numeric(working.get("correct_60m", pd.Series(dtype=float)))
+    working["signed_return_60m_bps"] = _numeric(working.get("signed_return_60m_bps", pd.Series(dtype=float)))
+
+    if working["__premium_pct__"].notna().any():
+        working["__premium_band__"] = pd.cut(
+            working["__premium_pct__"],
+            bins=[-float("inf"), 0.5, 1.0, float("inf")],
+            labels=["Low (≤0.50% spot)", "Mid (0.50–1.00% spot)", "High (>1.00% spot)"],
+        )
+    elif working["__entry_premium__"].nunique(dropna=True) >= 3:
+        try:
+            working["__premium_band__"] = pd.qcut(
+                working["__entry_premium__"],
+                q=3,
+                labels=["Low Premium", "Mid Premium", "High Premium"],
+                duplicates="drop",
+            )
+        except ValueError:
+            working["__premium_band__"] = "All Premiums"
+    else:
+        working["__premium_band__"] = "All Premiums"
+
+    grouped = working.groupby("__premium_band__", dropna=False, observed=False)
+    emitted = False
+    for bucket, group in grouped:
+        if group.empty or pd.isna(bucket):
+            continue
+        emitted = True
+        lines.append(
+            f"| {bucket} | {len(group)} | {_r(group['__entry_premium__'].mean(), 2)} | "
+            f"{_pct(group['correct_60m'].mean())} | {_r(group['signed_return_60m_bps'].mean(), 2)} |"
+        )
+
+    if not emitted:
+        lines.append("| (insufficient data) | — | — | — | — |")
+
+    lines.append("")
+    return lines
+
+
 def _section_score_calibration(day_df: pd.DataFrame) -> list[str]:
     dir_rows = _directional_rows(day_df)
 
@@ -2304,6 +2410,58 @@ def _summarize_tradeability(day_df: pd.DataFrame) -> str:
     return "Insufficient MFE/MAE data."
 
 
+def _summarize_premium_analytics(day_df: pd.DataFrame) -> str:
+    dir_rows = _directional_rows(day_df)
+    if dir_rows.empty:
+        return "No directional option-premium data available for premium analytics."
+
+    entry = _numeric(dir_rows.get("option_entry_premium", dir_rows.get("entry_price", pd.Series(dtype=float))))
+    if not entry.notna().any():
+        entry = _numeric(dir_rows.get("selected_option_last_price", pd.Series(dtype=float)))
+    premium_pct = _numeric(dir_rows.get("option_premium_pct_of_spot", pd.Series(dtype=float)))
+    premium_eff = _numeric(dir_rows.get("premium_efficiency_score", pd.Series(dtype=float)))
+
+    if not entry.notna().any() and not premium_pct.notna().any():
+        return "Premium analytics unavailable because the report slice has no usable option premium fields."
+
+    parts: list[str] = []
+    if entry.notna().any():
+        parts.append(f"average entry premium {_r(entry.mean(), 2)}")
+    if premium_pct.notna().any():
+        parts.append(f"premium load {_r(premium_pct.mean(), 4)}% of spot")
+    if premium_eff.notna().any():
+        parts.append(f"premium efficiency {_r(premium_eff.mean(), 1)}")
+
+    note = ""
+    if premium_pct.notna().any() and "correct_60m" in dir_rows.columns:
+        working = pd.DataFrame({
+            "premium_pct": premium_pct,
+            "correct_60m": _numeric(dir_rows.get("correct_60m", pd.Series(dtype=float))),
+            "signed_return_60m_bps": _numeric(dir_rows.get("signed_return_60m_bps", pd.Series(dtype=float))),
+        }).dropna(subset=["premium_pct"])
+        if not working.empty:
+            working["band"] = pd.cut(
+                working["premium_pct"],
+                bins=[-float("inf"), 0.5, 1.0, float("inf")],
+                labels=["low-premium", "mid-premium", "high-premium"],
+            )
+            grouped = (
+                working.groupby("band", observed=False)
+                .agg(hit_rate=("correct_60m", "mean"), avg_bps=("signed_return_60m_bps", "mean"), n=("premium_pct", "size"))
+                .dropna(how="all")
+            )
+            if not grouped.empty:
+                ranked = grouped.sort_values(["hit_rate", "avg_bps"], ascending=False)
+                best_band = ranked.index[0]
+                best_stats = ranked.iloc[0]
+                note = (
+                    f" Best 60m premium cohort: {best_band} "
+                    f"(N={int(best_stats['n'])}, avg {_r(best_stats['avg_bps'], 1)} bps)."
+                )
+
+    return f"Premium profile: {', '.join(parts)}.{note}"
+
+
 def _summarize_score_calibration(day_df: pd.DataFrame) -> str:
     dir_rows = _directional_rows(day_df)
     if dir_rows.empty or "composite_signal_score" not in dir_rows.columns:
@@ -2791,6 +2949,11 @@ SECTION_THEORY_CONTEXT: dict[str, str] = {
         "and smaller optimal Kelly position sizes. Above 1.0 enables tighter stops "
         "and larger allocations. Reference: Kelly Criterion, optimal f, path analysis."
     ),
+    "Premium Analytics": (
+        "Option premium level is a direct proxy for convexity cost, carry burden, and capital-at-risk. "
+        "Cheaper premium can deliver stronger convex payoff per unit of capital when the directional thesis is right, "
+        "while expensive premium often embeds higher implied-volatility and decay risk. Premium-as-percent-of-spot helps normalize this across sessions."
+    ),
     "Score Calibration": (
         "Calibration tests whether model confidence maps to realized frequency — a "
         "Bayesian decision theory requirement. Well-calibrated models enable Kelly-optimal "
@@ -3098,6 +3261,9 @@ def generate_daily_report(
         ("Tradeability Analysis",
          _section_tradeability(analysis_df),
          _summarize_tradeability(analysis_df)),
+        ("Premium Analytics",
+         _section_premium_analytics(analysis_df),
+         _summarize_premium_analytics(analysis_df)),
         ("Score Calibration",
          _section_score_calibration(analysis_df),
          _summarize_score_calibration(analysis_df)),

@@ -66,7 +66,7 @@ def _utc_now_iso() -> str:
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
-    return pd.Timestamp.utcnow().isoformat()
+    return pd.Timestamp.now(tz="UTC").isoformat()
 
 
 def _default_assignment(pack_name: str | None, state: str) -> dict[str, Any]:

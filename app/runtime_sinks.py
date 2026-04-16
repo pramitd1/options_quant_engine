@@ -20,7 +20,7 @@ from typing import Callable, Dict, Optional, Protocol
 import pandas as pd
 
 from research.signal_evaluation import save_signal_evaluation, should_capture_signal
-from tuning.shadow import append_shadow_log, compare_shadow_trade_outputs
+from tuning.shadow import append_shadow_log, compare_shadow_trade_outputs, summarize_shadow_log
 
 
 class SignalCaptureSink(Protocol):
@@ -316,6 +316,11 @@ class DefaultShadowEvaluationSink:
         Notes:
             The contract is intentionally side-effect oriented so runtime orchestration can swap sink implementations without changing engine logic.
         """
+        try:
+            result_payload["shadow_validation_summary"] = summarize_shadow_log()
+        except Exception:
+            result_payload["shadow_validation_summary"] = None
+
         if not shadow_pack_name:
             return
 
@@ -398,3 +403,8 @@ class DefaultShadowEvaluationSink:
             except Exception as exc:
                 result_payload["shadow_log_status"] = f"FAILED:{type(exc).__name__}"
                 result_payload["shadow_log_error"] = str(exc)
+
+        try:
+            result_payload["shadow_validation_summary"] = summarize_shadow_log()
+        except Exception:
+            result_payload["shadow_validation_summary"] = None

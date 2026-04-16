@@ -95,6 +95,28 @@ def test_weak_data_circuit_breaker_skips_when_data_quality_is_strong():
     assert details["reason"] == "data_quality_not_in_breaker_scope"
 
 
+def test_weak_data_circuit_breaker_triggers_when_proxy_heavy_context_is_masked_by_good_label():
+    triggered, details = _evaluate_weak_data_circuit_breaker(
+        runtime_thresholds=_runtime_thresholds(),
+        data_quality_status="GOOD",
+        provider_health_summary="GOOD",
+        confirmation_status="CONFIRMED",
+        adjusted_trade_strength=82,
+        runtime_composite_score=76,
+        ranked_strikes=[{"iv_is_proxy": True, "delta_is_proxy": True} for _ in range(4)],
+        direction="CALL",
+        gamma_regime="POSITIVE_GAMMA",
+        vol_regime="NORMAL_VOL",
+        option_efficiency_status="UNAVAILABLE_NEUTRALIZED",
+        live_calibration_gate={"verdict": "BLOCK"},
+        live_directional_gate={"verdict": "BLOCK"},
+        global_risk_state="RISK_OFF",
+    )
+
+    assert triggered is True
+    assert "option_efficiency_unavailable" in details["trigger_reasons"]
+    assert "proxy_ratio_above_cap" in details["trigger_reasons"]
+    assert "live_calibration_block" in details["trigger_reasons"]
 def test_runtime_defaults_no_longer_overpromote_negative_gamma_puts():
     cfg = get_trade_runtime_thresholds()
 

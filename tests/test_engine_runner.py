@@ -174,6 +174,95 @@ def test_run_engine_snapshot_uses_promotion_state_and_logs_shadow(monkeypatch):
     assert len(captures) == 1
 
 
+def test_run_preloaded_engine_snapshot_uses_regime_shadow_candidate_when_rollout_enabled(monkeypatch):
+    comparisons = []
+
+    class _ShadowSink:
+        def apply(self, **kwargs):
+            comparisons.append(kwargs["shadow_pack_name"])
+            kwargs["result_payload"]["shadow_mode_active"] = True
+            kwargs["result_payload"]["shadow_pack_name"] = kwargs["shadow_pack_name"]
+            kwargs["result_payload"]["shadow_log_status"] = "CAPTURED"
+
+    monkeypatch.setattr(
+        engine_runner,
+        "get_regime_switch_policy",
+        lambda: {"shadow_enabled": True, "min_regime_confidence": 0.5},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "suggest_regime_pack",
+        lambda gamma_regime, vol_regime, **kwargs: "experimental_v1",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "_prepare_snapshot_context",
+        lambda **kwargs: {
+            "spot_snapshot": _spot_snapshot(),
+            "spot_validation": {"is_valid": True, "is_stale": False},
+            "spot": 22050.0,
+            "day_open": 22010.0,
+            "day_high": 22100.0,
+            "day_low": 21980.0,
+            "prev_close": 22020.0,
+            "spot_timestamp": "2026-03-15T09:20:00+05:30",
+            "lookback_avg_range_pct": 0.9,
+            "macro_event_state": {"macro_event_risk_score": 0, "event_lockdown_flag": False},
+            "headline_state": _HeadlineService().fetch(symbol="NIFTY", as_of="2026-03-15T09:20:00+05:30", replay_mode=False),
+            "global_market_snapshot": {"data_available": True, "warnings": [], "issues": []},
+            "option_chain_validation": {"is_valid": True, "is_stale": False, "selected_expiry": "2026-03-26"},
+            "option_chain": _option_chain_frame(),
+            "option_chain_frame": _option_chain_frame(),
+        },
+    )
+
+    def fake_eval(*, parameter_pack_name, **kwargs):
+        trade = {
+            "signal_id": f"{parameter_pack_name or 'baseline_v1'}-signal",
+            "gamma_regime": "POSITIVE_GAMMA",
+            "vol_surface_regime": "NORMAL_VOL",
+            "global_risk_state": "RISK_ON",
+            "macro_regime": "RISK_ON",
+            "event_risk_bucket": "LOW_EVENT_RISK",
+            "overnight_hold_allowed": True,
+            "regime_confidence": 0.91,
+            "ranked_strike_candidates": [{"strike": 22000, "score": 0.84}],
+        }
+        return {
+            "parameter_pack_name": parameter_pack_name or "baseline_v1",
+            "macro_news_state": {"macro_bias": "NEUTRAL"},
+            "global_risk_state": {"global_risk_state": "RISK_ON"},
+            "trade": trade,
+        }
+
+    monkeypatch.setattr(engine_runner, "_evaluate_snapshot_for_pack", fake_eval)
+
+    result = engine_runner.run_preloaded_engine_snapshot(
+        symbol="NIFTY",
+        mode="LIVE",
+        source="NSE",
+        spot_snapshot=_spot_snapshot(),
+        option_chain=_option_chain_frame(),
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        capture_signal_evaluation=False,
+        headline_service=_HeadlineService(),
+        shadow_evaluation_sink=_ShadowSink(),
+    )
+
+    assert result["ok"] is True
+    assert result["authoritative_parameter_pack"] == "baseline_v1"
+    assert result["shadow_mode_active"] is True
+    assert result["shadow_pack_name"] == "experimental_v1"
+    assert result["regime_pack_evaluation"]["shadow_candidate_pack"] == "experimental_v1"
+    assert result["regime_pack_evaluation"]["mode"] == "shadow"
+    assert comparisons == ["experimental_v1"]
+
+
 def test_run_engine_snapshot_closes_managed_router(monkeypatch):
     class _Router:
         def __init__(self):

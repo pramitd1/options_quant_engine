@@ -497,6 +497,13 @@ def get_regime_switch_policy(config_path: str | None = None) -> dict[str, Any]:
         "cooldown_seconds": 300,
         "min_dwell_seconds": 300,
         "min_regime_confidence": 0.0,
+        "shadow_enabled": False,
+        "shadow_min_regime_confidence": 0.0,
+        "decision_disagreement_alert": 0.20,
+        "trade_status_disagreement_alert": 0.25,
+        "signal_presence_disagreement_alert": 0.15,
+        "overnight_disagreement_alert": 0.20,
+        "session_alert_min_snapshots": 2,
         "log_decisions": True,
         "decision_log_path": "logs/regime_switch_decisions.jsonl",
     }
@@ -519,6 +526,33 @@ def get_regime_switch_policy(config_path: str | None = None) -> dict[str, Any]:
         defaults["min_regime_confidence"] = float(raw.get("min_regime_confidence", defaults["min_regime_confidence"]))
     except Exception:
         pass
+    defaults["shadow_enabled"] = bool(config.get("shadow_enabled", raw.get("shadow_enabled", defaults["shadow_enabled"])))
+    try:
+        defaults["shadow_min_regime_confidence"] = float(
+            raw.get(
+                "shadow_min_regime_confidence",
+                config.get("shadow_min_regime_confidence", defaults["shadow_min_regime_confidence"]),
+            )
+        )
+    except Exception:
+        pass
+    for key in (
+        "decision_disagreement_alert",
+        "trade_status_disagreement_alert",
+        "signal_presence_disagreement_alert",
+        "overnight_disagreement_alert",
+    ):
+        try:
+            defaults[key] = float(raw.get(key, config.get(key, defaults[key])))
+        except Exception:
+            pass
+    try:
+        defaults["session_alert_min_snapshots"] = max(
+            int(raw.get("session_alert_min_snapshots", config.get("session_alert_min_snapshots", defaults["session_alert_min_snapshots"]))),
+            1,
+        )
+    except Exception:
+        pass
     defaults["log_decisions"] = bool(raw.get("log_decisions", defaults["log_decisions"]))
     defaults["decision_log_path"] = str(raw.get("decision_log_path", defaults["decision_log_path"]))
     return defaults
@@ -533,6 +567,7 @@ def suggest_regime_pack(
     event_risk_bucket: str | None = None,
     overnight_bucket: str | None = None,
     config_path: str | None = None,
+    evaluation_mode: str = "live",
 ) -> str | None:
     """Suggest the parameter pack best suited to the current live regime.
 
@@ -556,8 +591,13 @@ def suggest_regime_pack(
     if not isinstance(config, dict):
         return None
 
-    if not config.get("enabled", False):
-        return None
+    evaluation_mode = str(evaluation_mode or "live").strip().lower()
+    live_enabled = bool(config.get("enabled", False))
+    shadow_enabled = bool(config.get("shadow_enabled", False))
+
+    if not live_enabled:
+        if evaluation_mode != "shadow" or not shadow_enabled:
+            return None
 
     fallback = config.get("fallback_pack", DEFAULT_PARAMETER_PACK)
     labels = {

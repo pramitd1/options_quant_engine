@@ -21,6 +21,7 @@ from research.signal_evaluation.daily_research_report import (
     _section_signal_generation,
     _section_horizon_performance,
     _section_alpha_decay,
+    _section_premium_analytics,
     _section_score_calibration,
     _section_dataset_summary,
     _section_information_coefficient,
@@ -80,6 +81,11 @@ def _sample_dataset() -> pd.DataFrame:
             "lookback_avg_range_pct": 1.38,
             "expected_move_pct": 1.70,
             "tradeability_score": 60.0,
+            "option_entry_premium": 110.0 + i,
+            "option_target_premium": 143.0 + i,
+            "option_stop_loss_premium": 93.5 + i,
+            "option_premium_pct_of_spot": 0.47 + i * 0.001,
+            "premium_efficiency_score": 72.0,
             "option_efficiency_score": 75.0,
             "data_quality_score": 92.0,
         }
@@ -144,6 +150,15 @@ class TestSectionBuilders:
         text = "\n".join(lines)
         assert "Decay Curve (ASCII)" in text
         assert "bps" in text
+
+    def test_premium_analytics_has_premium_tables(self):
+        df = _sample_dataset()
+        df["signal_timestamp"] = pd.to_datetime(df["signal_timestamp"])
+        lines = _section_premium_analytics(df)
+        text = "\n".join(lines)
+        assert "Premium Analytics" in text
+        assert "Avg Entry Premium" in text
+        assert "Premium Band" in text
 
     def test_score_calibration_has_buckets(self):
         df = _sample_dataset()
@@ -250,6 +265,7 @@ class TestGenerateReport:
             "Directional Accuracy",
             "Magnitude Adequacy",
             "Tradeability Analysis",
+            "Premium Analytics",
             "Score Calibration",
             "Probability Calibration",
             "Reversal Diagnostics",

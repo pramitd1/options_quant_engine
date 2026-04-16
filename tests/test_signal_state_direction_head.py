@@ -299,3 +299,71 @@ def test_direction_head_calibration_segment_is_propagated(monkeypatch):
     )
 
     assert out["direction_head_calibration_segment"] == "RISK_OFF"
+
+
+def test_compute_signal_state_surfaces_fast_reversal_alert(monkeypatch):
+    def _mock_decide_direction(**kwargs):
+        return ("PUT", "FLOW+RANGE_EXPANSION", 0.34, 0.66, True, "PUT", 1.8)
+
+    monkeypatch.setattr(signal_state, "decide_direction", _mock_decide_direction)
+    monkeypatch.setattr(signal_state, "compute_trade_strength", lambda **kwargs: (74, {}))
+    monkeypatch.setattr(
+        signal_state,
+        "compute_confirmation_filters",
+        lambda **kwargs: {"status": "MIXED", "veto": True, "reasons": ["reversal_grace_period_active"], "score_adjustment": -2, "breakdown": {}},
+    )
+    monkeypatch.setattr(
+        signal_state,
+        "get_trade_runtime_thresholds",
+        lambda: {
+            "enable_probabilistic_direction_head": 1,
+            "direction_head_call_threshold": 0.55,
+            "direction_head_put_threshold": 0.45,
+            "direction_head_min_confidence": 0.10,
+            "direction_head_allow_vote_override": 1,
+            "direction_head_override_min_confidence": 0.10,
+            "direction_probability_calibrator_path": "",
+            "direction_probability_segmented_calibrator_path": "",
+            "reversal_stage_min_vote_count": 3,
+            "reversal_stage_min_breakout_votes": 1,
+        },
+    )
+    monkeypatch.setattr(
+        signal_state,
+        "compute_direction_probability_head",
+        lambda **kwargs: {
+            "probability_up": 0.26,
+            "probability_up_raw": 0.28,
+            "probability_down": 0.74,
+            "confidence": 0.84,
+            "uncertainty": 0.16,
+            "disagreement_with_vote": 0.08,
+            "microstructure_friction_score": 0.05,
+            "calibration_applied": True,
+            "calibration_segment": "RISK_OFF",
+        },
+    )
+
+    out = signal_state._compute_signal_state(
+        spot=100.0,
+        symbol="NIFTY",
+        previous_direction="CALL",
+        reversal_age=0,
+        day_open=99.0,
+        prev_close=98.5,
+        intraday_range_pct=1.2,
+        backtest_mode=False,
+        market_state=_base_market_state(),
+        probability_state={
+            "hybrid_move_probability": 0.64,
+            "ml_move_probability": 0.59,
+            "components": {"gamma_flip_distance_pct": 2.0},
+        },
+        option_chain_validation=_base_option_chain_validation(),
+    )
+
+    assert out["direction"] == "PUT"
+    assert out["reversal_stage"] == "EARLY_REVERSAL_CANDIDATE"
+    assert out["fast_reversal_alert_level"] == "HIGH"
+    assert out["fast_reversal_warning_direction"] == "PUT"
+    assert "range_expansion" in {reason.lower() for reason in out["fast_reversal_reasons"]}

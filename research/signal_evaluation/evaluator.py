@@ -349,6 +349,11 @@ def build_signal_evaluation_row(
     if entry_price not in (None, 0.0) and stop_loss_price is not None:
         stop_loss_premium_return_pct = round(((stop_loss_price - entry_price) / entry_price) * 100.0, 4)
 
+    spot_at_signal = _safe_float(spot_summary.get("spot"), None)
+    option_premium_pct_of_spot = None
+    if entry_price not in (None, 0.0) and spot_at_signal not in (None, 0.0):
+        option_premium_pct_of_spot = round((entry_price / spot_at_signal) * 100.0, 4)
+
     row = {
         "signal_id": signal_id,
         "signal_timestamp": _coerce_ts(signal_timestamp).isoformat(),
@@ -361,6 +366,10 @@ def build_signal_evaluation_row(
         "option_type": inferred_option_type,
         "strike": inferred_strike,
         "entry_price": trade.get("entry_price"),
+        "option_entry_premium": entry_price,
+        "option_target_premium": target_price,
+        "option_stop_loss_premium": stop_loss_price,
+        "option_premium_pct_of_spot": option_premium_pct_of_spot,
         "target_premium_return_pct": target_premium_return_pct,
         "stop_loss_premium_return_pct": stop_loss_premium_return_pct,
         "selected_option_last_price": trade.get("selected_option_last_price", trade.get("entry_price")),

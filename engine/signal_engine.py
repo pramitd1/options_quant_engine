@@ -290,14 +290,17 @@ def _build_signal_probability_overlay(
     market_state,
     runtime_thresholds,
 ):
-    """Blend direction probabilities with Platt-style score calibration.
+    """Blend direction probabilities with calibrated, context-aware deflation.
 
-    This keeps probability diagnostics on the live signal path even when the
-    standalone calibrator artifact is missing, because the calibration module
-    degrades safely to a linear score-to-probability mapping.
+    The latest signal-evaluation reports showed persistent overconfidence,
+    especially in fragile risk-off sessions. The live path now shrinks
+    aggressive probabilities back toward neutral when provider health, data
+    quality, or macro context are weak.
     """
+    runtime_thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
+    market_state = market_state if isinstance(market_state, dict) else {}
     raw_score = float(_clip(_safe_float(adjusted_trade_strength, 50.0), 0.0, 100.0))
-    calibrator_path = runtime_thresholds.get("signal_probability_calibrator_path") if isinstance(runtime_thresholds, dict) else None
+    calibrator_path = runtime_thresholds.get("signal_probability_calibrator_path")
 
     calibrated_probability = None
     try:
@@ -325,7 +328,18 @@ def _build_signal_probability_overlay(
     if calibrated_probability is not None:
         calibrated_probability = float(_clip(calibrated_probability, 0.0, 1.0))
 
-    iv_hv_regime = _as_upper((market_state or {}).get("iv_hv_regime"))
+    iv_hv_regime = _as_upper(market_state.get("iv_hv_regime"))
+    provider_health_summary = _as_upper(market_state.get("provider_health_summary"))
+    data_quality_status = _as_upper(market_state.get("data_quality_status"))
+    global_risk_state = _as_upper(market_state.get("global_risk_state"))
+    option_efficiency_status = _as_upper(market_state.get("option_efficiency_status"))
+    reversal_stage = _as_upper(market_state.get("reversal_stage"))
+    fast_reversal_alert_level = _as_upper(market_state.get("fast_reversal_alert_level"))
+    live_calibration_gate = market_state.get("live_calibration_gate") if isinstance(market_state.get("live_calibration_gate"), dict) else {}
+    live_directional_gate = market_state.get("live_directional_gate") if isinstance(market_state.get("live_directional_gate"), dict) else {}
+    ranked_strike_proxy_ratio = _clip(_safe_float(market_state.get("ranked_strike_proxy_ratio"), 0.0), 0.0, 1.0)
+    shrink_reasons: list[str] = []
+
     iv_hv_probability_adjustment = 0.0
     if iv_hv_regime == "IV_CHEAP":
         iv_hv_probability_adjustment = _safe_float(runtime_thresholds.get("iv_hv_probability_bonus"), 0.03)
@@ -341,12 +355,131 @@ def _build_signal_probability_overlay(
         signal_success_probability = directional_probability
     else:
         signal_success_probability = (
-            0.55 * directional_probability
-            + 0.45 * calibrated_probability
+            0.50 * directional_probability
+            + 0.50 * calibrated_probability
             + float(iv_hv_probability_adjustment)
         )
 
+    shrink_strength = _clip(_safe_float(runtime_thresholds.get("signal_probability_neutral_shrink"), 0.12), 0.0, 0.45)
+    fragile_context = (
+        provider_health_summary in {"WEAK", "CAUTION"}
+        or data_quality_status in {"WEAK", "CAUTION"}
+    )
+    if fragile_context:
+        shrink_strength = min(
+            0.55,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_fragile_shrink_add"), 0.12),
+        )
+        shrink_reasons.append("fragile_context")
+    if global_risk_state in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"}:
+        shrink_strength = min(
+            0.60,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_risk_off_shrink_add"), 0.06),
+        )
+        shrink_reasons.append("risk_off_context")
+    if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
+        shrink_strength = min(
+            0.68,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_early_reversal_shrink_add"), 0.06),
+        )
+        shrink_reasons.append("early_reversal_candidate")
+    elif reversal_stage == "REVERSAL_UNRESOLVED":
+        shrink_strength = min(
+            0.70,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_unresolved_reversal_shrink_add"), 0.08),
+        )
+        shrink_reasons.append("reversal_unresolved")
+    if fast_reversal_alert_level == "HIGH":
+        shrink_strength = min(0.72, shrink_strength + 0.03)
+        shrink_reasons.append("fast_reversal_warning")
+
+    live_calibration_verdict = _as_upper(live_calibration_gate.get("verdict"))
+    if live_calibration_verdict == "CAUTION":
+        shrink_strength = min(
+            0.65,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_live_calibration_caution_shrink_add"), 0.05),
+        )
+        shrink_reasons.append("live_calibration_caution")
+    elif live_calibration_verdict == "BLOCK":
+        shrink_strength = min(
+            0.70,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_live_calibration_block_shrink_add"), 0.10),
+        )
+        shrink_reasons.append("live_calibration_block")
+
+    max_ece = _safe_float(runtime_thresholds.get("signal_probability_live_calibration_max_ece"), 0.18)
+    ece_value = _safe_float(live_calibration_gate.get("ece"), None)
+    if ece_value is not None and max_ece is not None and ece_value > max_ece:
+        shrink_strength = min(0.72, shrink_strength + min(0.10, max(0.0, ece_value - max_ece) * 0.75))
+        shrink_reasons.append("live_calibration_ece_drift")
+
+    max_top_overconfidence = _safe_float(
+        runtime_thresholds.get("signal_probability_live_calibration_max_top_decile_overconfidence"),
+        0.20,
+    )
+    overconfidence_value = _safe_float(live_calibration_gate.get("top_decile_overconfidence"), None)
+    if (
+        overconfidence_value is not None
+        and max_top_overconfidence is not None
+        and overconfidence_value > max_top_overconfidence
+    ):
+        shrink_strength = min(
+            0.72,
+            shrink_strength + min(0.08, max(0.0, overconfidence_value - max_top_overconfidence) * 1.0),
+        )
+        shrink_reasons.append("top_decile_overconfidence")
+
+    live_directional_verdict = _as_upper(live_directional_gate.get("verdict"))
+    if live_directional_verdict == "CAUTION":
+        shrink_strength = min(
+            0.68,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_live_directional_caution_shrink_add"), 0.05),
+        )
+        shrink_reasons.append("live_directional_caution")
+    elif live_directional_verdict == "BLOCK":
+        shrink_strength = min(
+            0.72,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_live_directional_block_shrink_add"), 0.10),
+        )
+        shrink_reasons.append("live_directional_block")
+
+    if option_efficiency_status.startswith("UNAVAILABLE"):
+        shrink_strength = min(
+            0.68,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_option_efficiency_unavailable_shrink_add"), 0.05),
+        )
+        shrink_reasons.append("option_efficiency_unavailable")
+
+    proxy_ratio_high = _clip(_safe_float(runtime_thresholds.get("signal_probability_proxy_ratio_high"), 0.80), 0.0, 1.0)
+    proxy_ratio_caution = _clip(_safe_float(runtime_thresholds.get("signal_probability_proxy_ratio_caution"), 0.50), 0.0, proxy_ratio_high)
+    if ranked_strike_proxy_ratio >= proxy_ratio_high:
+        shrink_strength = min(
+            0.72,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_proxy_ratio_high_shrink_add"), 0.08),
+        )
+        shrink_reasons.append("proxy_heavy_structure")
+    elif ranked_strike_proxy_ratio >= proxy_ratio_caution:
+        shrink_strength = min(
+            0.68,
+            shrink_strength + _safe_float(runtime_thresholds.get("signal_probability_proxy_ratio_caution_shrink_add"), 0.04),
+        )
+        shrink_reasons.append("proxy_moderate_structure")
+
+    probability_gap = None
+    if directional_probability is not None and calibrated_probability is not None:
+        probability_gap = abs(directional_probability - calibrated_probability)
+        if probability_gap > 0.10:
+            shrink_strength = min(0.65, shrink_strength + max(0.0, probability_gap - 0.10) * 0.50)
+
     if signal_success_probability is not None:
+        neutral_anchor = 0.50
+        signal_success_probability = ((1.0 - shrink_strength) * signal_success_probability) + (shrink_strength * neutral_anchor)
+        if fragile_context:
+            fragile_ceiling = _clip(_safe_float(runtime_thresholds.get("signal_probability_fragile_ceiling"), 0.74), 0.5, 0.95)
+            signal_success_probability = min(signal_success_probability, fragile_ceiling)
+        if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
+            early_reversal_ceiling = _clip(_safe_float(runtime_thresholds.get("signal_probability_early_reversal_ceiling"), 0.68), 0.5, 0.95)
+            signal_success_probability = min(signal_success_probability, early_reversal_ceiling)
         signal_success_probability = round(float(_clip(signal_success_probability, 0.01, 0.99)), 4)
 
     return {
@@ -354,6 +487,9 @@ def _build_signal_probability_overlay(
         "signal_calibrated_probability": round(calibrated_probability, 4) if calibrated_probability is not None else None,
         "signal_success_probability": signal_success_probability,
         "iv_hv_probability_adjustment": round(float(iv_hv_probability_adjustment), 4),
+        "probability_neutral_shrink": round(float(shrink_strength), 4),
+        "probability_gap": round(float(probability_gap), 4) if probability_gap is not None else None,
+        "probability_shrink_reasons": _dedupe_keep_order(shrink_reasons),
     }
 
 
@@ -1017,6 +1153,12 @@ def _evaluate_trade_promotion_governor(*, payload, runtime_thresholds):
     )
     confirmation_status = _as_upper(payload.get("confirmation_status"))
     data_quality_status = _as_upper(payload.get("data_quality_status"))
+    provider_health_summary = _as_upper(payload.get("provider_health_summary"))
+    global_risk_state = _as_upper(payload.get("global_risk_state"))
+    option_efficiency_status = _as_upper(payload.get("option_efficiency_status"))
+    reversal_stage = _as_upper(payload.get("reversal_stage"))
+    fast_reversal_alert_level = _as_upper(payload.get("fast_reversal_alert_level"))
+    ranked_strike_proxy_ratio = _clip(_safe_float(payload.get("ranked_strike_proxy_ratio"), 0.0), 0.0, 1.0)
     live_calibration_gate = payload.get("live_calibration_gate") if isinstance(payload.get("live_calibration_gate"), dict) else {}
     live_directional_gate = payload.get("live_directional_gate") if isinstance(payload.get("live_directional_gate"), dict) else {}
 
@@ -1027,6 +1169,24 @@ def _evaluate_trade_promotion_governor(*, payload, runtime_thresholds):
     hold_cap_minutes = max(5, int(_safe_float(runtime_thresholds.get("trade_promotion_hold_cap_minutes"), 20.0)))
     require_confirmed = bool(int(_safe_float(runtime_thresholds.get("trade_promotion_require_confirmed_status"), 1.0)))
 
+    fragile_context = (
+        provider_health_summary in {"WEAK", "CAUTION"}
+        and global_risk_state in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"}
+    )
+    if fragile_context:
+        min_probability = max(
+            min_probability,
+            _clip(_safe_float(runtime_thresholds.get("trade_promotion_fragile_context_min_probability"), 0.68), 0.0, 1.0),
+        )
+        caution_size_cap = min(
+            caution_size_cap,
+            _clip(_safe_float(runtime_thresholds.get("trade_promotion_fragile_context_size_cap"), 0.35), 0.0, 1.0),
+        )
+        hold_cap_minutes = min(
+            hold_cap_minutes,
+            max(5, int(_safe_float(runtime_thresholds.get("trade_promotion_fragile_context_hold_cap_minutes"), 15.0))),
+        )
+
     replay_required_reasons = []
     if trade_strength < min_trade_strength + 4:
         replay_required_reasons.append("trade_strength_near_gate")
@@ -1036,12 +1196,32 @@ def _evaluate_trade_promotion_governor(*, payload, runtime_thresholds):
         replay_required_reasons.append("success_probability_below_promotion_floor")
     if require_confirmed and confirmation_status not in {"CONFIRMED", "STRONG_CONFIRMATION"}:
         replay_required_reasons.append("confirmation_not_strong_enough")
+    if bool(int(_safe_float(runtime_thresholds.get("trade_promotion_block_early_reversal"), 1.0))) and reversal_stage in {"EARLY_REVERSAL_CANDIDATE", "REVERSAL_UNRESOLVED"}:
+        replay_required_reasons.append("early_reversal_candidate_requires_wait")
+    if (
+        bool(int(_safe_float(runtime_thresholds.get("trade_promotion_early_reversal_requires_strong_confirmation"), 1.0)))
+        and fast_reversal_alert_level == "HIGH"
+        and reversal_stage != "CONFIRMED_REVERSAL"
+    ):
+        replay_required_reasons.append("fast_reversal_warning_requires_wait_for_confirmation")
+    if fragile_context and confirmation_status != "STRONG_CONFIRMATION":
+        replay_required_reasons.append("risk_off_weak_provider_requires_strong_confirmation")
     if data_quality_status in {"CAUTION", "WEAK"}:
         replay_required_reasons.append("data_quality_not_clean")
+    if fragile_context and success_probability < min_probability:
+        replay_required_reasons.append("risk_off_weak_provider_probability_below_floor")
+    if fragile_context and trade_strength < min_trade_strength + 6:
+        replay_required_reasons.append("risk_off_weak_provider_trade_strength_buffer_not_met")
+    if fragile_context and runtime_composite_score < min_composite_score + 6:
+        replay_required_reasons.append("risk_off_weak_provider_composite_buffer_not_met")
     if _as_upper(live_calibration_gate.get("verdict")) == "BLOCK":
         replay_required_reasons.append("live_calibration_blocked")
     if _as_upper(live_directional_gate.get("verdict")) == "BLOCK":
         replay_required_reasons.append("live_directional_blocked")
+    if option_efficiency_status.startswith("UNAVAILABLE"):
+        replay_required_reasons.append("option_efficiency_unavailable")
+    if ranked_strike_proxy_ratio > _clip(_safe_float(runtime_thresholds.get("trade_promotion_proxy_ratio_max"), 0.50), 0.0, 1.0):
+        replay_required_reasons.append("proxy_ratio_above_promotion_cap")
 
     if replay_required_reasons:
         return {
@@ -1143,6 +1323,59 @@ def _compute_portfolio_concentration_context(*, payload, runtime_thresholds):
     return context
 
 
+def _apply_intraday_exit_bias(
+    *,
+    recommended_hold_minutes,
+    max_hold_minutes,
+    runtime_thresholds,
+    expansion_mode,
+    expansion_direction,
+    direction,
+    reversal_stage,
+    provider_health_summary,
+    data_quality_status,
+    global_risk_state,
+    gamma_regime,
+):
+    """Apply report-driven intraday exit caps for fragile live contexts."""
+    runtime_thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
+    recommended = max(5, int(_safe_float(recommended_hold_minutes, 30.0)))
+    hold_max = max(recommended, int(_safe_float(max_hold_minutes, recommended)))
+    reasons: list[str] = []
+
+    preferred_cap = max(10, int(_safe_float(runtime_thresholds.get("preferred_intraday_exit_cap_minutes"), 75.0)))
+    if not (expansion_mode and expansion_direction == direction):
+        if recommended > preferred_cap or hold_max > preferred_cap:
+            recommended = min(recommended, preferred_cap)
+            hold_max = min(hold_max, preferred_cap)
+            reasons.append("intraday_exit_bias_preferred_window")
+
+    provider_upper = _as_upper(provider_health_summary)
+    data_upper = _as_upper(data_quality_status)
+    risk_upper = _as_upper(global_risk_state)
+    gamma_upper = canonical_gamma_regime(gamma_regime)
+
+    if risk_upper in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"} and gamma_upper == "POSITIVE_GAMMA":
+        risk_off_cap = max(10, int(_safe_float(runtime_thresholds.get("positive_gamma_risk_off_hold_cap_minutes"), 60.0)))
+        if recommended > risk_off_cap or hold_max > risk_off_cap:
+            recommended = min(recommended, risk_off_cap)
+            hold_max = min(hold_max, risk_off_cap)
+            reasons.append("risk_off_positive_gamma_exit_bias")
+
+    fragile_context = provider_upper in {"WEAK", "CAUTION"} and data_upper in {"WEAK", "CAUTION"}
+    if fragile_context and risk_upper in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"}:
+        fragile_cap = max(10, int(_safe_float(runtime_thresholds.get("fragile_risk_off_hold_cap_minutes"), 45.0)))
+        if recommended > fragile_cap or hold_max > fragile_cap:
+            recommended = min(recommended, fragile_cap)
+            hold_max = min(hold_max, fragile_cap)
+            reasons.append("fragile_risk_off_exit_bias")
+
+    if _as_upper(reversal_stage) == "EARLY_REVERSAL_CANDIDATE" and "reversal_stage_early_hold_cap" not in reasons:
+        reasons.append("reversal_stage_early_hold_cap")
+
+    return recommended, hold_max, reasons
+
+
 def _derive_advisory_size_recommendation(
     payload,
     *,
@@ -1161,6 +1394,7 @@ def _derive_advisory_size_recommendation(
 ):
     """Compute sizing as a pure recommendation without mutating the signal payload."""
     payload = payload if isinstance(payload, dict) else {}
+    runtime_thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
     base_lots = max(int(_safe_float(payload.get("number_of_lots"), 0.0)), 0)
 
     confidence_value = _safe_float(confidence_score, 50.0)
@@ -1216,6 +1450,13 @@ def _derive_advisory_size_recommendation(
     )
     success_probability = float(_clip(success_probability, 0.0, 1.0))
 
+    entry_price = _safe_float(payload.get("entry_price"), _safe_float(payload.get("selected_option_last_price"), None))
+    spot_value = _safe_float(payload.get("spot"), None)
+    premium_pct_of_spot = _safe_float(payload.get("option_premium_pct_of_spot"), None)
+    if premium_pct_of_spot is None and entry_price not in (None, 0.0) and spot_value not in (None, 0.0):
+        premium_pct_of_spot = round((entry_price / spot_value) * 100.0, 4)
+    premium_efficiency_score = _safe_float(payload.get("premium_efficiency_score"), 50.0)
+
     priority_score = (
         0.40 * trade_strength
         + 0.30 * confidence_value
@@ -1228,6 +1469,30 @@ def _derive_advisory_size_recommendation(
         priority_score -= _safe_float(runtime_thresholds.get("portfolio_heat_hot_priority_penalty"), 8.0)
     elif heat_label == "CRITICAL":
         priority_score -= _safe_float(runtime_thresholds.get("portfolio_heat_critical_priority_penalty"), 16.0)
+
+    premium_priority_adjustment = 0.0
+    premium_size_cap = 1.0
+    low_premium_threshold = _safe_float(runtime_thresholds.get("premium_preference_low_pct_of_spot"), 0.50)
+    high_premium_threshold = _safe_float(runtime_thresholds.get("premium_preference_high_pct_of_spot"), 1.00)
+    if premium_pct_of_spot is not None:
+        if premium_pct_of_spot <= low_premium_threshold:
+            premium_priority_adjustment += _safe_float(runtime_thresholds.get("premium_preference_bonus"), 6.0)
+        elif premium_pct_of_spot > high_premium_threshold:
+            premium_priority_adjustment -= _safe_float(runtime_thresholds.get("premium_expense_priority_penalty"), 8.0)
+            premium_size_cap = min(
+                premium_size_cap,
+                _clip(_safe_float(runtime_thresholds.get("premium_expense_size_cap"), 0.65), 0.0, 1.0),
+            )
+
+    premium_efficiency_low = _safe_float(runtime_thresholds.get("premium_efficiency_low_threshold"), 55.0)
+    premium_efficiency_high = _safe_float(runtime_thresholds.get("premium_efficiency_high_threshold"), 75.0)
+    if premium_efficiency_score >= premium_efficiency_high:
+        premium_priority_adjustment += _safe_float(runtime_thresholds.get("premium_efficiency_priority_bonus"), 3.0)
+    elif premium_efficiency_score < premium_efficiency_low:
+        premium_priority_adjustment -= _safe_float(runtime_thresholds.get("premium_efficiency_priority_penalty"), 6.0)
+        premium_size_cap = min(premium_size_cap, 0.75)
+
+    priority_score += premium_priority_adjustment
     priority_score = float(_clip(priority_score, 0.0, 100.0))
 
     high_threshold = _safe_float(runtime_thresholds.get("portfolio_priority_high_threshold"), 75.0)
@@ -1261,6 +1526,7 @@ def _derive_advisory_size_recommendation(
         allocation_multiplier = _clip(_safe_float(runtime_thresholds.get("portfolio_allocation_probe_mult"), 0.25), 0.0, 1.0)
 
     risk_size_cap *= allocation_multiplier
+    risk_size_cap = min(risk_size_cap, premium_size_cap)
     if heat_label == "HOT":
         risk_size_cap = min(
             risk_size_cap,
@@ -1289,6 +1555,9 @@ def _derive_advisory_size_recommendation(
         "portfolio_capital_fraction_max": round(float(capital_fraction_max), 4),
         "portfolio_heat_score": round(float(heat_score), 2),
         "portfolio_heat_label": heat_label,
+        "premium_load_pct_of_spot": round(float(premium_pct_of_spot), 4) if premium_pct_of_spot is not None else None,
+        "premium_priority_adjustment": round(float(premium_priority_adjustment), 2),
+        "premium_size_cap": round(float(premium_size_cap), 4),
     }
 
 
@@ -1360,18 +1629,32 @@ def _evaluate_weak_data_circuit_breaker(
     direction,
     gamma_regime,
     vol_regime,
+    option_efficiency_status=None,
+    live_calibration_gate=None,
+    live_directional_gate=None,
+    global_risk_state=None,
 ):
     enabled = bool(int(_safe_float(runtime_thresholds.get("enable_weak_data_circuit_breaker"), 1.0)))
+    live_calibration_gate = live_calibration_gate if isinstance(live_calibration_gate, dict) else {}
+    live_directional_gate = live_directional_gate if isinstance(live_directional_gate, dict) else {}
+    global_risk_state_upper = _as_upper(
+        global_risk_state.get("global_risk_state") if isinstance(global_risk_state, dict) else global_risk_state
+    )
     details = {
         "enabled": enabled,
         "triggered": False,
         "trigger_reasons": [],
+        "scope_override_reasons": [],
         "data_quality_status": _as_upper(data_quality_status),
         "provider_health_summary": _as_upper(provider_health_summary),
         "confirmation_status": _as_upper(confirmation_status),
         "direction": _as_upper(direction),
         "gamma_regime": canonical_gamma_regime(gamma_regime),
         "vol_regime": _canonical_vol_regime(vol_regime),
+        "option_efficiency_status": _as_upper(option_efficiency_status),
+        "live_calibration_verdict": _as_upper(live_calibration_gate.get("verdict")),
+        "live_directional_verdict": _as_upper(live_directional_gate.get("verdict")),
+        "global_risk_state": global_risk_state_upper,
     }
     if not enabled:
         details["reason"] = "disabled"
@@ -1381,9 +1664,6 @@ def _evaluate_weak_data_circuit_breaker(
         runtime_thresholds.get("weak_data_circuit_breaker_data_quality_statuses"),
         default={"WEAK", "CAUTION"},
     )
-    if details["data_quality_status"] not in watch_statuses:
-        details["reason"] = "data_quality_not_in_breaker_scope"
-        return False, details
 
     min_strength = int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_min_trade_strength"), 74.0))
     min_runtime_score = int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_min_runtime_composite_score"), 70.0))
@@ -1402,6 +1682,27 @@ def _evaluate_weak_data_circuit_breaker(
     details["runtime_composite_score"] = int(runtime_composite_score)
     details["trade_strength"] = int(adjusted_trade_strength)
 
+    hidden_fragility_min_count = max(
+        int(_safe_float(runtime_thresholds.get("weak_data_circuit_breaker_hidden_fragility_min_trigger_count"), 3.0)),
+        1,
+    )
+    if details["data_quality_status"] not in watch_statuses:
+        if details["option_efficiency_status"].startswith("UNAVAILABLE"):
+            details["scope_override_reasons"].append("option_efficiency_unavailable")
+        if proxy_ratio > max_proxy_ratio:
+            details["scope_override_reasons"].append("proxy_ratio_above_cap")
+        if details["live_calibration_verdict"] == "BLOCK":
+            details["scope_override_reasons"].append("live_calibration_block")
+        if details["live_directional_verdict"] == "BLOCK":
+            details["scope_override_reasons"].append("live_directional_block")
+        if details["global_risk_state"] in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"}:
+            details["scope_override_reasons"].append("risk_off_context")
+        if len(details["scope_override_reasons"]) < hidden_fragility_min_count:
+            details["reason"] = "data_quality_not_in_breaker_scope"
+            return False, details
+        details["reason"] = "hidden_fragility_override_scope"
+        details["trigger_reasons"].extend(details["scope_override_reasons"])
+
     if details["provider_health_summary"] in provider_statuses:
         details["trigger_reasons"].append("provider_health_fragile")
     if require_strong_confirmation and details["confirmation_status"] not in {"STRONG_CONFIRMATION", "CONFIRMED"}:
@@ -1410,8 +1711,16 @@ def _evaluate_weak_data_circuit_breaker(
         details["trigger_reasons"].append("trade_strength_below_floor")
     if int(runtime_composite_score) < min_runtime_score:
         details["trigger_reasons"].append("runtime_composite_below_floor")
-    if proxy_ratio > max_proxy_ratio:
+    if proxy_ratio > max_proxy_ratio and "proxy_ratio_above_cap" not in details["trigger_reasons"]:
         details["trigger_reasons"].append("proxy_ratio_above_cap")
+    if details["option_efficiency_status"].startswith("UNAVAILABLE") and "option_efficiency_unavailable" not in details["trigger_reasons"]:
+        details["trigger_reasons"].append("option_efficiency_unavailable")
+    if details["live_calibration_verdict"] == "BLOCK" and "live_calibration_block" not in details["trigger_reasons"]:
+        details["trigger_reasons"].append("live_calibration_block")
+    if details["live_directional_verdict"] == "BLOCK" and "live_directional_block" not in details["trigger_reasons"]:
+        details["trigger_reasons"].append("live_directional_block")
+    if details["global_risk_state"] in {"RISK_OFF", "VOL_SHOCK", "EVENT_LOCKDOWN"} and "risk_off_context" not in details["trigger_reasons"]:
+        details["trigger_reasons"].append("risk_off_context")
     if (
         details["direction"] == "PUT"
         and details["gamma_regime"] == "NEGATIVE_GAMMA"
@@ -3950,6 +4259,23 @@ def generate_trade(
     if recommended_hold_minutes < int(exit_timing["recommended_hold_minutes"]) or max_hold_minutes < int(exit_timing["max_hold_minutes"]):
         exit_timing_reasons.append(f"hard_hold_cap_applied_{hold_cap_minutes}m")
 
+    recommended_hold_minutes, max_hold_minutes, live_exit_bias_reasons = _apply_intraday_exit_bias(
+        recommended_hold_minutes=recommended_hold_minutes,
+        max_hold_minutes=max_hold_minutes,
+        runtime_thresholds=runtime_thresholds,
+        expansion_mode=expansion_mode,
+        expansion_direction=expansion_direction,
+        direction=direction,
+        reversal_stage=reversal_stage,
+        provider_health_summary=provider_health_summary,
+        data_quality_status=data_quality.get("status"),
+        global_risk_state=base_payload.get("global_risk_state"),
+        gamma_regime=market_state.get("gamma_regime"),
+    )
+    for _reason in live_exit_bias_reasons:
+        if _reason not in exit_timing_reasons:
+            exit_timing_reasons.append(_reason)
+
     option_row_dict = option_row.iloc[0].to_dict()
 
     ranked_candidate = None
@@ -4055,6 +4381,13 @@ def generate_trade(
         "option_type": option_type,
         "reversal_context": reversal_context,
         "reversal_stage": reversal_stage,
+        "fast_reversal_active": signal_state.get("fast_reversal_active"),
+        "fast_reversal_alert_level": signal_state.get("fast_reversal_alert_level"),
+        "fast_reversal_warning_direction": signal_state.get("fast_reversal_warning_direction"),
+        "fast_reversal_prior_direction": signal_state.get("fast_reversal_prior_direction"),
+        "fast_reversal_evidence_score": signal_state.get("fast_reversal_evidence_score"),
+        "fast_reversal_reasons": signal_state.get("fast_reversal_reasons"),
+        "fast_reversal_promotion_bias": signal_state.get("fast_reversal_promotion_bias"),
         "breakout_vote_count": breakout_vote_count,
         "expansion_mode": expansion_mode,
         "expansion_direction": expansion_direction,
@@ -4195,7 +4528,18 @@ def generate_trade(
         adjusted_trade_strength=adjusted_trade_strength,
         call_probability=bull_probability,
         put_probability=bear_probability,
-        market_state=market_state,
+        market_state={
+            **(market_state if isinstance(market_state, dict) else {}),
+            "provider_health_summary": provider_health_summary,
+            "data_quality_status": data_quality.get("status"),
+            "global_risk_state": base_payload.get("global_risk_state"),
+            "option_efficiency_status": base_payload.get("option_efficiency_status"),
+            "ranked_strike_proxy_ratio": _ranked_strike_proxy_ratio(ranked_strikes),
+            "reversal_stage": reversal_stage,
+            "fast_reversal_alert_level": signal_state.get("fast_reversal_alert_level"),
+            "live_calibration_gate": live_calibration_gate if isinstance(live_calibration_gate, dict) else {},
+            "live_directional_gate": live_directional_gate if isinstance(live_directional_gate, dict) else {},
+        },
         runtime_thresholds=runtime_thresholds,
     )
     base_payload.update(signal_probability_overlay)
@@ -4229,6 +4573,9 @@ def generate_trade(
     base_payload["portfolio_capital_fraction_max"] = advisory_sizing.get("portfolio_capital_fraction_max")
     base_payload["portfolio_book_heat_score"] = advisory_sizing.get("portfolio_heat_score", base_payload.get("portfolio_book_heat_score"))
     base_payload["portfolio_book_heat_label"] = advisory_sizing.get("portfolio_heat_label", base_payload.get("portfolio_book_heat_label"))
+    base_payload["premium_load_pct_of_spot"] = advisory_sizing.get("premium_load_pct_of_spot")
+    base_payload["premium_priority_adjustment"] = advisory_sizing.get("premium_priority_adjustment")
+    base_payload["premium_size_cap"] = advisory_sizing.get("premium_size_cap")
 
     if global_risk["risk_trade_status"] == "WATCHLIST":
         return _finalize(base_payload, "WATCHLIST", global_risk["risk_message"])
@@ -4437,6 +4784,10 @@ def generate_trade(
         direction=direction,
         gamma_regime=market_state.get("gamma_regime"),
         vol_regime=market_state.get("vol_regime"),
+        option_efficiency_status=base_payload.get("option_efficiency_status"),
+        live_calibration_gate=live_calibration_gate,
+        live_directional_gate=live_directional_gate,
+        global_risk_state=base_payload.get("global_risk_state"),
     )
     base_payload["weak_data_circuit_breaker_shadow"] = weak_data_shadow
 

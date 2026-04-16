@@ -66,6 +66,36 @@ def test_suggest_regime_pack_returns_none_when_disabled(tmp_path):
     assert suggested is None
 
 
+def test_suggest_regime_pack_returns_shadow_candidate_when_shadow_mode_enabled(tmp_path):
+    map_path = tmp_path / "regime_auto_pack_map.json"
+    map_path.write_text(
+        json.dumps(
+            {
+                "enabled": False,
+                "shadow_enabled": True,
+                "fallback_pack": "baseline_v1",
+                "map": [
+                    {
+                        "gamma_regime": "POSITIVE_GAMMA",
+                        "vol_regime": "NORMAL_VOL",
+                        "pack": "experimental_v1",
+                        "priority": 10,
+                    }
+                ],
+            }
+        )
+    )
+
+    suggested = suggest_regime_pack(
+        "POSITIVE_GAMMA",
+        "NORMAL_VOL",
+        config_path=str(map_path),
+        evaluation_mode="shadow",
+    )
+
+    assert suggested == "experimental_v1"
+
+
 def test_evaluate_regime_pack_switch_requires_consecutive_hits():
     state = None
 
