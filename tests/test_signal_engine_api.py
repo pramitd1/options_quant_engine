@@ -359,6 +359,69 @@ def test_probability_overlay_shrinks_when_live_calibration_and_proxy_health_are_
     assert "proxy_heavy_structure" in stressed["probability_shrink_reasons"]
 
 
+def test_portfolio_concentration_context_ignores_watchlist_only_history(monkeypatch):
+    history = pd.DataFrame(
+        {
+            "symbol": ["NIFTY"] * 6,
+            "direction": ["CALL"] * 6,
+            "trade_status": ["WATCHLIST"] * 6,
+            "tradeability_score": [68, 70, 69, 71, 67, 72],
+        }
+    )
+
+    monkeypatch.setattr(signal_engine, "_load_recent_outcome_history_frame", lambda: (history, "test"))
+
+    context = signal_engine._compute_portfolio_concentration_context(
+        payload={"symbol": "NIFTY", "direction": "CALL"},
+        runtime_thresholds={
+            "enable_portfolio_concentration_guard": 1,
+            "portfolio_concentration_lookback_signals": 6,
+        },
+    )
+
+    assert context["recent_signal_count"] == 0
+    assert context["same_direction_count"] == 0
+    assert context["reason"] == "no_recent_executed_signals"
+
+
+def test_portfolio_concentration_context_ignores_stale_prior_day_trades(monkeypatch):
+    history = pd.DataFrame(
+        {
+            "symbol": ["NIFTY"] * 8,
+            "direction": ["CALL"] * 8,
+            "trade_status": ["TRADE", "TRADE", "WATCHLIST", "WATCHLIST", "WATCHLIST", "WATCHLIST", "WATCHLIST", "WATCHLIST"],
+            "signal_timestamp": [
+                "2026-04-16T10:00:00+05:30",
+                "2026-04-16T10:05:00+05:30",
+                "2026-04-17T09:20:00+05:30",
+                "2026-04-17T09:25:00+05:30",
+                "2026-04-17T09:30:00+05:30",
+                "2026-04-17T09:35:00+05:30",
+                "2026-04-17T09:40:00+05:30",
+                "2026-04-17T09:45:00+05:30",
+            ],
+        }
+    )
+
+    monkeypatch.setattr(signal_engine, "_load_recent_outcome_history_frame", lambda: (history, "test"))
+
+    context = signal_engine._compute_portfolio_concentration_context(
+        payload={
+            "symbol": "NIFTY",
+            "direction": "CALL",
+            "valuation_time": "2026-04-17T10:00:00+05:30",
+        },
+        runtime_thresholds={
+            "enable_portfolio_concentration_guard": 1,
+            "portfolio_concentration_lookback_signals": 6,
+        },
+    )
+
+    assert context["recent_signal_count"] == 0
+    assert context["same_direction_count"] == 0
+    assert context["reason"] == "no_recent_executed_signals"
+
+
 def test_trade_promotion_governor_blocks_risk_off_weak_provider_context():
     verdict = signal_engine._evaluate_trade_promotion_governor(
         payload={

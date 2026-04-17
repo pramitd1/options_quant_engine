@@ -224,6 +224,8 @@ def _compute_stickiness_gate_verdict(
     max_stickiness: float,
     max_imbalance: float,
     max_flip_lag_penalty: float,
+    recent_window_days: float = 5.0,
+    min_transition_gap_minutes: float = 10.0,
 ):
     """Compute a compact directional stickiness gate verdict with mtime caching."""
     if not dataset_path.exists():
@@ -233,7 +235,15 @@ def _compute_stickiness_gate_verdict(
         }
 
     mtime = dataset_path.stat().st_mtime
-    if cache_state.get("last_mtime") == mtime and cache_state.get("last_result") is not None:
+    cache_key = (
+        mtime,
+        float(max_stickiness),
+        float(max_imbalance),
+        float(max_flip_lag_penalty),
+        float(recent_window_days),
+        float(min_transition_gap_minutes),
+    )
+    if cache_state.get("cache_key") == cache_key and cache_state.get("last_result") is not None:
         return cache_state["last_result"]
 
     frame = _load_gate_dataset_csv(dataset_path)
@@ -251,9 +261,21 @@ def _compute_stickiness_gate_verdict(
             format="mixed",
         )
         working = working.sort_values("signal_timestamp")
+        valid_times = working["signal_timestamp"].dropna()
+        if not valid_times.empty and recent_window_days > 0:
+            cutoff = valid_times.max() - pd.Timedelta(days=float(recent_window_days))
+            recent_slice = working[working["signal_timestamp"] >= cutoff]
+            if not recent_slice.empty:
+                working = recent_slice
 
     working["dir"] = working["direction"].astype(str).str.upper()
     directional = working[working["dir"].isin(["CALL", "PUT"])].copy()
+    raw_directional_rows = int(len(directional))
+    if "signal_timestamp" in directional.columns and directional["signal_timestamp"].notna().any() and min_transition_gap_minutes > 0:
+        gap_minutes = directional["signal_timestamp"].diff().dt.total_seconds().div(60.0)
+        is_new_run = directional["dir"].ne(directional["dir"].shift(1)) | gap_minutes.gt(float(min_transition_gap_minutes)).fillna(True)
+        directional = directional.loc[is_new_run].copy()
+
     if len(directional) <= 1:
         result = {
             "ok": True,
@@ -263,8 +285,10 @@ def _compute_stickiness_gate_verdict(
             "flip_lag_penalty": None,
             "red_alerts": 0,
             "reason": "insufficient_directional_rows",
+            "directional_rows": int(len(directional)),
+            "raw_directional_rows": raw_directional_rows,
         }
-        cache_state["last_mtime"] = mtime
+        cache_state["cache_key"] = cache_key
         cache_state["last_result"] = result
         return result
 
@@ -319,8 +343,10 @@ def _compute_stickiness_gate_verdict(
         "imbalance_breached": imbalance_breached,
         "flip_lag_breached": flip_lag_breached,
         "red_alerts": red_alerts,
+        "directional_rows": int(len(directional)),
+        "raw_directional_rows": raw_directional_rows,
     }
-    cache_state["last_mtime"] = mtime
+    cache_state["cache_key"] = cache_key
     cache_state["last_result"] = result
     return result
 
@@ -334,6 +360,7 @@ def _compute_calibration_gate_verdict(
     max_brier: float,
     max_top_decile_overconfidence: float,
     min_completed_trades: int,
+    max_trade_staleness_days: float = 5.0,
 ):
     """Compute a compact live calibration-health verdict on recent completed trades."""
     if not dataset_path.exists():
@@ -350,6 +377,7 @@ def _compute_calibration_gate_verdict(
         float(max_brier),
         float(max_top_decile_overconfidence),
         int(min_completed_trades),
+        float(max_trade_staleness_days),
     )
     if cache_state.get("cache_key") == cache_key and cache_state.get("last_result") is not None:
         return cache_state["last_result"]
@@ -396,6 +424,26 @@ def _compute_calibration_gate_verdict(
         cache_state["cache_key"] = cache_key
         cache_state["last_result"] = result
         return result
+
+    latest_signal_ts = working["signal_timestamp"].dropna().max() if "signal_timestamp" in working.columns else None
+    latest_completed_ts = completed["signal_timestamp"].dropna().max() if "signal_timestamp" in completed.columns else None
+    if latest_signal_ts is not None and latest_completed_ts is not None and max_trade_staleness_days > 0:
+        staleness_days = (latest_signal_ts - latest_completed_ts).total_seconds() / 86400.0
+        if staleness_days > float(max_trade_staleness_days):
+            result = {
+                "ok": True,
+                "verdict": "CAUTION",
+                "completed_trades": int(len(completed)),
+                "ece": None,
+                "brier": None,
+                "top_decile_overconfidence": None,
+                "red_alerts": 0,
+                "reason": "stale_completed_trade_history",
+                "days_since_last_completed_trade": round(float(staleness_days), 2),
+            }
+            cache_state["cache_key"] = cache_key
+            cache_state["last_result"] = result
+            return result
 
     recent = completed.tail(max(int(lookback_trades), int(min_completed_trades))).copy()
     recent = recent[(recent["p"] >= 0.0) & (recent["p"] <= 1.0)]
@@ -1314,6 +1362,8 @@ def main():
     _stickiness_gate_max_stickiness = float(os.getenv("STICKINESS_GATE_MAX_STICKINESS", "0.90"))
     _stickiness_gate_max_imbalance = float(os.getenv("STICKINESS_GATE_MAX_IMBALANCE", "0.20"))
     _stickiness_gate_max_flip_lag_penalty = float(os.getenv("STICKINESS_GATE_MAX_FLIP_LAG_PENALTY", "0.35"))
+    _stickiness_gate_recent_window_days = float(os.getenv("STICKINESS_GATE_RECENT_WINDOW_DAYS", "5"))
+    _stickiness_gate_min_transition_gap_minutes = float(os.getenv("STICKINESS_GATE_MIN_TRANSITION_GAP_MINUTES", "10"))
     _calibration_gate_lookback_trades = int(float(os.getenv("CALIBRATION_GATE_LOOKBACK_TRADES", "250")))
     _calibration_gate_max_ece = float(os.getenv("CALIBRATION_GATE_MAX_ECE", "0.18"))
     _calibration_gate_max_brier = float(os.getenv("CALIBRATION_GATE_MAX_BRIER", "0.24"))
@@ -1321,6 +1371,7 @@ def main():
         os.getenv("CALIBRATION_GATE_MAX_TOP_DECILE_OVERCONFIDENCE", "0.20")
     )
     _calibration_gate_min_completed_trades = int(float(os.getenv("CALIBRATION_GATE_MIN_COMPLETED_TRADES", "80")))
+    _calibration_gate_max_trade_staleness_days = float(os.getenv("CALIBRATION_GATE_MAX_TRADE_STALENESS_DAYS", "5"))
 
     try:
         while True:
@@ -1332,6 +1383,7 @@ def main():
                 max_brier=_calibration_gate_max_brier,
                 max_top_decile_overconfidence=_calibration_gate_max_top_decile_overconfidence,
                 min_completed_trades=_calibration_gate_min_completed_trades,
+                max_trade_staleness_days=_calibration_gate_max_trade_staleness_days,
             )
             if calibration_gate.get("ok"):
                 ece = calibration_gate.get("ece")
@@ -1344,12 +1396,14 @@ def main():
                     if overconfidence is None
                     else f"{overconfidence:.4f}/{_calibration_gate_max_top_decile_overconfidence:.4f}"
                 )
+                calibration_reason = calibration_gate.get("reason")
+                reason_suffix = f", reason={calibration_reason}" if calibration_reason else ""
                 print(
                     "\n"
                     f"LIVE CALIBRATION GATE: {calibration_gate.get('verdict')} "
                     f"(red_alerts={calibration_gate.get('red_alerts')}/3, "
                     f"n={calibration_gate.get('completed_trades')}, "
-                    f"ece={ece_txt}, brier={brier_txt}, top_decile_overconfidence={overconfidence_txt})"
+                    f"ece={ece_txt}, brier={brier_txt}, top_decile_overconfidence={overconfidence_txt}{reason_suffix})"
                 )
             else:
                 print(f"\nLIVE CALIBRATION GATE: CAUTION (reason={calibration_gate.get('error', 'unknown')})")
@@ -1360,6 +1414,8 @@ def main():
                 max_stickiness=_stickiness_gate_max_stickiness,
                 max_imbalance=_stickiness_gate_max_imbalance,
                 max_flip_lag_penalty=_stickiness_gate_max_flip_lag_penalty,
+                recent_window_days=_stickiness_gate_recent_window_days,
+                min_transition_gap_minutes=_stickiness_gate_min_transition_gap_minutes,
             )
             if gate.get("ok"):
                 stickiness_1step = gate.get("stickiness_1step")
@@ -1388,11 +1444,16 @@ def main():
                     _stickiness_gate_max_flip_lag_penalty,
                     bool(gate.get("flip_lag_breached")),
                 )
+                direction_reason = gate.get("reason")
+                sample_suffix = ""
+                if gate.get("directional_rows") is not None and gate.get("raw_directional_rows") is not None:
+                    sample_suffix = f", samples={gate.get('directional_rows')}/{gate.get('raw_directional_rows')}"
+                reason_suffix = f", reason={direction_reason}" if direction_reason else ""
                 print(
                     "\n"
                     f"LIVE DIRECTIONAL GATE: {gate.get('verdict')} "
                     f"(red_alerts={gate.get('red_alerts')}/3, "
-                    f"stick={stickiness_txt}, imbalance={imbalance_txt}, flip_lag={lag_txt})"
+                    f"stick={stickiness_txt}, imbalance={imbalance_txt}, flip_lag={lag_txt}{sample_suffix}{reason_suffix})"
                 )
             else:
                 print(f"\nLIVE DIRECTIONAL GATE: CAUTION (reason={gate.get('error', 'unknown')})")

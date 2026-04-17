@@ -169,6 +169,8 @@ def _evaluate_provider_health_override_eligibility(
     ranked_strikes,
     days_to_expiry,
     blocked,
+    option_efficiency_score=None,
+    premium_efficiency_score=None,
 ):
     enable_override = bool(int(_safe_float(runtime_thresholds.get("enable_provider_health_degraded_override"), 0.0)))
     if not enable_override:
@@ -209,6 +211,29 @@ def _evaluate_provider_health_override_eligibility(
 
     strength_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_strength_buffer"), 12.0))
     composite_buffer = int(_safe_float(runtime_thresholds.get("provider_health_override_min_composite_buffer"), 8.0))
+
+    option_efficiency_value = _safe_float(option_efficiency_score, None)
+    premium_efficiency_value = _safe_float(premium_efficiency_score, None)
+    min_option_efficiency = _safe_float(runtime_thresholds.get("provider_health_override_min_option_efficiency_score"), 80.0)
+    min_premium_efficiency = _safe_float(runtime_thresholds.get("provider_health_override_min_premium_efficiency_score"), 70.0)
+    if option_efficiency_value is not None and option_efficiency_value < min_option_efficiency:
+        details["fail_reasons"].append("option_efficiency_below_floor")
+    if premium_efficiency_value is not None and premium_efficiency_value < min_premium_efficiency:
+        details["fail_reasons"].append("premium_efficiency_below_floor")
+
+    if (
+        not blocked
+        and data_quality_status_upper in {"GOOD", "STRONG"}
+        and option_efficiency_value is not None
+        and premium_efficiency_value is not None
+        and option_efficiency_value >= min_option_efficiency
+        and premium_efficiency_value >= min_premium_efficiency
+    ):
+        relaxed_strength_buffer = int(
+            _safe_float(runtime_thresholds.get("provider_health_override_high_efficiency_strength_buffer"), 0.0)
+        )
+        strength_buffer = min(strength_buffer, relaxed_strength_buffer)
+
     if adjusted_trade_strength < (min_trade_strength + strength_buffer):
         details["fail_reasons"].append("trade_strength_buffer_not_met")
     if runtime_composite_score < (min_composite_score + composite_buffer):
@@ -265,6 +290,8 @@ def _evaluate_provider_health_override_eligibility(
     details["dte"] = dte_value
     details["provider_health_summary"] = provider_health_summary_upper
     details["data_quality_status"] = data_quality_status_upper
+    details["option_efficiency_score"] = round(option_efficiency_value, 4) if option_efficiency_value is not None else None
+    details["premium_efficiency_score"] = round(premium_efficiency_value, 4) if premium_efficiency_value is not None else None
     details["eligible"] = not details["fail_reasons"]
     return details["eligible"], details
 
@@ -1296,6 +1323,36 @@ def _compute_portfolio_concentration_context(*, payload, runtime_thresholds):
         symbol_slice = frame[frame["symbol_norm"] == context["symbol"]]
         if not symbol_slice.empty:
             frame = symbol_slice
+
+    valuation_time = _coerce_timestamp((payload or {}).get("valuation_time") or (payload or {}).get("as_of"))
+    timestamp_col = None
+    for candidate in ["timestamp", "as_of", "valuation_time", "signal_timestamp"]:
+        if candidate in frame.columns:
+            timestamp_col = candidate
+            frame[candidate] = _pd.to_datetime(frame[candidate], errors="coerce")
+            break
+
+    if timestamp_col is not None:
+        if valuation_time is not None:
+            day_subset = frame[frame[timestamp_col].dt.date == valuation_time.date()]
+            if not day_subset.empty:
+                frame = day_subset
+        else:
+            valid_times = frame[timestamp_col].dropna()
+            if not valid_times.empty:
+                latest_date = valid_times.dt.date.max()
+                if latest_date is not None:
+                    latest_subset = frame[frame[timestamp_col].dt.date == latest_date]
+                    if not latest_subset.empty:
+                        frame = latest_subset
+
+    if "trade_status" in frame.columns:
+        active_statuses = {"TRADE", "EXECUTED", "FILLED", "OPEN", "DEGRADED_PROVIDER_TRADE"}
+        frame["trade_status_norm"] = frame["trade_status"].astype(str).str.upper().str.strip()
+        frame = frame[frame["trade_status_norm"].isin(active_statuses)]
+        if frame.empty:
+            context["reason"] = "no_recent_executed_signals"
+            return context
 
     lookback = max(3, int(_safe_float(runtime_thresholds.get("portfolio_concentration_lookback_signals"), 6.0)))
     recent = frame.tail(lookback).copy()
@@ -4810,6 +4867,8 @@ def generate_trade(
             ranked_strikes=ranked_strikes,
             days_to_expiry=days_to_expiry,
             blocked=blocked,
+            option_efficiency_score=base_payload.get("option_efficiency_score"),
+            premium_efficiency_score=base_payload.get("premium_efficiency_score"),
         )
 
     def _apply_provider_health_override(*, reason_label: str):

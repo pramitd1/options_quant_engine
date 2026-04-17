@@ -178,3 +178,62 @@ def test_runtime_defaults_allow_moderate_buffer_iv_only_override():
     assert allowed is True
     assert details["eligible"] is True
     assert details["fail_reasons"] == []
+
+
+def test_runtime_defaults_allow_clean_probe_override_near_base_threshold_when_efficiency_is_high():
+    allowed, details = _evaluate_provider_health_override_eligibility(
+        runtime_thresholds=get_trade_runtime_thresholds(),
+        provider_health_blocking_reasons=[],
+        provider_health_summary="WEAK",
+        data_quality_status="GOOD",
+        confirmation_status="STRONG_CONFIRMATION",
+        adjusted_trade_strength=62,
+        min_trade_strength=62,
+        runtime_composite_score=61,
+        min_composite_score=58,
+        option_chain_validation={"effective_priced_ratio": 0.82, "row_count": 40, "one_sided_quote_rows": 0},
+        provider_health={"core_one_sided_quote_ratio": 0.02},
+        ranked_strikes=[
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+        ],
+        days_to_expiry=0.4,
+        blocked=False,
+        option_efficiency_score=84,
+        premium_efficiency_score=76,
+    )
+
+    assert allowed is True
+    assert details["eligible"] is True
+    assert details["fail_reasons"] == []
+
+
+def test_probe_override_still_rejects_low_efficiency_setup():
+    allowed, details = _evaluate_provider_health_override_eligibility(
+        runtime_thresholds=get_trade_runtime_thresholds(),
+        provider_health_blocking_reasons=[],
+        provider_health_summary="WEAK",
+        data_quality_status="GOOD",
+        confirmation_status="STRONG_CONFIRMATION",
+        adjusted_trade_strength=62,
+        min_trade_strength=62,
+        runtime_composite_score=61,
+        min_composite_score=58,
+        option_chain_validation={"effective_priced_ratio": 0.82, "row_count": 40, "one_sided_quote_rows": 0},
+        provider_health={"core_one_sided_quote_ratio": 0.02},
+        ranked_strikes=[
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+            {"iv_is_proxy": False, "delta_is_proxy": False},
+        ],
+        days_to_expiry=0.4,
+        blocked=False,
+        option_efficiency_score=56,
+        premium_efficiency_score=52,
+    )
+
+    assert allowed is False
+    assert "option_efficiency_below_floor" in details["fail_reasons"]
