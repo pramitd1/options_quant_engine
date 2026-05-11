@@ -1536,6 +1536,7 @@ def _render_workstation(result: dict):
         if trade:
             _render_explainability_scorecard(trade)
             _render_signal_processing_diagnostics(trade)
+            _render_ta_visualization(trade, result.get("symbol", "NIFTY"))
         _render_regime_rollout_panel(result)
 
         top_left, top_right = st.columns(2)
@@ -2001,6 +2002,109 @@ def _inject_autorefresh(interval_seconds: int):
         height=0,
         width=0,
     )
+
+
+def _render_ta_visualization(trade: dict, symbol: str):
+    """
+    Render technical analysis charts and indicators for the current snapshot.
+
+    Args:
+        trade: Trade payload containing TA features
+        symbol: Underlying symbol for fetching historical data
+    """
+    ta_features = trade.get("ta_features", {})
+
+    if not ta_features or ta_features.get("ta_regime") == "insufficient_data":
+        st.info("Technical analysis data not available for visualization.")
+        return
+
+    st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
+    st.subheader("Technical Analysis")
+
+    # TA Summary Metrics
+    ta_cols = st.columns(4)
+    with ta_cols[0]:
+        direction = ta_features.get("ta_direction", "NO_SIGNAL")
+        color = "🟢" if direction == "CALL" else "🔴" if direction == "PUT" else "⚪"
+        st.metric("TA Direction", f"{color} {direction}")
+
+    with ta_cols[1]:
+        confidence = ta_features.get("ta_confidence", 0.0)
+        st.metric("TA Confidence", f"{confidence:.1%}")
+
+    with ta_cols[2]:
+        regime = ta_features.get("ta_regime", "unknown")
+        st.metric("TA Regime", regime.replace("_", " ").title())
+
+    with ta_cols[3]:
+        indicators = ta_features.get("indicators", {})
+        st.metric("Indicators", f"{len(indicators)} computed")
+
+    # Try to fetch and display historical price chart with TA overlays
+    try:
+        from data.historical_spot_fetcher import get_recent_spot_history
+        from features.ta_indicators import _compute_ta_indicators
+
+        # Fetch recent historical data
+        hist_df = get_recent_spot_history(symbol, days=30)
+
+        if not hist_df.empty and len(hist_df) >= 14:
+            # Compute TA indicators for visualization
+            spot_price = trade.get("spot", hist_df["close"].iloc[-1] if not hist_df.empty else 0)
+            indicators_df = _compute_ta_indicators(hist_df, spot_price)
+
+            # Create price chart with TA overlays
+            chart_cols = st.columns(2)
+
+            with chart_cols[0]:
+                st.markdown("**Price Chart with Moving Averages**")
+                price_data = pd.DataFrame({
+                    "Close": hist_df["close"],
+                    "SMA_20": indicators_df.get("sma_20", hist_df["close"]),
+                    "EMA_12": indicators_df.get("ema_12", hist_df["close"])
+                })
+                st.line_chart(price_data, use_container_width=True)
+
+            with chart_cols[1]:
+                st.markdown("**MACD Indicator**")
+                if "macd" in indicators_df and "macd_signal" in indicators_df:
+                    macd_data = pd.DataFrame({
+                        "MACD": indicators_df["macd"],
+                        "Signal": indicators_df["macd_signal"],
+                        "Histogram": indicators_df.get("macd_hist", 0)
+                    })
+                    st.line_chart(macd_data, use_container_width=True)
+
+            # RSI and Bollinger Bands
+            indicator_cols = st.columns(2)
+
+            with indicator_cols[0]:
+                st.markdown("**RSI (Relative Strength Index)**")
+                if "rsi" in indicators_df:
+                    rsi_data = pd.DataFrame({"RSI": indicators_df["rsi"]})
+                    st.line_chart(rsi_data, use_container_width=True)
+                    # Add RSI levels
+                    st.caption("Overbought: >70 | Oversold: <30")
+
+            with indicator_cols[1]:
+                st.markdown("**Bollinger Bands**")
+                if all(k in indicators_df for k in ["bb_upper", "bb_middle", "bb_lower"]):
+                    bb_data = pd.DataFrame({
+                        "Upper": indicators_df["bb_upper"],
+                        "Middle": indicators_df["bb_middle"],
+                        "Lower": indicators_df["bb_lower"],
+                        "Close": hist_df["close"]
+                    })
+                    st.line_chart(bb_data, use_container_width=True)
+
+        else:
+            st.caption("Insufficient historical data for TA charts (need at least 14 days).")
+
+    except Exception as e:
+        st.warning(f"Could not load TA charts: {str(e)}")
+        st.caption("TA signals are still computed and integrated into decision making.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def main():

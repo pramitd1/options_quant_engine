@@ -3158,6 +3158,11 @@ def generate_trade(
     # This allows the direction decision to be sensitive to elevated volatility environments
     market_state["volatility_shock_score"] = _grf.get("volatility_shock_score", 0.0)
 
+    # Compute TA features for signal integration
+    from features.ta_indicators import get_ta_features_for_trade
+    ta_features = get_ta_features_for_trade(symbol, spot)
+    market_state["ta_features"] = ta_features
+
     probability_state = _compute_probability_state(
         df,
         spot=spot,
@@ -3706,6 +3711,9 @@ def generate_trade(
         "liquidity_vacuum_state": market_state["vacuum_state"],
         "dealer_liquidity_map": market_state["dealer_liquidity_map"],
         "market_state_timings": market_state.get("market_state_timings"),
+        "ta_features": market_state.get("ta_features", {}),
+        # Flatten TA features for signal confidence computation
+        **market_state.get("ta_features", {}),
         "rule_move_probability": probability_state["rule_move_probability"],
         "ml_move_probability": probability_state["ml_move_probability"],
         "hybrid_move_probability": probability_state["hybrid_move_probability"],

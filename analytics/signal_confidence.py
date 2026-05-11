@@ -220,6 +220,30 @@ def _option_efficiency_component(trade: dict) -> float:
     return _clip(component * reliability, 0, 100)
 
 
+def _ta_component(trade: dict) -> float:
+    """Derived from technical analysis features."""
+    ta_direction = str(trade.get("ta_direction") or "").upper().strip()
+    ta_confidence = _safe_float(trade.get("ta_confidence"), 0.0)
+
+    # Base score from TA confidence
+    base_score = ta_confidence * 100.0
+
+    # Boost for strong directional alignment
+    if ta_direction in {"CALL", "PUT"}:
+        direction_boost = 10  # Small boost for having a clear TA signal
+        base_score = min(base_score + direction_boost, 100.0)
+
+    # Penalize conflicting TA regimes
+    ta_regime = str(trade.get("ta_regime") or "").lower().strip()
+    if ta_regime in {"mixed_signals", "error", "insufficient_data"}:
+        base_score *= 0.7  # Reduce confidence for unreliable TA
+
+    component = _clip(base_score, 0, 100)
+    # TA reliability is lower since it's supplementary
+    reliability = _blend_feature_reliability(trade, flow=0.1, vol_surface=0.3, macro=0.3, liquidity=0.3)
+    return _clip(component * reliability, 0, 100)
+
+
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
@@ -309,11 +333,12 @@ def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[
 # ---------------------------------------------------------------------------
 
 _WEIGHTS = {
-    "signal_strength": 0.30,
-    "confirmation": 0.25,
-    "market_stability": 0.20,
-    "data_integrity": 0.15,
+    "signal_strength": 0.25,
+    "confirmation": 0.20,
+    "market_stability": 0.18,
+    "data_integrity": 0.12,
     "option_efficiency": 0.10,
+    "ta": 0.15,  # Technical analysis component
 }
 
 
@@ -341,6 +366,7 @@ def compute_signal_confidence(trade: dict) -> dict:
             "market_stability_component": 0,
             "data_integrity_component": 0,
             "option_efficiency_component": 0,
+            "ta_component": 0,
             "confidence_recalibration_guards": [],
         }
 
@@ -350,6 +376,7 @@ def compute_signal_confidence(trade: dict) -> dict:
         "market_stability_component": round(_market_stability_component(trade), 2),
         "data_integrity_component": round(_data_integrity_component(trade), 2),
         "option_efficiency_component": round(_option_efficiency_component(trade), 2),
+        "ta_component": round(_ta_component(trade), 2),
     }
 
     raw = (
@@ -358,6 +385,7 @@ def compute_signal_confidence(trade: dict) -> dict:
         + _WEIGHTS["market_stability"] * components["market_stability_component"]
         + _WEIGHTS["data_integrity"] * components["data_integrity_component"]
         + _WEIGHTS["option_efficiency"] * components["option_efficiency_component"]
+        + _WEIGHTS["ta"] * components["ta_component"]
     )
     score = round(_clip(raw, 0, 100), 2)
     score, applied_guards, cap_was_applied = _apply_recalibration_guards(trade, score)
