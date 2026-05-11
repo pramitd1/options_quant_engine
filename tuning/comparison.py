@@ -289,7 +289,7 @@ def build_candidate_vs_production_report(
 
     report = {
         "report_type": "tuning_recommendation_report",
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
         "current_production_pack_name": production_pack_name,
         "candidate_parameter_pack_name": candidate_pack_name,
         "evaluation_window": candidate_snapshot.get("evaluation_window") or production_snapshot.get("evaluation_window"),

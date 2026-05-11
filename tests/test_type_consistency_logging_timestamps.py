@@ -218,7 +218,7 @@ class TestEdgeCasesTypeHandling:
             'quantity': pd.Series([], dtype=int),
         })
         
-        assert df['symbol'].dtype == object
+        assert pd.api.types.is_string_dtype(df['symbol'])
         assert df['price'].dtype == float
         assert df['quantity'].dtype == int
 

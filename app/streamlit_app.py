@@ -511,7 +511,7 @@ def _list_replay_files(replay_dir: str, symbol: str, kind: str, source_label: st
     symbol = (symbol or "").strip().upper()
     if kind == "spot":
         pattern = f"{symbol}_spot_snapshot_*.json"
-        return sorted(str(path) for path in replay_path.glob(pattern)), []
+        return sorted(str(path) for path in replay_path.rglob(pattern)), []
     else:
         return list_replay_chain_snapshots(
             symbol,
@@ -546,7 +546,7 @@ def _list_replay_source_labels(replay_dir: str, symbol: str) -> list[str]:
         return ["ANY"]
     symbol = (symbol or "").strip().upper()
     labels: set[str] = set()
-    for path in replay_path.glob(f"{symbol}_*_option_chain_snapshot_*"):
+    for path in replay_path.rglob(f"{symbol}_*_option_chain_snapshot_*"):
         name = path.name
         # Filename pattern: {SYMBOL}_{SOURCE}_option_chain_snapshot_...
         remainder = name[len(symbol) + 1:]  # strip "{SYMBOL}_"
@@ -555,6 +555,26 @@ def _list_replay_source_labels(replay_dir: str, symbol: str) -> list[str]:
             labels.add(remainder[:idx])
     ordered = sorted(labels)
     return ["ANY"] + ordered if ordered else ["ANY"]
+
+
+def _list_replay_symbols(replay_dir: str) -> list[str]:
+    """Return symbols detected from replay option-chain snapshot filenames."""
+    replay_path = Path(replay_dir)
+    if not replay_path.is_dir():
+        return []
+
+    symbols: set[str] = set()
+    for path in replay_path.rglob("*_option_chain_snapshot_*"):
+        name = path.name
+        marker = "_option_chain_snapshot_"
+        idx = name.find(marker)
+        if idx <= 0:
+            continue
+        prefix = name[:idx]
+        symbol, _, _source = prefix.partition("_")
+        if symbol:
+            symbols.add(symbol.strip().upper())
+    return sorted(symbols)
 
 
 def _extract_snapshot_timestamp(path_str: str):
@@ -2023,12 +2043,11 @@ def main():
 
         if mode == "LIVE":
             st.caption("Live broker/public-data snapshot")
-            live_source = st.session_state.get("control_source", DEFAULT_DATA_SOURCE)
+            live_source = st.session_state.get("control_live_source", DEFAULT_DATA_SOURCE)
             if live_source not in DATA_SOURCE_OPTIONS:
                 live_source = DEFAULT_DATA_SOURCE
-                st.session_state["control_source"] = live_source
-            source_index = DATA_SOURCE_OPTIONS.index(live_source)
-            source = st.selectbox("Data Source", DATA_SOURCE_OPTIONS, index=source_index, key="control_source")
+                st.session_state["control_live_source"] = live_source
+            source = st.selectbox("Data Source", DATA_SOURCE_OPTIONS, key="control_live_source")
             save_live_snapshots = st.checkbox("Save live snapshots", key="control_save_live_snapshots")
             auto_refresh = st.checkbox("Auto-refresh live view", key="control_auto_refresh")
             if auto_refresh:
@@ -2039,12 +2058,24 @@ def main():
             st.caption("Replay from saved market snapshots")
             replay_dir_options = _list_replay_directories()
             saved_replay_dir = st.session_state.get("control_replay_dir", "debug_samples")
-            replay_dir_index = replay_dir_options.index(saved_replay_dir) if saved_replay_dir in replay_dir_options else 0
-            replay_dir = st.selectbox("Replay Directory", replay_dir_options, index=replay_dir_index, key="control_replay_dir")
+            if saved_replay_dir not in replay_dir_options:
+                st.session_state["control_replay_dir"] = replay_dir_options[0]
+            replay_dir = st.selectbox("Replay Directory", replay_dir_options, key="control_replay_dir")
             source_labels = _list_replay_source_labels(replay_dir, symbol)
-            saved_source = st.session_state.get("control_source", source_labels[0] if source_labels else "ANY")
-            source_index = source_labels.index(saved_source) if saved_source in source_labels else 0
-            source = st.selectbox("Replay Source Label", source_labels, index=source_index, key="control_source")
+            saved_replay_source = st.session_state.get("control_replay_source", source_labels[0] if source_labels else "ANY")
+            if saved_replay_source not in source_labels:
+                st.session_state["control_replay_source"] = source_labels[0] if source_labels else "ANY"
+            source = st.selectbox("Replay Source Label", source_labels, key="control_replay_source")
+
+            replay_symbols = _list_replay_symbols(replay_dir)
+            if replay_symbols and symbol not in replay_symbols:
+                available = replay_symbols[:8]
+                extra = len(replay_symbols) - len(available)
+                more_text = f", and {extra} more" if extra > 0 else ""
+                st.warning(
+                    f"No replay snapshots were found for symbol {symbol} in '{replay_dir}'. "
+                    f"Available symbols: {', '.join(available)}{more_text}"
+                )
             save_live_snapshots = False
 
         st.divider()

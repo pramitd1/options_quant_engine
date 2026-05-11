@@ -73,7 +73,7 @@ macOS / Linux:
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
@@ -82,7 +82,7 @@ Windows PowerShell:
 ```powershell
 py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
@@ -91,7 +91,7 @@ Windows Command Prompt:
 ```bat
 py -3.11 -m venv .venv
 .venv\Scripts\activate.bat
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 copy .env.example .env
 ```
 
@@ -104,7 +104,7 @@ Notes:
   the repo has primarily been developed on macOS
 - on Windows, once the virtual environment is activated, the Python commands
   are usually the same, for example `python main.py` and
-  `streamlit run app/streamlit_app.py`
+  `python -m streamlit run app/streamlit_app.py`
 - if PowerShell blocks activation, you may need:
 
 ```powershell
@@ -120,7 +120,39 @@ python main.py
 ### Streamlit App
 
 ```bash
-streamlit run app/streamlit_app.py
+python -m streamlit run app/streamlit_app.py
+```
+
+If your shell resolves to system Python instead of the repo virtual environment, use an explicit path:
+
+```bash
+.venv/bin/python -m streamlit run app/streamlit_app.py
+```
+
+Common launch pitfalls:
+
+- use `app/streamlit_app.py` (not `streamlit_app.py` from repo root)
+- use `python -m streamlit ...` (not `python streamlit ...`)
+- if you see `No module named streamlit`, install deps in the same interpreter used to launch:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Troubleshooting:
+
+- if Streamlit exits with code `143`, the process was terminated externally (for example Ctrl+C, terminal cleanup, or a kill signal), not a missing-package failure
+- verify interpreter selection when multiple Python versions are installed:
+
+```bash
+python3 --version
+.venv/bin/python --version
+```
+
+- on this repo, prefer launching with the venv-qualified interpreter to avoid system-Python fallback:
+
+```bash
+.venv/bin/python -m streamlit run app/streamlit_app.py
 ```
 
 **Structure Tab Visualization:**
@@ -192,7 +224,7 @@ This is the fastest practical onboarding path for a new operator.
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 cp .env.example .env
 python main.py
 ```

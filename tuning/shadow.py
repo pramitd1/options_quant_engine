@@ -201,7 +201,7 @@ def compare_shadow_trade_outputs(
     evaluation_timestamp = (
         (baseline_payload or {}).get("spot_summary", {}).get("timestamp")
         or (shadow_payload or {}).get("spot_summary", {}).get("timestamp")
-        or pd.Timestamp.utcnow().isoformat()
+        or pd.Timestamp.now(tz="UTC").isoformat()
     )
 
     baseline_strength = _safe_float(baseline_trade.get("trade_strength"), 0.0)

@@ -152,7 +152,7 @@ def _candidate_pack_name(production_pack_name: str, explicit_name: str | None = 
     """
     if explicit_name:
         return explicit_name
-    stamp = pd.Timestamp.utcnow().strftime("%Y%m%dT%H%M%SZ").lower()
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ").lower()
     return f"{production_pack_name}__candidate__{stamp}"
 
 
@@ -272,7 +272,7 @@ def materialize_candidate_parameter_pack(
         "metadata": {
             "state": "candidate",
             "parent_pack": parent_pack_name,
-            "generated_at": pd.Timestamp.utcnow().isoformat(),
+            "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
             **dict(metadata or {}),
         },
         "overrides": dict(overrides),
@@ -463,7 +463,7 @@ def run_controlled_tuning_workflow(
 
     append_promotion_event(
         PromotionLedgerEvent(
-            timestamp=pd.Timestamp.utcnow().isoformat(),
+            timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
             event_type="candidate_recommendation_created",
             parameter_pack_name=candidate_pack_name,
             previous_state=None,

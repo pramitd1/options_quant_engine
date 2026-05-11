@@ -731,7 +731,7 @@ def build_signal_evaluation_summary(
     return _sanitize_value(
         {
         "report_type": "signal_evaluation_summary",
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
         "production_pack_name": production_pack_name,
         "dataset_path": dataset_path,
         "evaluation_period": _evaluation_period(enriched),
@@ -1031,7 +1031,7 @@ def write_signal_evaluation_report(
         top_n=top_n,
     )
 
-    stamp = pd.Timestamp.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    stamp = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%SZ")
     report_stem = report_name or f"signal_evaluation_{stamp}"
     report_dir = Path(output_dir) / report_stem
     report_dir.mkdir(parents=True, exist_ok=True)

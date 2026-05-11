@@ -357,7 +357,7 @@ class ICICIBreezeOptionChain:
         if pd.isna(expiry_ts):
             return None
 
-        now_ts = pd.Timestamp.utcnow()
+        now_ts = pd.Timestamp.now(tz="UTC")
         if expiry_ts.tzinfo is None:
             expiry_ts = expiry_ts.tz_localize("UTC")
 

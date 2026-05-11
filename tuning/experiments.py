@@ -203,7 +203,7 @@ def run_parameter_experiment(
     result = ExperimentResult(
         experiment_id=f"exp_{uuid.uuid4().hex[:12]}",
         parameter_pack_name=parameter_pack_name,
-        timestamp=pd.Timestamp.utcnow().isoformat(),
+        timestamp=pd.Timestamp.now(tz="UTC").isoformat(),
         evaluation_date_range=_evaluation_date_range(frame),
         sample_count=int(len(frame)),
         objective_metrics={

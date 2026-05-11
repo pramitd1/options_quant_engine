@@ -110,13 +110,13 @@ def _coerce_valuation_timestamp(value):
         Invalid or missing timestamps fall back to the current UTC time so the helper stays usable even when providers omit explicit valuation metadata.
     """
     if value is None:
-        return pd.Timestamp.utcnow()
+        return pd.Timestamp.now(tz="UTC")
 
     parsed = pd.to_datetime(value, errors="coerce", utc=True)
     if pd.isna(parsed):
         parsed = pd.to_datetime(value, errors="coerce", dayfirst=True, utc=True)
     if pd.isna(parsed):
-        return pd.Timestamp.utcnow()
+        return pd.Timestamp.now(tz="UTC")
     return parsed
 
 

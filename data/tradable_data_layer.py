@@ -80,7 +80,7 @@ def evaluate_tradable_data_layer(option_chain: pd.DataFrame | None) -> dict[str,
     freshness_status = "UNKNOWN"
     max_age_seconds = None
     if not quote_time.empty:
-        age_seconds = (pd.Timestamp.utcnow(tz="UTC") - quote_time).dt.total_seconds()
+        age_seconds = (pd.Timestamp.now(tz="UTC") - quote_time).dt.total_seconds()
         max_age_seconds = float(age_seconds.max()) if not age_seconds.dropna().empty else None
         stale_cutoff_seconds = float(get_parameter_value("tradable_data_layer.quote.stale_seconds", 180.0))
         stale_mask = age_seconds > stale_cutoff_seconds

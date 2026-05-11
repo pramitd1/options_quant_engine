@@ -122,7 +122,7 @@ def _parse_time_to_expiry_years(expiry_value=None, valuation_time=None, tte=None
 
     valuation_ts = pd.to_datetime(valuation_time, errors="coerce", utc=True)
     if pd.isna(valuation_ts):
-        valuation_ts = pd.Timestamp.utcnow()
+        valuation_ts = pd.Timestamp.now(tz="UTC")
 
     time_years = (expiry_ts - valuation_ts).total_seconds() / (365.0 * 24.0 * 3600.0)
     return max(float(time_years), cfg.minimum_time_to_expiry_years), "PARSED_EXPIRY"
