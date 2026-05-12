@@ -111,3 +111,31 @@ def test_feature_reliability_weights_reduce_confidence_components():
     assert fragile["signal_strength_component"] < strong["signal_strength_component"]
     assert fragile["market_stability_component"] < strong["market_stability_component"]
     assert fragile["option_efficiency_component"] < strong["option_efficiency_component"]
+
+
+def test_directional_bias_correction_penalizes_conflicting_put_pressure_for_call_signals():
+    trade = {
+        "trade_status": "TRADE",
+        "direction": "CALL",
+        "trade_strength": 88,
+        "hybrid_move_probability": 0.76,
+        "confirmation_status": "STRONG_CONFIRMATION",
+        "confirmation_breakdown": {"flow": 1.0, "dealer": 1.0},
+        "macro_regime": "RISK_ON",
+        "global_risk_state": "LOW_RISK",
+        "market_volatility_shock_score": 8,
+        "gamma_vol_acceleration_score_normalized": 14,
+        "data_quality_status": "GOOD",
+        "provider_health_summary": "GOOD",
+        "option_efficiency_score": 84,
+        "premium_efficiency_score": 82,
+        "net_oi_change_bias": 120.0,
+        "dealer_hedging_bias": "DOWNSIDE_ACCELERATION",
+        "ta_direction": "PUT",
+    }
+
+    result = compute_signal_confidence(trade)
+
+    assert result["directional_bias_component"] < 50.0
+    assert result["directional_bias_multiplier"] < 1.0
+    assert "directional_bias_correction" in result["confidence_recalibration_guards"]

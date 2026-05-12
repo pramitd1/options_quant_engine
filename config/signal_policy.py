@@ -104,7 +104,7 @@ TRADE_RUNTIME_THRESHOLDS = {
     "medium_signal_threshold": 60,
     "weak_signal_threshold": 40,
     "expansion_bias_threshold": 75,
-    "directional_bias_threshold": 55,
+    "directional_bias_threshold": 60,
     "neutral_flow_probability_floor": 0.58,
     "wall_proximity_buffer": 50,
     "max_intraday_hold_minutes": 90,
@@ -407,6 +407,44 @@ TRADE_RUNTIME_THRESHOLDS = {
     "regime_neutral_gamma_composite_delta": 0,
     "regime_neutral_gamma_strength_delta": 0,
     "regime_neutral_gamma_position_size_mult": 1.0,
+    # ============================================================================
+    # HORIZON-DEPENDENT POSITION LADDER & EXIT STRATEGY (Phase 1 Improvements)
+    # ============================================================================
+    # Hard exit at 120m to capture peak alpha (+5.37 bps) before mean-reversion
+    "enable_horizon_dependent_sizing": 1,
+    "horizon_peak_alpha_minutes": 120,  # Optimal exit time based on alpha decay analysis
+    "horizon_60m_position_size_mult": 1.00,  # Full size for first 60m
+    "horizon_90m_position_size_mult": 0.75,  # Reduce to 75% at 90m
+    "horizon_120m_position_size_mult": 0.50,  # Reduce to 50% at 120m (capture peak)
+    "horizon_150m_position_size_mult": 0.25,  # Minimal by 150m
+    "horizon_close_position_size_mult": 0.05,  # Near-zero for final 30 minutes
+    # Close-time de-risking: aggressively reduce size in final 30 minutes
+    "enable_close_time_derisk": 1,
+    "close_time_derisk_window_minutes": 30,
+    "close_time_derisk_size_reduction_pct": 95,  # Reduce by 95% in final 30m
+    # Regime-aware macro sizing adjustments (Mar-May 2026 tuning)
+    "enable_regime_aware_position_sizing": 1,
+    "regime_normal_vol_multiplier": 1.00,  # Base case
+    "regime_vol_expansion_multiplier": 0.50,  # Halve size in vol expansion (hostile)
+    "regime_low_vol_multiplier": 0.75,  # Reduce in low vol (limited movement)
+    "regime_risk_off_vol_expansion_multiplier": 0.35,  # Most hostile condition
+    "regime_positive_gamma_multiplier": 1.15,  # Boost in favorable gamma regime
+    "regime_negative_gamma_multiplier": 0.65,  # Reduce in negative gamma regime
+    # Daily readiness: require minimum signal quality before trading
+    "enable_daily_readiness_checks": 1,
+    "daily_min_qualified_signals": 50,  # Require 50 trade-qualified signals
+    "daily_min_composite_score_75th_pctl": 60,  # 75th percentile score ≥ 60
+    "daily_min_suppression_rate_pct": 85,  # Flag if suppression rate > 85%
+    # Directional bias correction: boost PUT signals to reduce CALL concentration
+    "enable_directional_bias_correction": 1,
+    "put_signal_confidence_boost": 4.0,  # Add 4 points to PUT confidence
+    "put_signal_strength_boost": 3.0,  # Add 3 points to PUT strength
+    "call_put_ratio_target": 0.60,  # Target 60/40 split instead of 69/31
+    # Gate tiering: replace hard suppression with sized-down trading
+    "enable_tiered_gate_suppression": 1,
+    "gate_tier_hard_suppress_threshold": 0.95,  # Only suppress if >95% probability
+    "gate_tier_caution_size_cap": 0.40,  # Trade at 40% size for CAUTION gates
+    "gate_tier_warning_size_cap": 0.70,  # Trade at 70% size for WARNING gates
 }
 
 CONFIRMATION_FILTER_CONFIG = {

@@ -17,6 +17,7 @@ Downstream Usage:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from config.settings import (
@@ -49,6 +50,7 @@ from engine.trading_support import (
     normalize_option_chain,
 )
 from analytics.signal_confidence import compute_signal_confidence
+from analytics.mean_reversion_detector import get_mean_reversion_features_for_trade
 from analytics.probability_calibration import calibrate_probability
 from macro.engine_adjustments import compute_macro_news_adjustments
 from risk import (
@@ -1250,7 +1252,46 @@ def _evaluate_trade_promotion_governor(*, payload, runtime_thresholds):
     if ranked_strike_proxy_ratio > _clip(_safe_float(runtime_thresholds.get("trade_promotion_proxy_ratio_max"), 0.50), 0.0, 1.0):
         replay_required_reasons.append("proxy_ratio_above_promotion_cap")
 
+    # Close-session de-risking: downgrade or block signals near market close if confidence is not strong.
+    if bool(int(_safe_float(runtime_thresholds.get("enable_close_time_derisk"), 1.0))):
+        close_window = int(_safe_float(runtime_thresholds.get("close_time_derisk_window_minutes"), 50))
+        signal_time = _coerce_timestamp(payload.get("signal_timestamp") or payload.get("valuation_time") or payload.get("as_of"))
+        now_time = _coerce_timestamp(payload.get("as_of") or payload.get("valuation_time")) or datetime.utcnow()
+        if signal_time is not None and now_time is not None:
+            signal_age_minutes = max(0, int((now_time - signal_time).total_seconds() / 60))
+            if signal_age_minutes >= max(0, 390 - close_window):
+                close_strength_threshold = min_trade_strength + 10
+                close_probability_threshold = min_probability + 0.08
+                if trade_strength < close_strength_threshold or success_probability < close_probability_threshold:
+                    replay_required_reasons.append("close_time_derisk")
+
     if replay_required_reasons:
+        tier_enabled = bool(int(_safe_float(runtime_thresholds.get("enable_tiered_gate_suppression"), 1.0)))
+        tier_threshold = _clip(_safe_float(runtime_thresholds.get("gate_tier_hard_suppress_threshold"), 0.95), 0.0, 1.0)
+        tier_warning_size_cap = _clip(_safe_float(runtime_thresholds.get("gate_tier_warning_size_cap"), 0.70), 0.0, 1.0)
+        tier_caution_size_cap = _clip(_safe_float(runtime_thresholds.get("gate_tier_caution_size_cap"), 0.40), 0.0, 1.0)
+        tierable_reasons = {
+            "trade_strength_near_gate",
+            "runtime_composite_near_gate",
+            "success_probability_below_promotion_floor",
+            "confirmation_not_strong_enough",
+            "early_reversal_candidate_requires_wait",
+            "fast_reversal_warning_requires_wait_for_confirmation",
+            "close_time_derisk",
+            "proxy_ratio_above_promotion_cap",
+        }
+        if tier_enabled and success_probability < tier_threshold and all(reason in tierable_reasons for reason in replay_required_reasons):
+            return {
+                "enabled": True,
+                "verdict": "CAUTION",
+                "reason": "Trade promotion governor: tiered suppression converts block into reduced-size promotion",
+                "promotion_state": "PROMOTE_WITH_WARNING",
+                "replay_validation_required": False,
+                "reasons": replay_required_reasons,
+                "size_cap": tier_warning_size_cap,
+                "hold_cap_minutes": hold_cap_minutes,
+            }
+
         return {
             "enabled": True,
             "verdict": "BLOCK",
@@ -1433,6 +1474,99 @@ def _apply_intraday_exit_bias(
     return recommended, hold_max, reasons
 
 
+def _compute_horizon_dependent_multiplier(payload, runtime_thresholds):
+    """
+    Compute horizon-dependent position sizing multiplier based on signal age.
+
+    Uses reversal_age as a proxy for elapsed minutes when direct timing is unavailable.
+    """
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_horizon_dependent_sizing"), 1.0))):
+        return 1.0
+
+    signal_age_min = _safe_float(payload.get("signal_age_minutes"), 0.0)
+    if signal_age_min <= 0:
+        reversal_age = _safe_float(payload.get("reversal_age"), 0.0)
+        signal_age_min = reversal_age * _safe_float(runtime_thresholds.get("time_decay_minutes_per_snapshot"), 5.0)
+
+    if signal_age_min <= 60:
+        return _safe_float(runtime_thresholds.get("horizon_60m_position_size_mult"), 1.00)
+
+    if signal_age_min <= 90:
+        mult_60 = _safe_float(runtime_thresholds.get("horizon_60m_position_size_mult"), 1.00)
+        mult_90 = _safe_float(runtime_thresholds.get("horizon_90m_position_size_mult"), 0.75)
+        pct = (signal_age_min - 60) / 30.0
+        return float(_clip(mult_60 + (mult_90 - mult_60) * pct, 0.0, 1.0))
+
+    if signal_age_min <= 120:
+        mult_90 = _safe_float(runtime_thresholds.get("horizon_90m_position_size_mult"), 0.75)
+        mult_120 = _safe_float(runtime_thresholds.get("horizon_120m_position_size_mult"), 0.50)
+        pct = (signal_age_min - 90) / 30.0
+        return float(_clip(mult_90 + (mult_120 - mult_90) * pct, 0.0, 1.0))
+
+    if signal_age_min <= 150:
+        mult_120 = _safe_float(runtime_thresholds.get("horizon_120m_position_size_mult"), 0.50)
+        mult_150 = _safe_float(runtime_thresholds.get("horizon_150m_position_size_mult"), 0.25)
+        pct = (signal_age_min - 120) / 30.0
+        return float(_clip(mult_120 + (mult_150 - mult_120) * pct, 0.0, 1.0))
+
+    return _safe_float(runtime_thresholds.get("horizon_close_position_size_mult"), 0.05)
+
+
+def _compute_regime_aware_position_multiplier(
+    gamma_regime,
+    vol_regime,
+    macro_regime,
+    runtime_thresholds,
+):
+    """
+    Compute regime-aware sizing multiplier to reduce exposure in hostile market regimes.
+    """
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_regime_aware_position_sizing"), 1.0))):
+        return 1.0
+
+    gamma_upper = canonical_gamma_regime(gamma_regime)
+    vol_upper = _canonical_vol_regime(vol_regime)
+    macro_upper = _as_upper(macro_regime or "")
+
+    mult = 1.0
+    if gamma_upper == "POSITIVE_GAMMA":
+        mult *= _safe_float(runtime_thresholds.get("regime_positive_gamma_multiplier"), 1.15)
+    elif gamma_upper == "NEGATIVE_GAMMA":
+        mult *= _safe_float(runtime_thresholds.get("regime_negative_gamma_multiplier"), 0.65)
+
+    if vol_upper == "VOL_EXPANSION":
+        if macro_upper == "RISK_OFF":
+            mult *= _safe_float(runtime_thresholds.get("regime_risk_off_vol_expansion_multiplier"), 0.35)
+        else:
+            mult *= _safe_float(runtime_thresholds.get("regime_vol_expansion_multiplier"), 0.50)
+    elif vol_upper == "LOW_VOL":
+        mult *= _safe_float(runtime_thresholds.get("regime_low_vol_multiplier"), 0.75)
+    else:
+        mult *= _safe_float(runtime_thresholds.get("regime_normal_vol_multiplier"), 1.00)
+
+    return float(_clip(mult, 0.1, 1.5))
+
+
+def _compute_close_time_derisk_multiplier(payload, runtime_thresholds):
+    """
+    Apply final-session de-risking by shrinking position size near market close.
+    """
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_close_time_derisk"), 1.0))):
+        return 1.0
+
+    signal_age_min = _safe_float(payload.get("signal_age_minutes"), 0.0)
+    if signal_age_min <= 0:
+        reversal_age = _safe_float(payload.get("reversal_age"), 0.0)
+        signal_age_min = reversal_age * _safe_float(runtime_thresholds.get("time_decay_minutes_per_snapshot"), 5.0)
+
+    derisk_window = _safe_float(runtime_thresholds.get("close_time_derisk_window_minutes"), 30.0)
+    if signal_age_min >= max(0.0, 390.0 - derisk_window):
+        derisk_pct = _safe_float(runtime_thresholds.get("close_time_derisk_size_reduction_pct"), 95.0)
+        return float(_clip(1.0 - (derisk_pct / 100.0), 0.0, 1.0))
+
+    return 1.0
+
+
 def _derive_advisory_size_recommendation(
     payload,
     *,
@@ -1448,6 +1582,8 @@ def _derive_advisory_size_recommendation(
     runtime_thresholds,
     regime_thresholds,
     gamma_regime,
+    vol_regime=None,
+    macro_regime=None,
 ):
     """Compute sizing as a pure recommendation without mutating the signal payload."""
     payload = payload if isinstance(payload, dict) else {}
@@ -1481,6 +1617,11 @@ def _derive_advisory_size_recommendation(
 
     if expansion_mode and expansion_direction == direction:
         risk_size_cap *= _safe_float(runtime_thresholds.get("expansion_mode_size_mult"), 1.10)
+
+    horizon_mult = _compute_horizon_dependent_multiplier(payload, runtime_thresholds)
+    regime_mult = _compute_regime_aware_position_multiplier(gamma_regime, vol_regime, macro_regime, runtime_thresholds)
+    close_time_mult = _compute_close_time_derisk_multiplier(payload, runtime_thresholds)
+    risk_size_cap *= horizon_mult * regime_mult * close_time_mult
 
     if bool(int(_safe_float(runtime_thresholds.get("enable_regime_conditional_thresholds"), 1.0))):
         risk_size_cap *= _safe_float((regime_thresholds or {}).get("position_size_multiplier"), 1.0)
@@ -3162,6 +3303,8 @@ def generate_trade(
     from features.ta_indicators import get_ta_features_for_trade
     ta_features = get_ta_features_for_trade(symbol, spot)
     market_state["ta_features"] = ta_features
+    mean_reversion_features = get_mean_reversion_features_for_trade(symbol, spot)
+    market_state["mean_reversion_features"] = mean_reversion_features
 
     probability_state = _compute_probability_state(
         df,
@@ -3712,8 +3855,10 @@ def generate_trade(
         "dealer_liquidity_map": market_state["dealer_liquidity_map"],
         "market_state_timings": market_state.get("market_state_timings"),
         "ta_features": market_state.get("ta_features", {}),
+        "mean_reversion_features": market_state.get("mean_reversion_features", {}),
         # Flatten TA features for signal confidence computation
         **market_state.get("ta_features", {}),
+        **market_state.get("mean_reversion_features", {}),
         "rule_move_probability": probability_state["rule_move_probability"],
         "ml_move_probability": probability_state["ml_move_probability"],
         "hybrid_move_probability": probability_state["hybrid_move_probability"],
@@ -4623,6 +4768,8 @@ def generate_trade(
         runtime_thresholds=runtime_thresholds,
         regime_thresholds=regime_thresholds,
         gamma_regime=market_state.get("gamma_regime"),
+        vol_regime=market_state.get("vol_regime"),
+        macro_regime=market_state.get("macro_regime"),
     )
     base_payload["effective_size_cap"] = advisory_sizing["effective_size_cap"]
     base_payload["macro_suggested_lots"] = advisory_sizing["advisory_lots"]

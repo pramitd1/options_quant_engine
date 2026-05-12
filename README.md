@@ -190,6 +190,14 @@ python scripts/signal_evaluation_report.py
 python scripts/daily_research_report.py
 ```
 
+### Daily Readiness Dashboard
+
+```bash
+python scripts/daily_readiness_dashboard.py --input-file research/signal_evaluation/cumulative_signals.parquet --output-dir research/daily_readiness
+```
+
+This produces a CSV summary, text report, and optional JSON artifacts when `--write-json` is supplied.
+
 ### Offline Pack Replay Suite (Resumable)
 
 ```bash

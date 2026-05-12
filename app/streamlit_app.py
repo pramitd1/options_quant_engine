@@ -39,6 +39,7 @@ from config.settings import (
     MAX_CAPITAL_PER_TRADE,
     NUMBER_OF_LOTS,
 )
+from config.signal_policy import get_trade_runtime_thresholds
 from app.engine_runner import run_engine_snapshot
 from app.html_utils import esc
 from app.state import (
@@ -53,6 +54,7 @@ from research.signal_evaluation import (
     build_research_report,
     load_signals_dataset,
 )
+from scripts.daily_readiness_dashboard import summarize_daily_readiness, detect_daily_readiness_anomalies
 
 
 st.set_page_config(
@@ -1810,6 +1812,27 @@ def _render_research_table(title: str, frame: pd.DataFrame, *, caption: str | No
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _render_daily_readiness_panel(dataset: pd.DataFrame):
+    """Render a daily readiness summary panel from signal dataset rows."""
+    thresholds = get_trade_runtime_thresholds()
+    summary = summarize_daily_readiness(dataset, thresholds)
+    anomalies = detect_daily_readiness_anomalies(summary, thresholds)
+
+    st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
+    st.subheader("Daily Readiness Dashboard")
+    st.caption("Evaluates daily signal readiness, suppression, directional balance, and confidence.")
+    if summary.empty:
+        st.info("No daily readiness rows are available for this dataset.")
+    else:
+        _render_research_table("Daily Readiness Summary", summary)
+        if anomalies:
+            anomalies_df = pd.DataFrame(anomalies)
+            _render_research_table("Daily Readiness Anomalies", anomalies_df)
+        else:
+            st.success("No readiness anomalies detected in the selected dataset.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 def _render_signal_research_dashboard():
     """
     Purpose:
@@ -1908,6 +1931,9 @@ def _render_signal_research_dashboard():
             report["signal_count_by_regime"],
             caption="Quick coverage view so we can separate robust clusters from thin samples.",
         )
+
+    with st.expander("Daily Readiness Summary", expanded=False):
+        _render_daily_readiness_panel(dataset)
 
     # ── ML Research Panel (optional, non-intrusive) ─────────────────
     _render_ml_research_panel(dataset)
@@ -2022,7 +2048,7 @@ def _render_ta_visualization(trade: dict, symbol: str):
     st.subheader("Technical Analysis")
 
     # TA Summary Metrics
-    ta_cols = st.columns(4)
+    ta_cols = st.columns(5)
     with ta_cols[0]:
         direction = ta_features.get("ta_direction", "NO_SIGNAL")
         color = "🟢" if direction == "CALL" else "🔴" if direction == "PUT" else "⚪"
@@ -2039,6 +2065,21 @@ def _render_ta_visualization(trade: dict, symbol: str):
     with ta_cols[3]:
         indicators = ta_features.get("indicators", {})
         st.metric("Indicators", f"{len(indicators)} computed")
+
+    with ta_cols[4]:
+        mean_reversion_signal = trade.get("mean_reversion_signal", "UNKNOWN")
+        st.metric("Mean Reversion", mean_reversion_signal)
+
+    mr_cols = st.columns(3)
+    with mr_cols[0]:
+        zscore = trade.get("mean_reversion_zscore")
+        st.metric("Mean Reversion Z", f"{zscore if zscore is not None else '-'}")
+    with mr_cols[1]:
+        strength = trade.get("mean_reversion_strength")
+        st.metric("Mean Reversion Strength", f"{strength if strength is not None else '-'}")
+    with mr_cols[2]:
+        distance_pct = trade.get("mean_reversion_distance_pct")
+        st.metric("Mean Reversion Distance", f"{distance_pct if distance_pct is not None else '-'}")
 
     # Try to fetch and display historical price chart with TA overlays
     try:

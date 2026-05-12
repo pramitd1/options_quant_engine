@@ -743,6 +743,39 @@ def test_trade_promotion_governor_passes_clean_confirmed_setup():
     assert guard["promotion_state"] == "PROMOTE"
 
 
+def test_trade_promotion_governor_reduces_to_warning_under_tiered_gate_suppression():
+    payload = {
+        "direction": "PUT",
+        "trade_strength": 63,
+        "runtime_composite_score": 61,
+        "signal_success_probability": 0.65,
+        "confirmation_status": "MIXED",
+        "data_quality_status": "GOOD",
+        "live_calibration_gate": {"verdict": "PASS"},
+        "live_directional_gate": {"verdict": "PASS"},
+    }
+
+    guard = _evaluate_trade_promotion_governor(
+        payload=payload,
+        runtime_thresholds={
+            "enable_trade_promotion_governor": 1,
+            "min_trade_strength": 62,
+            "min_composite_score": 58,
+            "trade_promotion_min_probability": 0.70,
+            "trade_promotion_caution_size_cap": 0.40,
+            "trade_promotion_warning_size_cap": 0.70,
+            "trade_promotion_hold_cap_minutes": 20,
+            "enable_tiered_gate_suppression": 1,
+            "gate_tier_hard_suppress_threshold": 0.95,
+        },
+    )
+
+    assert guard["verdict"] == "CAUTION"
+    assert guard["promotion_state"] == "PROMOTE_WITH_WARNING"
+    assert guard["replay_validation_required"] is False
+    assert guard["size_cap"] == 0.70
+
+
 def test_watchlist_surfaces_trade_promotion_governor_as_blocker():
     payload = {
         "direction": "CALL",

@@ -19,6 +19,8 @@ Downstream Usage:
 
 from __future__ import annotations
 
+from config.signal_policy import get_trade_runtime_thresholds
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -61,6 +63,45 @@ def _blend_feature_reliability(trade: dict, **components: float) -> float:
     return _clip(blended / total_weight, 0.0, 1.0)
 
 
+def _resolve_runtime_thresholds(trade: dict) -> dict[str, float]:
+    if not isinstance(trade, dict):
+        return get_trade_runtime_thresholds()
+    thresholds = trade.get("runtime_thresholds")
+    if isinstance(thresholds, dict) and thresholds:
+        return thresholds
+    try:
+        return get_trade_runtime_thresholds()
+    except Exception:
+        return {}
+
+
+def _resolve_put_bias_boosts(trade: dict) -> tuple[float, float]:
+    thresholds = _resolve_runtime_thresholds(trade)
+    if not bool(int(_safe_float(thresholds.get("enable_directional_bias_correction"), 1.0))):
+        return 0.0, 0.0
+    return (
+        _safe_float(thresholds.get("put_signal_confidence_boost"), 4.0),
+        _safe_float(thresholds.get("put_signal_strength_boost"), 3.0),
+    )
+
+
+def _apply_rolling_strength_normalization(trade: dict, strength_norm: float) -> tuple[float, float]:
+    mean = trade.get("rolling_signal_strength_mean")
+    std = trade.get("rolling_signal_strength_std")
+    try:
+        mean = float(mean)
+        std = float(std)
+    except (TypeError, ValueError):
+        return strength_norm, 0.0
+
+    if std <= 0.0:
+        return strength_norm, 0.0
+
+    zscore = _clip((strength_norm - mean) / std, -3.0, 3.0)
+    adjustment = _clip(1.0 + 0.04 * zscore, 0.88, 1.12)
+    return _clip(strength_norm * adjustment, 0, 100), round(zscore, 3)
+
+
 _TRADE_STRENGTH_LABELS = {
     "VERY_STRONG": 95,
     "STRONG": 80,
@@ -79,13 +120,23 @@ def _signal_strength_component(trade: dict) -> float:
     raw_strength = _safe_float(trade.get("trade_strength"), 0)
     # trade_strength is maintained on a 0-100 scale by the signal engine.
     strength_norm = _clip(raw_strength, 0, 100)
+    strength_norm, rolling_zscore = _apply_rolling_strength_normalization(trade, strength_norm)
+
+    put_confidence_boost, put_strength_boost = _resolve_put_bias_boosts(trade)
+    if _as_upper(trade.get("direction")) == "PUT":
+        strength_norm = min(100.0, strength_norm + put_strength_boost)
 
     prob = _safe_float(trade.get("hybrid_move_probability"), 0)
     prob_norm = _clip(prob * 100.0, 0, 100)
 
     component = _clip(0.60 * strength_norm + 0.40 * prob_norm, 0, 100)
+    if _as_upper(trade.get("direction")) == "PUT":
+        component = _clip(component + put_confidence_boost, 0, 100)
+
     reliability = _blend_feature_reliability(trade, flow=0.55, liquidity=0.25, greeks=0.20)
-    return _clip(component * reliability, 0, 100)
+    bounded = _clip(component * reliability, 0, 100)
+    trade["rolling_strength_zscore"] = rolling_zscore
+    return bounded
 
 
 def _confirmation_component(trade: dict) -> float:
@@ -244,6 +295,42 @@ def _ta_component(trade: dict) -> float:
     return _clip(component * reliability, 0, 100)
 
 
+def _directional_bias_component(trade: dict) -> float:
+    """Estimate directional bias alignment for the current trade direction."""
+    direction = _as_upper(trade.get("direction"))
+    if direction not in {"CALL", "PUT"}:
+        return 50.0
+
+    oi_change_bias = _safe_float(trade.get("net_oi_change_bias"), 0.0)
+    hedging_bias = _as_upper(trade.get("dealer_hedging_bias"))
+    ta_direction = _as_upper(trade.get("ta_direction"))
+
+    support = 0
+    conflict = 0
+
+    if direction == "CALL":
+        support += int(oi_change_bias < 0)
+        conflict += int(oi_change_bias > 0)
+        support += int(hedging_bias in {"UPSIDE_ACCELERATION", "UPSIDE_PINNING"})
+        conflict += int(hedging_bias in {"DOWNSIDE_ACCELERATION", "DOWNSIDE_PINNING", "PINNING"})
+        support += int(ta_direction == "CALL")
+        conflict += int(ta_direction == "PUT")
+    else:
+        support += int(oi_change_bias > 0)
+        conflict += int(oi_change_bias < 0)
+        support += int(hedging_bias in {"DOWNSIDE_ACCELERATION", "DOWNSIDE_PINNING"})
+        conflict += int(hedging_bias in {"UPSIDE_ACCELERATION", "UPSIDE_PINNING", "PINNING"})
+        support += int(ta_direction == "PUT")
+        conflict += int(ta_direction == "CALL")
+
+    component = 55.0 + 15.0 * support - 18.0 * conflict
+    return _clip(component, 0, 100)
+
+
+def _directional_bias_multiplier(bias_component: float) -> float:
+    return float(_clip(0.80 + 0.20 * (bias_component / 100.0), 0.70, 1.0))
+
+
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
@@ -333,12 +420,13 @@ def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[
 # ---------------------------------------------------------------------------
 
 _WEIGHTS = {
-    "signal_strength": 0.25,
-    "confirmation": 0.20,
-    "market_stability": 0.18,
+    "signal_strength": 0.24,
+    "confirmation": 0.19,
+    "market_stability": 0.16,
     "data_integrity": 0.12,
-    "option_efficiency": 0.10,
-    "ta": 0.15,  # Technical analysis component
+    "option_efficiency": 0.09,
+    "ta": 0.14,  # Technical analysis component
+    "directional_bias": 0.06,
 }
 
 
@@ -377,6 +465,7 @@ def compute_signal_confidence(trade: dict) -> dict:
         "data_integrity_component": round(_data_integrity_component(trade), 2),
         "option_efficiency_component": round(_option_efficiency_component(trade), 2),
         "ta_component": round(_ta_component(trade), 2),
+        "directional_bias_component": round(_directional_bias_component(trade), 2),
     }
 
     raw = (
@@ -386,14 +475,25 @@ def compute_signal_confidence(trade: dict) -> dict:
         + _WEIGHTS["data_integrity"] * components["data_integrity_component"]
         + _WEIGHTS["option_efficiency"] * components["option_efficiency_component"]
         + _WEIGHTS["ta"] * components["ta_component"]
+        + _WEIGHTS["directional_bias"] * components["directional_bias_component"]
     )
     score = round(_clip(raw, 0, 100), 2)
     score, applied_guards, cap_was_applied = _apply_recalibration_guards(trade, score)
 
-    return {
+    bias_component = components["directional_bias_component"]
+    bias_mult = _directional_bias_multiplier(bias_component)
+    if bias_mult < 1.0:
+        score = round(_clip(score * bias_mult, 0, 100), 2)
+        applied_guards.append("directional_bias_correction")
+
+    result = {
         "confidence_score": score,
         "confidence_level": _classify(score),
         "confidence_recalibration_guards": applied_guards,
-            "confidence_cap_applied": cap_was_applied,
+        "confidence_cap_applied": cap_was_applied,
+        "directional_bias_multiplier": round(bias_mult, 4),
         **components,
     }
+    if "rolling_strength_zscore" in trade:
+        result["rolling_strength_zscore"] = trade["rolling_strength_zscore"]
+    return result
