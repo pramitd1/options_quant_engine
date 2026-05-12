@@ -2086,8 +2086,9 @@ def _render_ta_visualization(trade: dict, symbol: str):
         from data.historical_spot_fetcher import get_recent_spot_history
         from features.ta_indicators import _compute_ta_indicators
 
-        # Fetch recent historical data
-        hist_df = get_recent_spot_history(symbol, days=30)
+        # Fetch recent historical data from cache only to avoid repeated Yahoo refreshes
+        hist_df = get_recent_spot_history(symbol, days=30, cache_only=True)
+        st.caption("Cached TA charts are preferred; live Yahoo refresh is performed only when cache is explicitly refreshed.")
 
         if not hist_df.empty and len(hist_df) >= 14:
             # Compute TA indicators for visualization
