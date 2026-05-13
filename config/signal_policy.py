@@ -185,6 +185,11 @@ TRADE_RUNTIME_THRESHOLDS = {
     "trade_promotion_caution_size_cap": 0.50,
     "trade_promotion_hold_cap_minutes": 20,
     "trade_promotion_require_confirmed_status": 1,
+    "enable_trade_promotion_high_score_override": 1,
+    "trade_promotion_high_score_strength_threshold": 72,
+    "trade_promotion_high_score_composite_threshold": 70,
+    "trade_promotion_high_score_min_probability": 0.68,
+    "trade_promotion_high_score_size_cap": 0.85,
     "trade_promotion_fragile_context_min_probability": 0.68,
     "trade_promotion_fragile_context_size_cap": 0.35,
     "trade_promotion_fragile_context_hold_cap_minutes": 15,
@@ -418,6 +423,12 @@ TRADE_RUNTIME_THRESHOLDS = {
     "horizon_120m_position_size_mult": 0.50,  # Reduce to 50% at 120m (capture peak)
     "horizon_150m_position_size_mult": 0.25,  # Minimal by 150m
     "horizon_close_position_size_mult": 0.05,  # Near-zero for final 30 minutes
+    # Best-outcome horizon sizing adjustments
+    "enable_best_horizon_size_adjustment": 1,
+    "best_horizon_short_horizon_mult": 0.95,
+    "best_horizon_stale_short_horizon_mult": 0.65,
+    "best_horizon_mid_horizon_mult": 1.00,
+    "best_horizon_long_horizon_mult": 1.05,
     # Close-time de-risking: aggressively reduce size in final 30 minutes
     "enable_close_time_derisk": 1,
     "close_time_derisk_window_minutes": 30,

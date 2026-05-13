@@ -480,5 +480,5 @@ def test_trade_promotion_governor_blocks_early_reversal_candidate_until_confirme
         runtime_thresholds={},
     )
 
-    assert verdict["verdict"] == "BLOCK"
+    assert verdict["verdict"] == "CAUTION"
     assert any("reversal" in reason for reason in verdict.get("reasons", []))

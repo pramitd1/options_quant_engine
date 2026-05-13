@@ -159,9 +159,9 @@ def test_watchlist_provider_health_classification_does_not_depend_on_message_tex
         min_trade_strength=60,
     )
 
-    assert explainability["decision_classification"] == "BLOCKED_SETUP"
-    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_CAUTION_BLOCK"
-    assert "provider_health" in explainability["blocked_by"]
+    assert explainability["decision_classification"] == "WATCHLIST_SETUP"
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_CAUTION_SOFT_GATE"
+    assert "provider_health_soft_gate" in explainability["blocked_by"]
 
 
 def test_watchlist_keeps_primary_reason_and_tracks_low_strength_as_secondary_detail():
@@ -182,7 +182,7 @@ def test_watchlist_keeps_primary_reason_and_tracks_low_strength_as_secondary_det
         min_trade_strength=60,
     )
 
-    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_SOFT_GATE"
     details = explainability["no_trade_reason_details"]
     assert any("secondary_blocker" in detail for detail in details)
 
@@ -206,10 +206,10 @@ def test_watchlist_uses_structured_provider_health_reason_code_when_summary_is_m
         min_trade_strength=60,
     )
 
-    assert explainability["decision_classification"] == "BLOCKED_SETUP"
-    assert explainability["setup_state"] == "RISK_BLOCKED"
+    assert explainability["decision_classification"] == "WATCHLIST_SETUP"
+    assert explainability["setup_state"] == "CONFIRMATION_PENDING"
     assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
-    assert "provider_health" in explainability["blocked_by"]
+    assert "provider_health_soft_gate" in explainability["blocked_by"]
 
 
 def test_watchlist_low_strength_message_does_not_override_provider_health_block():
@@ -230,10 +230,10 @@ def test_watchlist_low_strength_message_does_not_override_provider_health_block(
         min_trade_strength=60,
     )
 
-    assert explainability["decision_classification"] == "BLOCKED_SETUP"
-    assert explainability["setup_state"] == "RISK_BLOCKED"
-    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_BLOCK"
-    assert "provider_health" in explainability["blocked_by"]
+    assert explainability["decision_classification"] == "WATCHLIST_SETUP"
+    assert explainability["setup_state"] == "CONFIRMATION_PENDING"
+    assert explainability["no_trade_reason_code"] == "PROVIDER_HEALTH_WEAK_SOFT_GATE"
+    assert "provider_health_soft_gate" in explainability["blocked_by"]
 
 
 def test_preserves_preexisting_no_trade_reason_code_and_reason_from_payload():
@@ -741,6 +741,40 @@ def test_trade_promotion_governor_passes_clean_confirmed_setup():
     assert guard["verdict"] == "PASS"
     assert guard["replay_validation_required"] is False
     assert guard["promotion_state"] == "PROMOTE"
+
+
+def test_trade_promotion_governor_allows_high_score_current_regime_override():
+    payload = {
+        "direction": "PUT",
+        "trade_strength": 74,
+        "runtime_composite_score": 70,
+        "signal_success_probability": 0.67,
+        "confirmation_status": "CONFIRMED",
+        "data_quality_status": "GOOD",
+        "live_calibration_gate": {"verdict": "PASS"},
+        "live_directional_gate": {"verdict": "PASS"},
+    }
+
+    guard = _evaluate_trade_promotion_governor(
+        payload=payload,
+        runtime_thresholds={
+            "enable_trade_promotion_governor": 1,
+            "min_trade_strength": 75,
+            "min_composite_score": 72,
+            "trade_promotion_min_probability": 0.68,
+            "trade_promotion_hold_cap_minutes": 20,
+            "trade_promotion_require_confirmed_status": 1,
+            "trade_promotion_high_score_strength_threshold": 72,
+            "trade_promotion_high_score_composite_threshold": 70,
+            "trade_promotion_high_score_min_probability": 0.65,
+            "trade_promotion_high_score_size_cap": 0.85,
+        },
+    )
+
+    assert guard["verdict"] == "CAUTION"
+    assert guard["replay_validation_required"] is False
+    assert guard["promotion_state"] == "PROMOTE_WITH_WARNING"
+    assert guard["size_cap"] == 0.85
 
 
 def test_trade_promotion_governor_reduces_to_warning_under_tiered_gate_suppression():

@@ -78,6 +78,7 @@ def compute_exit_timing(
     vol_regime=None,
     minutes_since_open=None,
     minutes_to_close=None,
+    best_outcome_horizon=None,
 ):
     """
     Purpose:
@@ -133,6 +134,30 @@ def compute_exit_timing(
 
     recommended = max(recommended, 15)
     max_hold = max(max_hold, recommended)
+
+    # Adjust timing when the signal has a best-observed horizon.
+    if best_outcome_horizon:
+        horizon_label = str(best_outcome_horizon).strip().lower()
+        if horizon_label.endswith("m"):
+            try:
+                horizon_minutes = int(horizon_label[:-1])
+            except ValueError:
+                horizon_minutes = None
+        else:
+            horizon_minutes = None
+
+        if horizon_minutes is not None:
+            if horizon_minutes <= 30:
+                max_hold = min(max_hold, max(horizon_minutes + 15, 30))
+                recommended = min(recommended, max(horizon_minutes + 10, 15))
+                reasons.append("best_outcome_horizon_short_window")
+            elif horizon_minutes == 60:
+                recommended = min(recommended, max(45, horizon_minutes))
+                max_hold = min(max_hold, horizon_minutes + 30)
+                reasons.append("best_outcome_horizon_mid_window")
+            elif horizon_minutes >= 120:
+                recommended = max(recommended, min(horizon_minutes, max_hold))
+                reasons.append("best_outcome_horizon_long_window")
 
     # Determine exit urgency based on remaining session time
     if minutes_to_close is not None:

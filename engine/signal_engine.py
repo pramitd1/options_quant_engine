@@ -1280,6 +1280,42 @@ def _evaluate_trade_promotion_governor(*, payload, runtime_thresholds):
             "close_time_derisk",
             "proxy_ratio_above_promotion_cap",
         }
+        high_score_override_enabled = bool(int(_safe_float(runtime_thresholds.get("enable_trade_promotion_high_score_override"), 1.0)))
+        high_score_strength_threshold = _safe_float(runtime_thresholds.get("trade_promotion_high_score_strength_threshold"), 72.0)
+        high_score_composite_threshold = _safe_float(runtime_thresholds.get("trade_promotion_high_score_composite_threshold"), 70.0)
+        high_score_min_probability = _clip(_safe_float(runtime_thresholds.get("trade_promotion_high_score_min_probability"), 0.68), 0.0, 1.0)
+        high_score_size_cap = _clip(_safe_float(runtime_thresholds.get("trade_promotion_high_score_size_cap"), 0.85), 0.0, 1.0)
+
+        if (
+            high_score_override_enabled
+            and not fragile_context
+            and data_quality_status == "GOOD"
+            and confirmation_status in {"CONFIRMED", "STRONG_CONFIRMATION"}
+            and _as_upper(live_calibration_gate.get("verdict")) != "BLOCK"
+            and _as_upper(live_directional_gate.get("verdict")) != "BLOCK"
+            and trade_strength >= high_score_strength_threshold
+            and runtime_composite_score >= high_score_composite_threshold
+            and success_probability >= high_score_min_probability
+            and all(
+                reason in {
+                    "trade_strength_near_gate",
+                    "runtime_composite_near_gate",
+                    "success_probability_below_promotion_floor",
+                }
+                for reason in replay_required_reasons
+            )
+        ):
+            return {
+                "enabled": True,
+                "verdict": "CAUTION",
+                "reason": "Trade promotion governor: high-score regime override permits reduced-size promotion",
+                "promotion_state": "PROMOTE_WITH_WARNING",
+                "replay_validation_required": False,
+                "reasons": replay_required_reasons,
+                "size_cap": high_score_size_cap,
+                "hold_cap_minutes": hold_cap_minutes,
+            }
+
         if tier_enabled and success_probability < tier_threshold and all(reason in tierable_reasons for reason in replay_required_reasons):
             return {
                 "enabled": True,
@@ -1512,6 +1548,76 @@ def _compute_horizon_dependent_multiplier(payload, runtime_thresholds):
     return _safe_float(runtime_thresholds.get("horizon_close_position_size_mult"), 0.05)
 
 
+def _compute_best_outcome_horizon_multiplier(payload, runtime_thresholds):
+    """Adjust size based on the signal's best observed outcome horizon."""
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_best_horizon_size_adjustment"), 1.0))):
+        return 1.0
+
+    if not isinstance(payload, dict):
+        return 1.0
+
+    best_horizon = str(payload.get("best_outcome_horizon") or "").strip().lower()
+    if not best_horizon.endswith("m"):
+        return 1.0
+
+    try:
+        horizon_minutes = int(best_horizon[:-1])
+    except ValueError:
+        return 1.0
+
+    signal_age_min = _safe_float(payload.get("signal_age_minutes"), 0.0)
+    if signal_age_min <= 0:
+        reversal_age = _safe_float(payload.get("reversal_age"), 0.0)
+        signal_age_min = reversal_age * _safe_float(runtime_thresholds.get("time_decay_minutes_per_snapshot"), 5.0)
+
+    if horizon_minutes <= 30:
+        if signal_age_min > horizon_minutes:
+            return _safe_float(runtime_thresholds.get("best_horizon_stale_short_horizon_mult"), 0.65)
+        return _safe_float(runtime_thresholds.get("best_horizon_short_horizon_mult"), 0.95)
+
+    if horizon_minutes == 60:
+        return _safe_float(runtime_thresholds.get("best_horizon_mid_horizon_mult"), 1.00)
+
+    if horizon_minutes >= 120:
+        return _safe_float(runtime_thresholds.get("best_horizon_long_horizon_mult"), 1.05)
+
+    return 1.0
+
+
+def _apply_regime_composite_score_adjustment(
+    runtime_composite_score,
+    direction,
+    market_state,
+    runtime_thresholds,
+):
+    """Apply a small regime-aware boost/penalty to the runtime composite score."""
+    if not bool(int(_safe_float(runtime_thresholds.get("enable_regime_aware_scoring"), 1.0))):
+        return int(_clip(runtime_composite_score, 0, 100))
+
+    direction_upper = _as_upper(direction)
+    macro_upper = _as_upper((market_state or {}).get("macro_regime"))
+    gamma_upper = canonical_gamma_regime((market_state or {}).get("gamma_regime"))
+    score = _safe_float(runtime_composite_score, 0.0)
+
+    if macro_upper == "RISK_OFF":
+        if direction_upper == "PUT":
+            score += _safe_float(runtime_thresholds.get("regime_scoring_put_bonus_risk_off"), 3.0)
+        elif direction_upper == "CALL":
+            score -= _safe_float(runtime_thresholds.get("regime_scoring_misalignment_penalty"), 2.0)
+    elif macro_upper == "RISK_ON":
+        if direction_upper == "CALL":
+            score += _safe_float(runtime_thresholds.get("regime_scoring_call_bonus_risk_on"), 3.0)
+        elif direction_upper == "PUT":
+            score -= _safe_float(runtime_thresholds.get("regime_scoring_misalignment_penalty"), 2.0)
+
+    if gamma_upper == "POSITIVE_GAMMA" and direction_upper == "CALL":
+        score += _safe_float(runtime_thresholds.get("regime_scoring_positive_gamma_call_bonus"), 1.0)
+    if gamma_upper == "NEGATIVE_GAMMA" and direction_upper == "PUT":
+        score += _safe_float(runtime_thresholds.get("regime_scoring_negative_gamma_put_bonus"), 1.0)
+
+    return int(_clip(score, 0, 100))
+
+
 def _compute_regime_aware_position_multiplier(
     gamma_regime,
     vol_regime,
@@ -1609,6 +1715,9 @@ def _derive_advisory_size_recommendation(
         _safe_float(freshness_size_cap, 1.0),
     )
     risk_size_cap *= confidence_size_mult
+
+    best_horizon_mult = _compute_best_outcome_horizon_multiplier(payload, runtime_thresholds)
+    risk_size_cap *= best_horizon_mult
 
     if reversal_stage == "EARLY_REVERSAL_CANDIDATE":
         risk_size_cap *= _safe_float(runtime_thresholds.get("reversal_stage_early_size_mult"), 0.60)
@@ -2828,14 +2937,21 @@ def _build_decision_explainability(payload, *, trade_status, min_trade_strength)
                 provider_blocker = provider_health_summary
                 if provider_blocker not in {"CAUTION", "WEAK"}:
                     provider_blocker = "CAUTION" if "PROVIDER_HEALTH_CAUTION" in global_risk_overlay_reasons else "WEAK"
-                decision_classification = "BLOCKED_SETUP"
-                setup_state = "RISK_BLOCKED"
-                watchlist_reason = "Provider health gates prevent trade execution"
-                blocked_by.append("provider_health")
-                no_trade_reason_code = f"PROVIDER_HEALTH_{provider_blocker}_BLOCK"
-                no_trade_reason = f"Provider health {provider_blocker} blocks trade execution"
+                # Soft gating: Route to WATCHLIST with reduced size instead of blocking
+                decision_classification = "WATCHLIST_SETUP"
+                setup_state = "CONFIRMATION_PENDING"
+                watchlist_reason = f"Provider health {provider_blocker} - routed to watchlist with reduced size cap"
+                blocked_by.append("provider_health_soft_gate")
+                no_trade_reason_code = f"PROVIDER_HEALTH_{provider_blocker}_SOFT_GATE"
+                no_trade_reason = f"Provider health {provider_blocker} routes to watchlist with size restrictions"
                 if watchlist_message and watchlist_message != no_trade_reason:
                     reason_details.append(f"secondary_blocker: {watchlist_message}")
+                # Apply size cap reduction for weak provider health
+                size_cap_reduction = 0.7 if provider_blocker == "WEAK" else 0.85
+                if "size_cap" not in payload:
+                    payload["size_cap"] = size_cap_reduction
+                else:
+                    payload["size_cap"] = min(payload["size_cap"], size_cap_reduction)
             elif data_quality_status in {"CAUTION", "WEAK"}:
                 decision_classification = "WATCHLIST_CONFIRMATION_PENDING"
                 setup_state = "CONFIRMATION_PENDING"
@@ -4444,6 +4560,7 @@ def generate_trade(
         vol_regime=market_state["vol_regime"],
         minutes_since_open=_mso,
         minutes_to_close=_mtc,
+        best_outcome_horizon=base_payload.get("best_outcome_horizon"),
     )
     hold_cap_minutes = int(_safe_float(runtime_thresholds.get("max_intraday_hold_minutes"), 90.0))
     hold_cap_minutes = min(hold_cap_minutes, int(_safe_float(regime_thresholds.get("effective_max_holding_m"), hold_cap_minutes)))
@@ -4819,7 +4936,16 @@ def generate_trade(
     )
     if feature_reliability_composite_penalty > 0:
         runtime_composite_score = int(_clip(runtime_composite_score - feature_reliability_composite_penalty, 0, 100))
-    
+
+    regime_adjusted_composite_score = _apply_regime_composite_score_adjustment(
+        runtime_composite_score,
+        direction,
+        market_state,
+        runtime_thresholds,
+    )
+    base_payload["regime_composite_adjustment_delta"] = regime_adjusted_composite_score - runtime_composite_score
+    runtime_composite_score = regime_adjusted_composite_score
+
     # Apply score calibration if enabled
     enable_calibration = bool(int(_safe_float(runtime_thresholds.get("enable_score_calibration"), 1.0)))
     calibration_backend = runtime_thresholds.get("calibration_backend", "isotonic")
