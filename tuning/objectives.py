@@ -21,6 +21,7 @@ from typing import Any
 
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view
 from tuning.models import ObjectiveResult
 from utils.numerics import safe_float as _safe_float  # noqa: F401
 
@@ -205,6 +206,7 @@ def compute_frame_metrics(selected: pd.DataFrame, total_sample_count: int) -> di
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
+    selected = apply_quality_label_view(selected)
     selected_count = int(len(selected))
     signal_frequency = 0.0 if total_sample_count <= 0 else selected_count / float(total_sample_count)
     direction_hit_rate = _mean_or_default(selected.get("correct_60m", pd.Series(dtype=float)))

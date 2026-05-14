@@ -12,6 +12,43 @@ def test_trading_engine_facade_matches_signal_engine():
     assert trading_engine.generate_trade is signal_engine.generate_trade
 
 
+def test_runtime_data_contract_summarizes_provenance_and_validation():
+    contract = signal_engine._build_runtime_data_contract(
+        {
+            "is_valid": True,
+            "is_stale": False,
+            "issues": [],
+            "warnings": ["market_data_provenance:mixed_spot_option_source"],
+            "provider_health": {
+                "summary_status": "GOOD",
+                "trade_blocking_status": "PASS",
+                "trade_blocking_reasons": [],
+            },
+            "market_data_provenance": {
+                "status": "CAUTION",
+                "trade_blocking_status": "PASS",
+                "requested_option_source": "ICICI",
+                "option_source": "ICICI",
+                "spot_source": "YFINANCE_INTRADAY",
+                "source_consistency": "MIXED_SPOT_OPTION_SOURCE",
+                "timestamp_status": "ALIGNED",
+                "timestamp_delta_seconds": 30.0,
+                "warnings": ["mixed_spot_option_source"],
+                "reasons": ["mixed_spot_option_source"],
+                "issues": [],
+            },
+        }
+    )
+
+    assert contract["option_chain_validation_status"] == "GOOD"
+    assert contract["option_chain_warning_count"] == 1
+    assert contract["market_data_provenance_status"] == "CAUTION"
+    assert contract["requested_option_source"] == "ICICI"
+    assert contract["spot_source"] == "YFINANCE_INTRADAY"
+    assert contract["market_data_source_consistency"] == "MIXED_SPOT_OPTION_SOURCE"
+    assert contract["market_data_provenance_reasons"] == ["mixed_spot_option_source"]
+
+
 def test_generate_trade_passes_days_to_expiry_into_market_state(monkeypatch):
     captured = {"days_to_expiry": None}
 
@@ -46,6 +83,63 @@ def test_generate_trade_passes_days_to_expiry_into_market_state(monkeypatch):
         )
 
     assert captured["days_to_expiry"] == 1.0
+
+
+def test_generate_trade_disables_live_auxiliary_history_in_historical_mode(monkeypatch):
+    import features.ta_indicators as ta_indicators
+
+    captured = {}
+
+    class _StopReview(Exception):
+        pass
+
+    monkeypatch.setattr(signal_engine, "normalize_option_chain", lambda option_chain, **kwargs: option_chain)
+    monkeypatch.setattr(signal_engine, "_collect_market_state", lambda *args, **kwargs: {})
+
+    def _fake_ta_features(symbol, spot, **kwargs):
+        captured["ta_allow_live_history"] = kwargs.get("allow_live_history")
+        captured["ta_as_of"] = kwargs.get("as_of")
+        return {"ta_direction": "NO_SIGNAL", "ta_confidence": 0.0, "ta_regime": "test", "indicators": {}}
+
+    def _fake_mean_reversion(symbol, spot, **kwargs):
+        captured["mean_reversion_allow_live_history"] = kwargs.get("allow_live_history")
+        captured["mean_reversion_as_of"] = kwargs.get("as_of")
+        return {
+            "mean_reversion_signal": "INSUFFICIENT_DATA",
+            "mean_reversion_zscore": 0.0,
+            "mean_reversion_strength": 0.0,
+            "mean_reversion_distance_pct": 0.0,
+        }
+
+    def _stop_after_auxiliary_features(*args, **kwargs):
+        raise _StopReview()
+
+    monkeypatch.setattr(ta_indicators, "get_ta_features_for_trade", _fake_ta_features)
+    monkeypatch.setattr(signal_engine, "get_mean_reversion_features_for_trade", _fake_mean_reversion)
+    monkeypatch.setattr(signal_engine, "_compute_probability_state", _stop_after_auxiliary_features)
+
+    option_chain = pd.DataFrame(
+        {
+            "strikePrice": [22500],
+            "OPTION_TYP": ["CE"],
+            "lastPrice": [100.0],
+        }
+    )
+
+    with pytest.raises(_StopReview):
+        signal_engine.generate_trade(
+            symbol="NIFTY",
+            spot=22500.0,
+            option_chain=option_chain,
+            option_chain_validation={"selected_expiry": "2026-03-28 10:00:00"},
+            valuation_time="2026-03-27 10:00:00+05:30",
+            historical_mode=True,
+        )
+
+    assert captured["ta_allow_live_history"] is False
+    assert captured["mean_reversion_allow_live_history"] is False
+    assert captured["ta_as_of"] == "2026-03-27 10:00:00+05:30"
+    assert captured["mean_reversion_as_of"] == "2026-03-27 10:00:00+05:30"
 
 
 def test_collect_market_state_emits_timing_breakdown(monkeypatch):

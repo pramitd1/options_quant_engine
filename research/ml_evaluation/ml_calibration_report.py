@@ -17,6 +17,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+
 
 def build_calibration_report(df: pd.DataFrame) -> dict:
     """
@@ -34,7 +36,8 @@ def build_calibration_report(df: pd.DataFrame) -> dict:
     if "ml_confidence_score" not in df.columns or "ml_confidence_bucket" not in df.columns:
         return {"error": "ML confidence columns not found in dataset"}
 
-    scored = df[df["ml_confidence_score"].notna()].copy()
+    quality_df = apply_quality_label_view(df)
+    scored = quality_df[quality_df["ml_confidence_score"].notna()].copy()
     if scored.empty:
         return {"error": "No signals with ml_confidence_score available"}
 
@@ -51,18 +54,21 @@ def build_calibration_report(df: pd.DataFrame) -> dict:
             continue
 
         n = len(subset)
-        avg_conf = _safe_mean(subset["ml_confidence_score"])
-        actual_hit = _safe_mean(subset["correct_60m_num"])
+        labeled_subset = subset[subset["correct_60m_num"].notna()]
+        n_labeled = int(len(labeled_subset))
+        avg_conf = _safe_mean(labeled_subset["ml_confidence_score"]) if n_labeled else None
+        actual_hit = _safe_mean(labeled_subset["correct_60m_num"]) if n_labeled else None
 
         gap = None
         if avg_conf is not None and actual_hit is not None:
             gap = abs(avg_conf - actual_hit)
-            ece_numerator += gap * n
-            ece_denominator += n
+            ece_numerator += gap * n_labeled
+            ece_denominator += n_labeled
 
         bucket_results.append({
             "bucket": bucket,
             "n": n,
+            "n_labeled_60m": n_labeled,
             "avg_confidence_score": _rnd(avg_conf),
             "actual_hit_rate_60m": _rnd(actual_hit),
             "calibration_gap": _rnd(gap),
@@ -77,6 +83,7 @@ def build_calibration_report(df: pd.DataFrame) -> dict:
         "model": "LogReg_ElasticNet_v1",
         "role": "calibration",
         "n_scored": len(scored),
+        "label_quality_summary": label_quality_summary(df),
         "bucket_analysis": bucket_results,
         "expected_calibration_error": ece,
         "reliability_diagram": reliability,
@@ -95,12 +102,14 @@ def _build_reliability_data(df: pd.DataFrame) -> list[dict]:
         subset = df[df["conf_bin"] == interval]
         if subset.empty:
             continue
+        labeled_subset = subset[subset["correct_60m_num"].notna()]
         results.append({
             "bin_low": round(interval.left, 2),
             "bin_high": round(interval.right, 2),
             "n": len(subset),
-            "avg_predicted": _rnd(_safe_mean(subset["ml_confidence_score"])),
-            "avg_actual": _rnd(_safe_mean(subset["correct_60m_num"])),
+            "n_labeled_60m": int(len(labeled_subset)),
+            "avg_predicted": _rnd(_safe_mean(labeled_subset["ml_confidence_score"])),
+            "avg_actual": _rnd(_safe_mean(labeled_subset["correct_60m_num"])),
         })
     return results
 

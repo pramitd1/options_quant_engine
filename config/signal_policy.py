@@ -381,6 +381,23 @@ TRADE_RUNTIME_THRESHOLDS = {
     "enable_score_calibration": 1,
     "calibration_backend": "isotonic",  # or "temperature"
     "runtime_score_calibrator_path": "models_store/runtime_score_calibrator.json",
+    # Confidence guardrails: cap displayed/advisory confidence when calibration
+    # support is thin, stale, unavailable, or only partially regime-matched.
+    "confidence_guard_min_calibration_trades": 80,
+    "confidence_guard_max_calibration_staleness_days": 5,
+    "confidence_guard_live_calibration_caution_cap": 68,
+    "confidence_guard_live_calibration_block_cap": 52,
+    "confidence_guard_calibration_unavailable_cap": 72,
+    "confidence_guard_insufficient_sample_cap": 66,
+    "confidence_guard_stale_calibration_cap": 64,
+    "confidence_guard_score_calibration_unavailable_cap": 72,
+    "confidence_guard_score_calibration_fallback_cap": 76,
+    "confidence_guard_score_calibration_partial_cap": 82,
+    "confidence_guard_score_calibration_mismatch_cap": 60,
+    "confidence_guard_regime_segment_unavailable_cap": 72,
+    "confidence_guard_regime_segment_caution_cap": 70,
+    "confidence_guard_regime_segment_block_cap": 55,
+    "confidence_guard_direction_head_uncalibrated_cap": 78,
     # Time-Decay Model (Regime-Aware Half-Lives)
     "enable_time_decay_model": 1,
     "time_decay_lambda": 1.5,

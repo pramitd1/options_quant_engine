@@ -28,7 +28,7 @@ from pathlib import Path
 
 from analytics.greeks_engine import compute_option_greeks, _parse_expiry_years
 from analytics.signal_confidence import compute_signal_confidence
-from engine.runtime_metadata import TRADER_VIEW_KEYS
+from engine.runtime_metadata import TRADER_VIEW_KEYS, build_trader_view
 from utils.consistency_checks import collect_trade_consistency_findings
 from utils.regime_normalization import canonical_gamma_regime
 
@@ -212,6 +212,51 @@ def _fmt(value, max_items=8):
     return value
 
 
+def _resolve_market_data_provenance(*, result=None, trade=None):
+    """Find the most complete market-data provenance payload available."""
+
+    for candidate in (
+        (trade or {}).get("market_data_provenance") if isinstance(trade, dict) else None,
+        (result or {}).get("market_data_provenance") if isinstance(result, dict) else None,
+        ((trade or {}).get("option_chain_validation") or {}).get("market_data_provenance")
+        if isinstance(trade, dict) and isinstance((trade or {}).get("option_chain_validation"), dict)
+        else None,
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def _market_data_provenance_fields(*, result=None, trade=None):
+    provenance = _resolve_market_data_provenance(result=result, trade=trade)
+    trade = trade if isinstance(trade, dict) else {}
+
+    def _first_present(*values):
+        for value in values:
+            if value not in (None, ""):
+                return value
+        return None
+
+    return {
+        "requested_option_source": _first_present(trade.get("requested_option_source"), provenance.get("requested_option_source")),
+        "option_source": _first_present(trade.get("option_source"), provenance.get("option_source")),
+        "spot_source": _first_present(trade.get("spot_source"), provenance.get("spot_source")),
+        "source_consistency": _first_present(trade.get("market_data_source_consistency"), provenance.get("source_consistency")),
+        "provenance_status": _first_present(trade.get("market_data_provenance_status"), provenance.get("status")),
+        "trade_blocking_status": _first_present(trade.get("market_data_trade_blocking_status"), provenance.get("trade_blocking_status")),
+        "timestamp_status": _first_present(trade.get("market_data_timestamp_status"), provenance.get("timestamp_status")),
+        "timestamp_delta_seconds": _first_present(trade.get("market_data_timestamp_delta_seconds"), provenance.get("timestamp_delta_seconds")),
+        "warnings": trade.get("market_data_provenance_warnings") or provenance.get("warnings"),
+        "issues": trade.get("market_data_provenance_issues") or provenance.get("issues"),
+    }
+
+
+def _print_market_data_provenance(*, result=None, trade=None):
+    fields = _market_data_provenance_fields(result=result, trade=trade)
+    if any(value not in (None, "", [], {}) for value in fields.values()):
+        _print_section("MARKET DATA PROVENANCE", fields)
+
+
 def _format_probability_display(probability):
     """Format probabilities without collapsing small nonzero values to `0%`."""
     if not isinstance(probability, (int, float)):
@@ -278,6 +323,24 @@ def _summarize_confidence_guards(guards, *, cap_applied=True):
             notes.append(f"{_cap_prefix} explicit no-trade reason")
         if "status_watchlist_or_blocked" in normalized:
             notes.append("execution-gated by blocked/watchlist status (setup may still be strong)")
+
+    if "calibration_history_stale" in normalized:
+        notes.append(f"{_cap_prefix} stale calibration history")
+    elif "calibration_sample_insufficient" in normalized or "regime_segment_sample_insufficient" in normalized:
+        notes.append(f"{_cap_prefix} thin calibration sample")
+    elif "live_calibration_block" in normalized:
+        notes.append(f"{_cap_prefix} live calibration block")
+    elif "live_calibration_caution" in normalized:
+        notes.append(f"{_cap_prefix} live calibration caution")
+
+    if "score_calibration_segment_mismatch" in normalized:
+        notes.append(f"{_cap_prefix} calibration regime mismatch")
+    elif "score_calibration_segment_fallback" in normalized:
+        notes.append(f"{_cap_prefix} calibration fallback segment")
+    elif "score_calibration_segment_partial" in normalized:
+        notes.append(f"{_cap_prefix} partial calibration segment")
+    elif "score_calibration_unavailable" in normalized:
+        notes.append(f"{_cap_prefix} score calibration unavailable")
 
     if not notes:
         return None
@@ -2741,6 +2804,18 @@ def _render_signal_confidence(trade, *, show_components=True):
     if confidence_note:
         print(f"{'confidence_note':26}: {confidence_note}")
 
+    calibration_guardrail = result.get("calibration_guardrail") if isinstance(result.get("calibration_guardrail"), dict) else {}
+    calibration_status = str(calibration_guardrail.get("status") or "").upper().strip()
+    if calibration_status and calibration_status not in {"PASS", "UNKNOWN"}:
+        sample = calibration_guardrail.get("sample_size")
+        regime_match = calibration_guardrail.get("regime_match")
+        parts = [calibration_status]
+        if sample is not None:
+            parts.append(f"n={sample}")
+        if regime_match:
+            parts.append(f"regime={regime_match}")
+        print(f"{'calibration_guard':26}: {', '.join(parts)}")
+
     if show_components:
         print(f"{'signal_strength':26}: {result['signal_strength_component']}")
         print(f"{'confirmation':26}: {result['confirmation_component']}")
@@ -2840,7 +2915,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         5. RANKED STRIKES
         6. RISK SUMMARY
     """
-    display = execution_trade or trade
+    display = build_trader_view(trade, execution_trade=execution_trade) or execution_trade or trade
     trade_status = str((trade or {}).get("trade_status") or "").upper()
     has_trade = bool(trade and trade.get("direction") and trade_status == "TRADE")
 
@@ -2898,6 +2973,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         precomputed_oi_levels=(_top_call_oi_levels, _top_put_oi_levels),
     ) if trade else ([], [])
 
+    _provenance_fields = _market_data_provenance_fields(result=result, trade=trade)
     _print_section("MARKET SUMMARY", {
         "spot": spot,
         "day_range": (
@@ -2910,6 +2986,11 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         "atm_iv": trade.get("atm_iv") if trade else None,
         "macro_event_risk": macro_event_state.get("macro_event_risk_score"),
         "event_lockdown": macro_event_state.get("event_lockdown_flag"),
+        "requested_option_source": _provenance_fields.get("requested_option_source"),
+        "option_source": _provenance_fields.get("option_source"),
+        "spot_source": _provenance_fields.get("spot_source"),
+        "source_consistency": _provenance_fields.get("source_consistency"),
+        "data_provenance": _provenance_fields.get("provenance_status"),
     })
     _render_market_summary_levels_table(
         spot=spot,
@@ -3436,6 +3517,7 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
 
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
+    _print_market_data_provenance(result=result, trade=trade)
     _render_data_usability_diagnostics(trade, verbose=True)
 
     if isinstance(trade, dict) and isinstance(result, dict) and "previous_chain_frame" in result:
@@ -3464,7 +3546,7 @@ def render_standard(*, result, trade, spot_summary, spot_validation,
         return
 
     # Trader view
-    display = execution_trade or trade
+    display = build_trader_view(trade, execution_trade=execution_trade) or execution_trade or trade
     print("\nTRADER VIEW")
     print("---------------------------")
     for key in TRADER_VIEW_KEYS:
@@ -4017,6 +4099,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
 
     _print_validation("OPTION CHAIN VALIDATION", option_chain_validation)
     print(f"\n{'option_chain_rows':26}: {result.get('option_chain_rows')}")
+    _print_market_data_provenance(result=result, trade=trade)
     _render_data_usability_diagnostics(trade, verbose=True)
     _render_regime_rollout_status(result)
 
@@ -4026,7 +4109,7 @@ def render_full_debug(*, result, trade, spot_summary, spot_validation,
         return
 
     # Trader view
-    display = execution_trade or trade
+    display = build_trader_view(trade, execution_trade=execution_trade) or execution_trade or trade
     print("\nTRADER VIEW")
     print("---------------------------")
     for key in TRADER_VIEW_KEYS:

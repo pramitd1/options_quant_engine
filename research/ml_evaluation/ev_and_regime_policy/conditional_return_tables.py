@@ -31,6 +31,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view
+
 logger = logging.getLogger(__name__)
 
 # ── Tunables ─────────────────────────────────────────────────────────
@@ -153,6 +155,11 @@ def build_conditional_return_table(
     ConditionalReturnTable with per-cell BucketStats, global stats, and
     parent-level (single-dimension) fallback tables.
     """
+    if hit_col == "correct_60m" and ret_col == "signed_return_60m_bps":
+        df = apply_quality_label_view(df)
+    else:
+        df = df.copy()
+
     # Ensure outcome columns are numeric
     for col in [hit_col, ret_col, mfe_col, mae_col]:
         if col in df.columns:

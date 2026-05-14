@@ -16,6 +16,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+
 
 def build_comparison_report(df: pd.DataFrame) -> dict:
     """
@@ -33,7 +35,8 @@ def build_comparison_report(df: pd.DataFrame) -> dict:
     if "ml_agreement_with_engine" not in df.columns:
         return {"error": "ml_agreement_with_engine column not found"}
 
-    df = df.copy()
+    raw_df = df.copy()
+    df = apply_quality_label_view(df)
     df["correct_60m_num"] = pd.to_numeric(df.get("correct_60m"), errors="coerce")
     df["return_60m_bps"] = pd.to_numeric(df.get("signed_return_60m_bps"), errors="coerce")
     df["return_120m_bps"] = pd.to_numeric(df.get("signed_return_120m_bps"), errors="coerce")
@@ -75,6 +78,7 @@ def build_comparison_report(df: pd.DataFrame) -> dict:
     regime_breakdown = _regime_breakdown(df)
 
     return {
+        "label_quality_summary": label_quality_summary(raw_df),
         "summary": summary,
         "yearly_breakdown": yearly,
         "regime_breakdown": regime_breakdown,

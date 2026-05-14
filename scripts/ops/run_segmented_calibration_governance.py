@@ -29,6 +29,7 @@ from engine.signal_engine import (
     _resolve_regime_thresholds,
 )
 from research.signal_evaluation.dataset import CUMULATIVE_DATASET_PATH, load_signals_dataset
+from research.signal_evaluation.label_quality import apply_quality_label_view
 from research.signal_evaluation.reporting import write_signal_evaluation_report
 from strategy import score_calibration as score_calibration_mod
 from utils.regime_normalization import canonical_gamma_regime
@@ -115,7 +116,7 @@ def _export_head_calibrator(output_dir: Path) -> Path:
 
 
 def _eligible_replay_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    eligible = frame.loc[
+    eligible = apply_quality_label_view(frame).loc[
         frame["saved_spot_snapshot_path"].notna()
         & frame["saved_chain_snapshot_path"].notna()
     ].copy()
@@ -176,7 +177,7 @@ def _backfill_outcome_ready_replay_rows(frame: pd.DataFrame, limit: int) -> pd.D
         if col not in frame.columns:
             return pd.DataFrame()
 
-    working = frame.copy()
+    working = apply_quality_label_view(frame)
     working["signal_timestamp"] = pd.to_datetime(working["signal_timestamp"], errors="coerce", format="mixed")
     working["correct_60m_num"] = pd.to_numeric(working["correct_60m"], errors="coerce")
     working["signed_return_60m_bps_num"] = pd.to_numeric(working["signed_return_60m_bps"], errors="coerce")
@@ -370,6 +371,8 @@ def _run_replay_scenario(frame: pd.DataFrame, scenario: Scenario) -> pd.DataFram
 
 
 def _summarize_replay(frame: pd.DataFrame) -> dict[str, Any]:
+    frame = apply_quality_label_view(frame)
+
     def _reason_counts(series: pd.Series) -> dict[str, int]:
         counts: dict[str, int] = {}
         for value in series.dropna().astype(str):
@@ -517,6 +520,7 @@ def _proxy_frame(frame: pd.DataFrame, scenario: Scenario) -> pd.DataFrame:
 
 
 def _summarize_selected(frame: pd.DataFrame) -> dict[str, Any]:
+    frame = apply_quality_label_view(frame)
     if frame.empty:
         return {
             "selected_count": 0,
@@ -601,7 +605,7 @@ def _replay_candidates_with_priority(
             return archived, "archived_snapshot_pairs"
         return archived.assign(replay_candidate_source="archived_snapshot_pairs"), "archived_snapshot_pairs"
 
-    candidates = candidates.drop_duplicates(subset=["signal_id"], keep="first").copy()
+    candidates = apply_quality_label_view(candidates.drop_duplicates(subset=["signal_id"], keep="first").copy())
 
     proxy_cols = [
         "signal_id",
@@ -738,6 +742,7 @@ def _replay_candidates_with_priority(
 
 
 def _replay_sample_composition(frame: pd.DataFrame) -> dict[str, Any]:
+    frame = apply_quality_label_view(frame)
     if frame.empty:
         return {
             "total_rows": 0,

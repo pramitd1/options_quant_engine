@@ -86,6 +86,13 @@ EXECUTION_TRADE_KEYS = [
     "signal_calibrated_probability",
     "signal_success_probability",
     "directional_signal_probability",
+    "signal_confidence_score",
+    "signal_confidence_level",
+    "signal_confidence_calibration_status",
+    "signal_confidence_calibration_sample_size",
+    "signal_confidence_calibration_regime_match",
+    "signal_confidence_calibration_guardrail",
+    "signal_confidence_recalibration_guards",
     "score_calibration_segment_key",
     "regime_segment_guard",
     "regime_segment_key",
@@ -101,6 +108,34 @@ EXECUTION_TRADE_KEYS = [
     "historical_avg_close_bps",
     "historical_avg_tradeability_score",
     "historical_outcome_guard",
+    "data_quality_score",
+    "data_quality_status",
+    "data_quality_reasons",
+    "provider_health_summary",
+    "provider_health_score",
+    "provider_health_tier",
+    "provider_health_blocking_status",
+    "provider_health_blocking_reasons",
+    "data_readiness_score",
+    "data_confidence_tier",
+    "analytics_usable",
+    "execution_suggestion_usable",
+    "option_chain_validation_status",
+    "option_chain_is_valid",
+    "option_chain_is_stale",
+    "option_chain_issue_count",
+    "option_chain_warning_count",
+    "market_data_provenance_status",
+    "market_data_trade_blocking_status",
+    "requested_option_source",
+    "option_source",
+    "spot_source",
+    "market_data_source_consistency",
+    "market_data_timestamp_status",
+    "market_data_timestamp_delta_seconds",
+    "market_data_provenance_reasons",
+    "market_data_provenance_warnings",
+    "market_data_provenance_issues",
     "session_risk_governor",
     "session_risk_recent_signal_count",
     "session_risk_stopout_streak",
@@ -140,6 +175,13 @@ TRADER_VIEW_KEYS = list(dict.fromkeys([
     "signal_calibrated_probability",
     "signal_success_probability",
     "directional_signal_probability",
+    "signal_confidence_score",
+    "signal_confidence_level",
+    "signal_confidence_calibration_status",
+    "signal_confidence_calibration_sample_size",
+    "signal_confidence_calibration_regime_match",
+    "signal_confidence_calibration_guardrail",
+    "signal_confidence_recalibration_guards",
     "iv_hv_regime",
     "iv_hv_spread",
     "iv_hv_spread_relative",
@@ -204,6 +246,32 @@ TRADER_VIEW_KEYS = list(dict.fromkeys([
     "global_risk_size_cap",
     "data_quality_score",
     "data_quality_status",
+    "data_quality_reasons",
+    "provider_health_summary",
+    "provider_health_score",
+    "provider_health_tier",
+    "provider_health_blocking_status",
+    "provider_health_blocking_reasons",
+    "data_readiness_score",
+    "data_confidence_tier",
+    "analytics_usable",
+    "execution_suggestion_usable",
+    "option_chain_validation_status",
+    "option_chain_is_valid",
+    "option_chain_is_stale",
+    "option_chain_issue_count",
+    "option_chain_warning_count",
+    "market_data_provenance_status",
+    "market_data_trade_blocking_status",
+    "requested_option_source",
+    "option_source",
+    "spot_source",
+    "market_data_source_consistency",
+    "market_data_timestamp_status",
+    "market_data_timestamp_delta_seconds",
+    "market_data_provenance_reasons",
+    "market_data_provenance_warnings",
+    "market_data_provenance_issues",
     "historical_outcome_guard",
     "session_risk_governor",
     "session_risk_recent_signal_count",
@@ -286,6 +354,30 @@ def split_trade_payload(trade: dict[str, Any] | None) -> tuple[dict[str, Any] | 
             trade_audit[key] = value
 
     return execution_trade, trade_audit
+
+
+def build_trader_view(
+    trade: dict[str, Any] | None,
+    *,
+    execution_trade: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Build the operator-facing view without losing audit-only fallback fields."""
+
+    if not isinstance(trade, dict) and not isinstance(execution_trade, dict):
+        return None
+
+    if execution_trade is None and isinstance(trade, dict):
+        maybe_execution_trade = trade.get("execution_trade")
+        execution_trade = maybe_execution_trade if isinstance(maybe_execution_trade, dict) else None
+
+    view: dict[str, Any] = {}
+    for key in TRADER_VIEW_KEYS:
+        if isinstance(execution_trade, dict) and key in execution_trade:
+            view[key] = execution_trade[key]
+        elif isinstance(trade, dict) and key in trade:
+            view[key] = trade[key]
+
+    return view
 
 
 def attach_trade_views(trade: dict[str, Any] | None) -> dict[str, Any] | None:

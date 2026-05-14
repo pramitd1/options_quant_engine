@@ -16,6 +16,7 @@ import pandas as pd
 
 from research.ml_models.ml_config import FILTER_PERCENTILES, SIZING_BUCKETS
 from research.ml_models.ml_inference import compute_size_multiplier
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 
 
 def build_filter_simulation_report(df: pd.DataFrame) -> dict:
@@ -34,7 +35,8 @@ def build_filter_simulation_report(df: pd.DataFrame) -> dict:
     if "ml_rank_score" not in df.columns:
         return {"error": "ml_rank_score not found in dataset"}
 
-    df = df.copy()
+    raw_df = df.copy()
+    df = apply_quality_label_view(df)
     df["correct_60m_num"] = pd.to_numeric(df.get("correct_60m"), errors="coerce")
     df["return_60m_bps"] = pd.to_numeric(df.get("signed_return_60m_bps"), errors="coerce")
     df["return_120m_bps"] = pd.to_numeric(df.get("signed_return_120m_bps"), errors="coerce")
@@ -82,6 +84,7 @@ def build_filter_simulation_report(df: pd.DataFrame) -> dict:
     }
 
     return {
+        "label_quality_summary": label_quality_summary(raw_df),
         "filter_results": filter_results,
         "sizing_simulation": sizing_sim,
         "summary": summary,
@@ -91,6 +94,7 @@ def build_filter_simulation_report(df: pd.DataFrame) -> dict:
 def _compute_perf(df: pd.DataFrame, label: str) -> dict:
     """Compute basic performance metrics for a signal subset."""
     n = len(df)
+    n_labeled = int(df["correct_60m_num"].notna().sum())
     hit_rate = _safe_mean(df["correct_60m_num"])
     avg_return = _safe_mean(df["return_60m_bps"])
     avg_return_120 = _safe_mean(df["return_120m_bps"])
@@ -98,6 +102,7 @@ def _compute_perf(df: pd.DataFrame, label: str) -> dict:
     return {
         "label": label,
         "n_kept": n,
+        "n_labeled_60m": n_labeled,
         "hit_rate_60m": _rnd(hit_rate),
         "avg_return_bps": _rnd(avg_return),
         "avg_return_120m_bps": _rnd(avg_return_120),

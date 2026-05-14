@@ -513,6 +513,140 @@ def _compute_market_data_readiness(provider_health: dict, *, critical_failures: 
     }
 
 
+def _extract_chain_source(option_chain) -> str | None:
+    if not isinstance(option_chain, pd.DataFrame) or "source" not in option_chain.columns:
+        return None
+    try:
+        non_null_sources = option_chain["source"].dropna().astype(str).str.upper().str.strip().unique().tolist()
+        return non_null_sources[0] if non_null_sources else None
+    except Exception:
+        return None
+
+
+def _has_resolved_column(option_chain, canonical_name: str) -> bool:
+    return isinstance(option_chain, pd.DataFrame) and _resolve_column_name(option_chain, canonical_name) is not None
+
+
+def _build_unusable_option_chain_validation(
+    option_chain,
+    *,
+    issues: list[str],
+    warnings: list[str],
+    tradable_data: dict,
+) -> dict:
+    row_count = int(len(option_chain)) if isinstance(option_chain, pd.DataFrame) else 0
+    has_bid_column = _has_resolved_column(option_chain, "bidPrice")
+    has_ask_column = _has_resolved_column(option_chain, "askPrice")
+    has_quote_columns = has_bid_column or has_ask_column
+    has_two_sided_quote_columns = has_bid_column and has_ask_column
+
+    critical_failures = [str(issue) for issue in issues if str(issue).strip()]
+    readiness = {
+        "score": 0.0,
+        "tier": "FRAGILE",
+        "weak_components": [
+            "row",
+            "pricing",
+            "core_marketability",
+            "core_pairing",
+            "core_iv",
+            "atm_iv",
+        ],
+        "component_scores": {
+            "row": 0.0,
+            "pricing": 0.0,
+            "core_marketability": 0.0,
+            "core_pairing": 0.0,
+            "core_iv": 0.0,
+            "atm_iv": 0.0,
+            "iv_parity": 0.0,
+            "iv_staleness": 0.0,
+            "duplicate": 100.0,
+            "quote_integrity": 0.0,
+        },
+    }
+    provider_health = {
+        "source": _extract_chain_source(option_chain),
+        "row_health": "WEAK",
+        "pricing_health": "WEAK",
+        "trade_price_health": "WEAK",
+        "quote_health": "WEAK" if has_quote_columns else None,
+        "pricing_basis": "TRADE_OR_QUOTE" if has_quote_columns else "TRADE_ONLY",
+        "quote_coverage_mode": "STRUCT_ONLY" if has_two_sided_quote_columns else "ONE_SIDED",
+        "pairing_health": "WEAK",
+        "iv_health": "WEAK",
+        "duplicate_health": "GOOD",
+        "summary_status": "WEAK",
+        "row_health_escalation_applied": False,
+        "analytics_usable": False,
+        "execution_suggestion_usable": False,
+        "core_rows": 0,
+        "core_effective_priced_ratio": 0.0,
+        "core_paired_ratio": 0.0,
+        "core_iv_ratio": 0.0,
+        "core_one_sided_quote_ratio": 0.0 if has_two_sided_quote_columns else None,
+        "core_marketability_health": "WEAK",
+        "core_pairing_health": "WEAK",
+        "core_iv_health": "WEAK",
+        "core_quote_integrity_health": "N/A",
+        "atm_iv_health": "WEAK",
+        "atm_iv_midpoint": None,
+        "atm_iv_ce_found": False,
+        "atm_iv_pe_found": False,
+        "atm_iv_in_range": False,
+        "atm_iv_vs_vix_consistent": None,
+        "iv_parity_health": "N/A",
+        "iv_parity_breach_ratio": None,
+        "iv_parity_checked_pairs": 0,
+        "iv_staleness_health": "WEAK",
+        "iv_stale_ratio": None,
+        "trade_blocking_status": "BLOCK",
+        "trade_blocking_reasons": critical_failures,
+        "non_critical_weak_components": [],
+        "market_data_readiness_score": readiness["score"],
+        "market_data_readiness_tier": readiness["tier"],
+        "market_data_weak_components": readiness["weak_components"],
+        "market_data_component_scores": readiness["component_scores"],
+    }
+
+    validation_payload = {
+        "is_valid": False,
+        "is_stale": False,
+        "analytics_usable": False,
+        "execution_suggestion_usable": False,
+        "issues": issues,
+        "warnings": warnings,
+        "row_count": row_count,
+        "ce_rows": 0,
+        "pe_rows": 0,
+        "priced_rows": 0,
+        "priced_ratio": 0.0,
+        "quoted_rows": 0,
+        "quoted_ratio": 0.0 if has_quote_columns else None,
+        "bid_present_rows": 0,
+        "ask_present_rows": 0,
+        "one_sided_quote_rows": 0,
+        "effective_priced_rows": 0,
+        "effective_priced_ratio": 0.0,
+        "iv_rows": 0,
+        "iv_ratio": 0.0,
+        "strike_count": 0,
+        "paired_strike_count": 0,
+        "paired_strike_ratio": 0.0,
+        "duplicate_row_count": 0,
+        "duplicate_ratio": 0.0,
+        "selected_expiry": None,
+        "expiry_count": 0,
+        "expiry_missing_rows": 0,
+        "provider_health": provider_health,
+        "market_data_readiness_score": readiness["score"],
+        "market_data_readiness_tier": readiness["tier"],
+        "tradable_data": tradable_data,
+    }
+    validation_payload["feature_reliability_weights"] = compute_feature_reliability_weights(validation_payload)
+    return validation_payload
+
+
 def validate_option_chain(option_chain, spot=None, india_vix_level=None):
     """
     Purpose:
@@ -551,41 +685,30 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
 
     if option_chain is None:
         issues.append("option_chain_none")
-        return {
-            "is_valid": False,
-            "analytics_usable": False,
-            "execution_suggestion_usable": False,
-            "issues": issues,
-            "warnings": warnings,
-            "tradable_data": tradable_data,
-            "feature_reliability_weights": compute_feature_reliability_weights({"tradable_data": tradable_data}),
-            "row_count": 0,
-            "ce_rows": 0,
-            "pe_rows": 0,
-            "priced_rows": 0,
-            "strike_count": 0,
-            "paired_strike_count": 0,
-            "paired_strike_ratio": 0.0,
-        }
+        return _build_unusable_option_chain_validation(
+            option_chain,
+            issues=issues,
+            warnings=warnings,
+            tradable_data=tradable_data,
+        )
+
+    if not isinstance(option_chain, pd.DataFrame):
+        issues.append(f"option_chain_invalid_type:{type(option_chain).__name__}")
+        return _build_unusable_option_chain_validation(
+            option_chain,
+            issues=issues,
+            warnings=warnings,
+            tradable_data=tradable_data,
+        )
 
     if option_chain.empty:
         issues.append("option_chain_empty")
-        return {
-            "is_valid": False,
-            "analytics_usable": False,
-            "execution_suggestion_usable": False,
-            "issues": issues,
-            "warnings": warnings,
-            "tradable_data": tradable_data,
-            "feature_reliability_weights": compute_feature_reliability_weights({"tradable_data": tradable_data}),
-            "row_count": 0,
-            "ce_rows": 0,
-            "pe_rows": 0,
-            "priced_rows": 0,
-            "strike_count": 0,
-            "paired_strike_count": 0,
-            "paired_strike_ratio": 0.0,
-        }
+        return _build_unusable_option_chain_validation(
+            option_chain,
+            issues=issues,
+            warnings=warnings,
+            tradable_data=tradable_data,
+        )
 
     required_cols = ["strikePrice", "OPTION_TYP", "lastPrice"]
     missing_cols = [
@@ -694,13 +817,7 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
     if has_two_sided_quote_columns and one_sided_quote_rows > 0:
         warnings.append(f"one_sided_quote_rows:{one_sided_quote_rows}")
 
-    source = None
-    if "source" in option_chain.columns:
-        try:
-            non_null_sources = option_chain["source"].dropna().astype(str).str.upper().str.strip().unique().tolist()
-            source = non_null_sources[0] if non_null_sources else None
-        except Exception:
-            source = None
+    source = _extract_chain_source(option_chain)
 
     priced_ratio = round(priced_rows / max(row_count, 1), 4)
     quoted_ratio = round(quoted_rows / max(row_count, 1), 4) if has_quote_columns else 0.0
@@ -963,6 +1080,7 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
 
     validation_payload = {
         "is_valid": len(issues) == 0,
+        "is_stale": False,
         "analytics_usable": analytics_usable,
         "execution_suggestion_usable": execution_suggestion_usable,
         "issues": issues,

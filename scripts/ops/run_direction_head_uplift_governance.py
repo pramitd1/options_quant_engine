@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 from app.engine_runner import run_engine_snapshot
 from config.policy_resolver import temporary_parameter_pack
 from research.signal_evaluation.dataset import CUMULATIVE_DATASET_PATH, load_signals_dataset
+from research.signal_evaluation.label_quality import apply_quality_label_view
 from scripts.ops.run_segmented_calibration_governance import (
     _archived_replay_rows,
     _backfill_outcome_ready_replay_rows,
@@ -184,6 +185,7 @@ def _run_scenario(
 
 
 def _summarize_trade_slice(frame: pd.DataFrame) -> dict[str, Any]:
+    frame = apply_quality_label_view(frame)
     if frame.empty:
         return {
             "rows": 0,
@@ -216,7 +218,7 @@ def _summarize_trade_slice(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def _direction_slice(frame: pd.DataFrame) -> pd.DataFrame:
-    rows = frame.copy()
+    rows = apply_quality_label_view(frame)
     rows["direction"] = rows["direction"].astype(str).str.upper()
     rows = rows.loc[rows["direction"].isin(["CALL", "PUT"])].copy()
     rows["signed_return_60m_bps"] = pd.to_numeric(

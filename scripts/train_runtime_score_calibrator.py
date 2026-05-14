@@ -17,6 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from research.signal_evaluation.dataset import CUMULATIVE_DATASET_PATH, load_signals_dataset
+from research.signal_evaluation.label_quality import (
+    QUALITY_HIT_COLUMN,
+    has_quality_label_annotations,
+    select_quality_labeled_rows,
+)
 from strategy.score_calibration import (
     CALIBRATION_SELECTOR_FIELDS,
     RuntimeScoreCalibrator,
@@ -42,6 +47,8 @@ MAX_SINGLETON_SEGMENT_ABS_GAP = {
 def _pick_return_column(columns):
     cols = [str(c) for c in columns]
     preferred = [
+        "primary_outcome_return_bps",
+        "signed_return_60m_bps",
         "return_60m_bps",
         "pnl_60m_bps",
         "realized_return_60m_bps",
@@ -56,6 +63,12 @@ def _pick_return_column(columns):
         if "60m" in lc and ("return" in lc or "pnl" in lc):
             return c
     return None
+
+
+def _select_calibration_training_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, str, str]:
+    if has_quality_label_annotations(df):
+        return select_quality_labeled_rows(df, fallback_to_legacy=False), QUALITY_HIT_COLUMN, "calibration_label_available"
+    return df.copy(), "correct_60m", "legacy_correct_60m"
 
 
 def _fit_isotonic_calibrator(raw_scores, hit_flags):
@@ -195,17 +208,21 @@ def main() -> int:
     if df.empty:
         raise RuntimeError("Cumulative dataset is empty")
 
-    req_cols = ["composite_signal_score", "correct_60m"]
+    df, label_col, label_quality_filter = _select_calibration_training_frame(df)
+    if df.empty:
+        raise RuntimeError("No calibration-quality rows are available for runtime score calibration")
+
+    req_cols = ["composite_signal_score", label_col]
     for col in req_cols:
         if col not in df.columns:
             raise KeyError(f"Missing required column: {col}")
 
     raw_scores = pd.to_numeric(df["composite_signal_score"], errors="coerce").fillna(50.0).astype(float).tolist()
-    hit_flags = (pd.to_numeric(df["correct_60m"], errors="coerce").fillna(0.0) > 0).astype(float)
+    hit_flags = (pd.to_numeric(df[label_col], errors="coerce").fillna(0.0) > 0).astype(float)
 
     # Utility-aware target: blend directional correctness with realized return quality
     # when return columns are available in the cumulative dataset.
-    target_source = "correct_60m"
+    target_source = label_col
     return_col = _pick_return_column(df.columns)
     if return_col is not None:
         r = pd.to_numeric(df[return_col], errors="coerce").fillna(0.0).astype(float)
@@ -216,7 +233,7 @@ def main() -> int:
             + (CALIBRATION_TARGET_UTILITY_WEIGHT * utility)
         )
         target_source = (
-            f"blend(correct_60m:{CALIBRATION_TARGET_CORRECTNESS_WEIGHT:.2f},"
+            f"blend({label_col}:{CALIBRATION_TARGET_CORRECTNESS_WEIGHT:.2f},"
             f"{return_col}:{CALIBRATION_TARGET_UTILITY_WEIGHT:.2f})"
         )
     else:
@@ -226,6 +243,7 @@ def main() -> int:
 
     default_calibrator, report = _fit_isotonic_calibrator(raw_scores, hit_flags)
     report["target_source"] = target_source
+    report["label_quality_filter"] = label_quality_filter
     report["tuning_objective"] = _compute_calibration_objective_metrics(raw_scores, hit_flags, default_calibrator)
     report["calibration_drift"] = _compute_calibration_drift_metrics(df, raw_scores, hit_flags, default_calibrator)
     report["segmentation"] = {

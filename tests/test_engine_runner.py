@@ -48,6 +48,13 @@ def _option_chain_frame() -> pd.DataFrame:
     )
 
 
+def _option_chain_with_timestamp(timestamp: str, *, source: str = "NSE") -> pd.DataFrame:
+    frame = _option_chain_frame()
+    frame["source"] = source
+    frame["timestamp"] = timestamp
+    return frame
+
+
 def _spot_snapshot() -> dict:
     return {
         "spot": 22050.0,
@@ -59,6 +66,14 @@ def _spot_snapshot() -> dict:
         "lookback_avg_range_pct": 0.9,
         "validation": {"is_valid": True, "is_stale": False},
     }
+
+
+def _spot_snapshot_with_source(*, spot_source: str, consistency: str = "SOURCE_NATIVE_SPOT") -> dict:
+    snapshot = _spot_snapshot()
+    snapshot["spot_source"] = spot_source
+    snapshot["option_source_requested"] = "ICICI"
+    snapshot["spot_option_source_consistency"] = consistency
+    return snapshot
 
 
 def test_run_engine_snapshot_replay_requires_snapshot_files(monkeypatch):
@@ -263,6 +278,119 @@ def test_run_preloaded_engine_snapshot_uses_regime_shadow_candidate_when_rollout
     assert comparisons == ["experimental_v1"]
 
 
+def test_run_preloaded_engine_snapshot_exposes_mixed_source_provenance(monkeypatch):
+    captured = {}
+    option_chain = _option_chain_with_timestamp("2026-03-15T09:20:30+05:30", source="ICICI")
+
+    monkeypatch.setattr(engine_runner, "evaluate_scheduled_event_risk", lambda symbol, as_of: {"macro_event_risk_score": 0})
+    monkeypatch.setattr(engine_runner, "build_global_market_snapshot", lambda symbol, as_of: {"vix": 13.0})
+    monkeypatch.setattr(engine_runner, "resolve_selected_expiry", lambda option_chain: "2026-03-26")
+    monkeypatch.setattr(engine_runner, "filter_option_chain_by_expiry", lambda option_chain, expiry: option_chain)
+    monkeypatch.setattr(
+        engine_runner,
+        "validate_option_chain",
+        lambda option_chain, **kwargs: {
+            "is_valid": True,
+            "is_stale": False,
+            "selected_expiry": "2026-03-26",
+            "provider_health": {"summary_status": "GOOD", "source": "ICICI"},
+        },
+    )
+
+    def fake_eval(*, parameter_pack_name, **kwargs):
+        captured["spot_validation"] = kwargs["spot_validation"]
+        captured["option_chain_validation"] = kwargs["option_chain_validation"]
+        return {
+            "parameter_pack_name": parameter_pack_name or "default_pack",
+            "macro_news_state": {"macro_bias": "NEUTRAL"},
+            "global_risk_state": {"global_risk_state": "GLOBAL_NEUTRAL"},
+            "trade": {"signal_id": "mixed-source-signal", "ranked_strike_candidates": []},
+        }
+
+    monkeypatch.setattr(engine_runner, "_evaluate_snapshot_for_pack", fake_eval)
+
+    result = engine_runner.run_preloaded_engine_snapshot(
+        symbol="NIFTY",
+        mode="LIVE",
+        source="ICICI",
+        spot_snapshot=_spot_snapshot_with_source(
+            spot_source="yfinance_intraday",
+            consistency="MIXED_SPOT_OPTION_SOURCE",
+        ),
+        option_chain=option_chain,
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        capture_signal_evaluation=False,
+        headline_service=_HeadlineService(),
+    )
+
+    provenance = result["market_data_provenance"]
+    assert result["ok"] is True
+    assert provenance["status"] == "CAUTION"
+    assert provenance["source_consistency"] == "MIXED_SPOT_OPTION_SOURCE"
+    assert provenance["trade_blocking_status"] == "PASS"
+    assert "mixed_spot_option_source" in provenance["warnings"]
+    assert "market_data_provenance:mixed_spot_option_source" in result["spot_validation"]["warnings"]
+    assert captured["option_chain_validation"]["market_data_provenance"]["status"] == "CAUTION"
+
+
+def test_run_preloaded_engine_snapshot_blocks_severe_timestamp_mismatch(monkeypatch):
+    option_chain = _option_chain_with_timestamp("2026-03-15T09:40:30+05:30", source="NSE")
+
+    monkeypatch.setattr(engine_runner, "evaluate_scheduled_event_risk", lambda symbol, as_of: {"macro_event_risk_score": 0})
+    monkeypatch.setattr(engine_runner, "build_global_market_snapshot", lambda symbol, as_of: {"vix": 13.0})
+    monkeypatch.setattr(engine_runner, "resolve_selected_expiry", lambda option_chain: "2026-03-26")
+    monkeypatch.setattr(engine_runner, "filter_option_chain_by_expiry", lambda option_chain, expiry: option_chain)
+    monkeypatch.setattr(
+        engine_runner,
+        "validate_option_chain",
+        lambda option_chain, **kwargs: {
+            "is_valid": True,
+            "is_stale": False,
+            "selected_expiry": "2026-03-26",
+            "provider_health": {"summary_status": "GOOD", "source": "NSE"},
+        },
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "build_macro_news_state",
+        lambda **kwargs: SimpleNamespace(to_dict=lambda: {"macro_regime": "MACRO_NEUTRAL"}),
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "build_global_risk_state",
+        lambda **kwargs: {"global_risk_state": "GLOBAL_NEUTRAL"},
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "generate_trade",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("generate_trade should not run")),
+    )
+
+    result = engine_runner.run_preloaded_engine_snapshot(
+        symbol="NIFTY",
+        mode="LIVE",
+        source="NSE",
+        spot_snapshot=_spot_snapshot_with_source(spot_source="NSE", consistency="SOURCE_NATIVE_SPOT"),
+        option_chain=option_chain,
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        capture_signal_evaluation=False,
+        headline_service=_HeadlineService(),
+    )
+
+    assert result["ok"] is True
+    assert result["trade"] is None
+    assert result["market_data_provenance"]["status"] == "WEAK"
+    assert result["market_data_provenance"]["trade_blocking_status"] == "BLOCK"
+    assert result["spot_validation"]["is_valid"] is False
+    assert "market_data_provenance_block" in result["spot_validation"]["issues"]
+
+
 def test_run_engine_snapshot_closes_managed_router(monkeypatch):
     class _Router:
         def __init__(self):
@@ -369,6 +497,38 @@ def test_run_engine_snapshot_replay_uses_source_aware_selection_and_emits_diagno
     assert result["replay_selection"]["skipped_chain_files"][0]["reason"] == "empty_file"
 
 
+def test_run_engine_snapshot_replay_does_not_fallback_to_any_source(monkeypatch):
+    calls = []
+
+    def _fake_resolve(symbol, *, replay_dir, source_label):
+        calls.append(source_label)
+        return {
+            "spot_path": "spot.json",
+            "chain_path": None,
+            "selection_reason": "no_valid_chain_snapshot",
+            "source_label": source_label,
+            "skipped_chain_files": [],
+        }
+
+    monkeypatch.setattr(engine_runner, "resolve_replay_snapshot_paths", _fake_resolve)
+
+    result = engine_runner.run_engine_snapshot(
+        symbol="NIFTY",
+        mode="REPLAY",
+        source="ICICI",
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        replay_dir="debug_samples",
+        save_live_snapshots=False,
+    )
+
+    assert result["ok"] is False
+    assert calls == ["ICICI"]
+    assert "selected source 'ICICI'" in result["error"]
+
+
 def test_run_preloaded_engine_snapshot_fail_closed_when_overlay_construction_fails(monkeypatch):
     monkeypatch.setenv("RUNTIME_FAIL_CLOSED_ON_OVERLAY_FAILURE", "1")
 
@@ -416,6 +576,57 @@ def test_run_preloaded_engine_snapshot_fail_closed_when_overlay_construction_fai
     assert result["trade"] is None
     assert result["global_risk_state"].get("overlay_fail_closed_blocked") is True
     assert "macro_news_state_construction_failed" in (result["global_risk_state"].get("overlay_failure_reasons") or [])
+
+
+def test_evaluate_snapshot_for_pack_treats_replay_as_point_in_time(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(engine_runner, "get_active_parameter_pack", lambda: {"name": "default_pack"})
+    monkeypatch.setattr(
+        engine_runner,
+        "build_macro_news_state",
+        lambda **kwargs: SimpleNamespace(to_dict=lambda: {"macro_regime": "MACRO_NEUTRAL"}),
+    )
+    monkeypatch.setattr(
+        engine_runner,
+        "build_global_risk_state",
+        lambda **kwargs: {"global_risk_state": "GLOBAL_NEUTRAL"},
+    )
+
+    def _fake_generate_trade(**kwargs):
+        captured["historical_mode"] = kwargs.get("historical_mode")
+        return {"signal_id": "replay-signal", "ranked_strike_candidates": []}
+
+    monkeypatch.setattr(engine_runner, "generate_trade", _fake_generate_trade)
+
+    result = engine_runner._evaluate_snapshot_for_pack(
+        parameter_pack_name=None,
+        symbol="NIFTY",
+        spot=22050.0,
+        option_chain=_option_chain_frame(),
+        previous_chain=None,
+        day_high=22100.0,
+        day_low=21980.0,
+        day_open=22010.0,
+        prev_close=22020.0,
+        lookback_avg_range_pct=0.9,
+        spot_validation={"is_valid": True, "is_stale": False},
+        option_chain_validation={"is_valid": True, "is_stale": False, "selected_expiry": "2026-03-26"},
+        apply_budget_constraint=False,
+        requested_lots=1,
+        lot_size=50,
+        max_capital=100000,
+        macro_event_state={"macro_event_risk_score": 0},
+        headline_state=_HeadlineService().fetch(symbol="NIFTY", as_of="2026-03-15T09:20:00+05:30", replay_mode=True),
+        global_market_snapshot={"data_available": False},
+        holding_profile="AUTO",
+        spot_timestamp="2026-03-15T09:20:00+05:30",
+        backtest_mode=False,
+        mode="REPLAY",
+    )
+
+    assert captured["historical_mode"] is True
+    assert result["trade"]["signal_id"] == "replay-signal"
 
 
 def test_run_engine_snapshot_returns_error_when_live_option_chain_is_empty(monkeypatch):

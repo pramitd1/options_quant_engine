@@ -31,6 +31,7 @@ from research.ml_evaluation.ml_ranking_report import build_ranking_report
 from research.ml_evaluation.ml_calibration_report import build_calibration_report
 from research.ml_evaluation.ml_comparison_report import build_comparison_report
 from research.ml_evaluation.ml_filter_simulation import build_filter_simulation_report
+from research.signal_evaluation.label_quality import label_quality_summary
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ def _build_summary(
     return {
         "evaluation_date": datetime.now().isoformat(),
         "dataset_size": n_total,
+        "label_quality_summary": label_quality_summary(df),
         "ml_coverage": {
             "rank_score_available": int(n_with_rank),
             "confidence_score_available": int(n_with_conf),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -128,7 +129,7 @@ class SignalEvaluationReportsTests(unittest.TestCase):
         frame = self._sample_frame()
         frame["signal_timestamp"] = [
             "2026-03-10T09:20:00+05:30",
-            "2026-03-11T09:20:00+05:30",
+            "2026-03-11 03:50:00+00:00",
         ]
         frame["correct_60m"] = [1, 0]
         frame["signed_return_60m_bps"] = [54.0, -23.0]
@@ -141,12 +142,24 @@ class SignalEvaluationReportsTests(unittest.TestCase):
 
         self.assertEqual(summary["production_pack_name"], "baseline_v1")
         self.assertEqual(summary["total_signal_count"], 2)
+        self.assertEqual(summary["evaluation_period"]["trading_days"], 2)
+        self.assertEqual(summary["signal_frequency"]["active_days"], 2)
         self.assertIn("signals_by_symbol", summary)
         self.assertIn("horizon_performance", summary)
         self.assertIn("score_statistics", summary)
         self.assertIn("score_bucket_performance", summary)
         self.assertIn("premium_summary", summary)
         self.assertIn("premium_bucket_performance", summary)
+        self.assertIn("threshold_replay", summary)
+        self.assertGreater(len(summary["threshold_replay"]["threshold_replay_candidates"]), 0)
+        self.assertIn("walk_forward_validation", summary["threshold_replay"])
+        self.assertIn("threshold_governance", summary)
+        self.assertIn("overall_status", summary["threshold_governance"])
+        horizon_60m = next(row for row in summary["horizon_performance"] if row["horizon"] == "60m")
+        self.assertEqual(horizon_60m["sample_quality"], "INSUFFICIENT_EVIDENCE")
+        self.assertIsNotNone(horizon_60m["hit_rate_ci_low"])
+        self.assertIsNotNone(horizon_60m["hit_rate_ci_high"])
+        self.assertIn("sample_quality", summary["signals_by_direction"][0])
 
         tmp_dir = Path(self.id().replace(".", "_"))
         try:
@@ -159,8 +172,15 @@ class SignalEvaluationReportsTests(unittest.TestCase):
             )
             self.assertTrue(Path(artifact["json_path"]).exists())
             self.assertTrue(Path(artifact["markdown_path"]).exists())
+            self.assertTrue(Path(artifact["manifest_path"]).exists())
+            manifest = json.loads(Path(artifact["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["timestamp_parse"]["parsed_count"], 2)
+            self.assertEqual(manifest["timestamp_parse"]["failed_count"], 0)
             self.assertIn("signals_by_symbol", artifact["csv_paths"])
             self.assertIn("premium_bucket_performance", artifact["csv_paths"])
+            self.assertIn("threshold_replay_candidates", artifact["csv_paths"])
+            self.assertIn("threshold_walk_forward_splits", artifact["csv_paths"])
+            self.assertIn("threshold_governance_candidates", artifact["csv_paths"])
         finally:
             if tmp_dir.exists():
                 for child in sorted(tmp_dir.rglob("*"), reverse=True):
@@ -168,6 +188,32 @@ class SignalEvaluationReportsTests(unittest.TestCase):
                         child.unlink()
                     elif child.is_dir():
                         child.rmdir()
+
+    def test_summary_uses_quality_approved_primary_labels(self):
+        frame = self._sample_frame()
+        frame["signal_timestamp"] = [
+            "2026-03-10T09:20:00+05:30",
+            "2026-03-10T09:25:00+05:30",
+        ]
+        frame["correct_60m"] = [1, 1]
+        frame["signed_return_60m_bps"] = [54.0, 75.0]
+        frame["calibration_label"] = [1, None]
+        frame["calibration_label_available"] = [True, False]
+        frame["primary_outcome_return_bps"] = [54.0, None]
+        frame["label_quality_status"] = ["CLEAN", "UNUSABLE"]
+        frame["label_quality_reasons"] = ["", "direction_unresolved"]
+
+        summary = build_signal_evaluation_summary(frame)
+
+        quality = summary["label_quality_summary"]
+        self.assertEqual(quality["raw_labeled_rows"], 2)
+        self.assertEqual(quality["quality_labeled_rows"], 1)
+        self.assertEqual(quality["excluded_labeled_rows"], 1)
+        self.assertEqual(summary["expected_value_metrics"]["total_signals"], 1)
+
+        horizon_60m = next(row for row in summary["horizon_performance"] if row["horizon"] == "60m")
+        self.assertEqual(horizon_60m["sample_count"], 1)
+        self.assertEqual(horizon_60m["hit_rate"], 1.0)
 
 
 if __name__ == "__main__":

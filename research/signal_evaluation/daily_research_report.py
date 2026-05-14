@@ -22,8 +22,46 @@ from typing import Any
 import pandas as pd
 
 from utils.numerics import safe_float
+from research.signal_evaluation.confidence import outcome_confidence_fields
 from research.signal_evaluation.narrative_provider import generate_narrative as _ai_narrative
 from research.signal_evaluation.evaluator import update_signal_dataset_outcomes
+from research.signal_evaluation.drift_monitor import write_signal_drift_report
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+from research.signal_evaluation.report_manifest import write_report_reproducibility_manifest
+from research.signal_evaluation.threshold_governance import (
+    DEFAULT_THRESHOLD_GOVERNANCE_DIR,
+    PROMOTE_TO_REVIEW,
+    write_threshold_governance_report,
+)
+from research.signal_evaluation.threshold_adoption_reconciliation import (
+    DEFAULT_THRESHOLD_ADOPTION_RECONCILIATION_DIR,
+    write_threshold_adoption_reconciliation_report,
+)
+from research.signal_evaluation.threshold_policy_experiment import (
+    DEFAULT_THRESHOLD_POLICY_EXPERIMENT_DIR,
+    write_threshold_policy_experiment_report,
+    write_threshold_policy_experiment_skip,
+)
+from research.signal_evaluation.threshold_post_promotion_monitor import (
+    DEFAULT_THRESHOLD_POST_PROMOTION_MONITOR_DIR,
+    write_threshold_post_promotion_monitor_report,
+)
+from research.signal_evaluation.threshold_promotion_review import (
+    DEFAULT_THRESHOLD_PROMOTION_REVIEW_DIR,
+    write_threshold_promotion_review_package,
+)
+from research.signal_evaluation.threshold_shadow_simulation import (
+    DEFAULT_THRESHOLD_SHADOW_SIMULATION_DIR,
+    write_threshold_shadow_simulation_report,
+    write_threshold_shadow_simulation_skip,
+)
+from research.signal_evaluation.threshold_shadow_review import (
+    DEFAULT_THRESHOLD_SHADOW_REVIEW_DIR,
+    write_threshold_shadow_review_report,
+    write_threshold_shadow_review_skip,
+)
+from research.signal_evaluation.threshold_replay import build_threshold_replay_summary
+from utils.timestamp_helpers import coerce_timestamp_series
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +69,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATASET_PATH = PROJECT_ROOT / "research" / "signal_evaluation" / "signals_dataset.csv"
 DEFAULT_CUMULATIVE_DATASET_PATH = PROJECT_ROOT / "research" / "signal_evaluation" / "signals_dataset_cumul.csv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "documentation" / "daily_reports"
+DEFAULT_DRIFT_OUTPUT_DIR = PROJECT_ROOT / "research" / "signal_evaluation" / "reports" / "drift_monitoring"
 
 # ---------------------------------------------------------------------------
 # Horizons used across the report
@@ -94,11 +133,23 @@ def _pct(value: Any, digits: int = 2) -> str:
     return f"{round(float(v) * 100, digits)}%"
 
 
+def _ci_pct(low: Any, high: Any) -> str:
+    if low is None or high is None:
+        return "—"
+    return f"{_pct(low)}–{_pct(high)}"
+
+
+def _ci_bps(low: Any, high: Any) -> str:
+    if low is None or high is None:
+        return "—"
+    return f"{_r(low, 2)}–{_r(high, 2)}"
+
+
 def _load_dataset(path: Path) -> pd.DataFrame:
     """Load the signals dataset CSV."""
     df = pd.read_csv(path)
     if "signal_timestamp" in df.columns:
-        df["signal_timestamp"] = pd.to_datetime(df["signal_timestamp"], errors="coerce", format="mixed")
+        df["signal_timestamp"] = coerce_timestamp_series(df["signal_timestamp"])
     return df
 
 
@@ -774,8 +825,8 @@ def _section_horizon_performance(day_df: pd.DataFrame) -> list[str]:
         "with peak performance at short horizons suggest transient microstructure-driven alpha, "
         "while signals that perform well at longer horizons indicate durable informational edge.*",
         "",
-        "| Horizon | Samples | Avg Return (bps) | Avg Signed Return (bps) | Hit Rate |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Horizon | Samples | Avg Return (bps) | Avg Signed Return (bps) | Return 95% CI (bps) | Hit Rate | Hit Rate 95% CI | Evidence |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
 
     for label, raw_col, signed_col, correct_col in HORIZON_DEFS:
@@ -786,7 +837,12 @@ def _section_horizon_performance(day_df: pd.DataFrame) -> list[str]:
         avg_ret = _r(raw_s.mean(), 4) if raw_col else "—"
         avg_signed = _r(signed_s.mean(), 2)
         hr = _pct(correct_s.mean())
-        lines.append(f"| {label} | {n} | {avg_ret} | {avg_signed} | {hr} |")
+        confidence = outcome_confidence_fields(correct_s, signed_s, sample_count=n)
+        hit_ci = _ci_pct(confidence.get("hit_rate_ci_low"), confidence.get("hit_rate_ci_high"))
+        ret_ci = _ci_bps(confidence.get("return_ci_low_bps"), confidence.get("return_ci_high_bps"))
+        lines.append(
+            f"| {label} | {n} | {avg_ret} | {avg_signed} | {ret_ci} | {hr} | {hit_ci} | {confidence.get('sample_quality')} |"
+        )
 
     lines.append("")
     return lines
@@ -1240,6 +1296,678 @@ def _section_score_calibration(day_df: pd.DataFrame) -> list[str]:
     return lines
 
 
+def _threshold_value_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "all"
+    return _r(value, 4)
+
+
+def _section_threshold_replay(day_df: pd.DataFrame) -> list[str]:
+    lines = [
+        "## Threshold Replay Diagnostics",
+        "",
+        "*Threshold replay evaluates historical signal outcomes under advisory score and "
+        "probability floors. It is a research diagnostic only: it does not change live signal "
+        "generation, data sources, or trading execution behavior.*",
+        "",
+        "### Overall Candidate Thresholds",
+        "",
+        "| Rank | Field | Threshold | Signals | Labels | Hit Rate 60m | Avg Return 60m (bps) | Objective | Holdout Avg Return | Evidence | Stability |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+
+    replay = build_threshold_replay_summary(day_df, top_n=8)
+    threshold_rows = replay.get("threshold_replay_candidates", []) or []
+    if threshold_rows:
+        for row in threshold_rows[:8]:
+            lines.append(
+                f"| {row.get('candidate_rank')} | {row.get('threshold_field')} | "
+                f"{_threshold_value_text(row.get('threshold_value'))} | {row.get('signal_count')} | "
+                f"{row.get('label_count_60m')} | {_pct(row.get('hit_rate_60m'))} | "
+                f"{_r(row.get('avg_signed_return_60m_bps'), 2)} | {_r(row.get('objective_score'), 2)} | "
+                f"{_r(row.get('holdout_avg_signed_return_60m_bps'), 2)} | {row.get('sample_quality')} | "
+                f"{row.get('stability_status')} |"
+            )
+    else:
+        lines.append("| (insufficient data) | — | — | — | — | — | — | — | — | — | — |")
+
+    regime_rows = replay.get("regime_threshold_replay_candidates", []) or []
+    lines.extend([
+        "",
+        "### Regime-Conditioned Candidates",
+        "",
+        "| Rank | Regime | Value | Field | Threshold | Labels | Hit Rate 60m | Avg Return 60m (bps) | Evidence | Stability |",
+        "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+    ])
+    if regime_rows:
+        for row in regime_rows[:8]:
+            lines.append(
+                f"| {row.get('candidate_rank')} | {row.get('regime_field')} | {row.get('regime_value')} | "
+                f"{row.get('threshold_field')} | {_threshold_value_text(row.get('threshold_value'))} | "
+                f"{row.get('label_count_60m')} | {_pct(row.get('hit_rate_60m'))} | "
+                f"{_r(row.get('avg_signed_return_60m_bps'), 2)} | {row.get('sample_quality')} | "
+                f"{row.get('stability_status')} |"
+            )
+    else:
+        lines.append("| (insufficient data) | — | — | — | — | — | — | — | — | — |")
+
+    walk_forward = replay.get("walk_forward_validation", {}) or {}
+    walk_summary = walk_forward.get("summary", {}) or {}
+    walk_rows = walk_forward.get("splits", []) or []
+    lines.extend([
+        "",
+        "### Walk-Forward Threshold Validation",
+        "",
+    ])
+    if walk_summary:
+        lines.extend(
+            [
+                f"- Robustness status: **{walk_summary.get('robustness_status')}**",
+                f"- Evaluated splits: {walk_summary.get('evaluated_split_count')} / {walk_summary.get('split_count')}",
+                f"- Positive holdout rate: {_pct(walk_summary.get('positive_holdout_rate'))}",
+                f"- Avg holdout return 60m: {_r(walk_summary.get('avg_holdout_return_60m_bps'), 2)} bps",
+                f"- Worst holdout return 60m: {_r(walk_summary.get('worst_holdout_return_60m_bps'), 2)} bps",
+                "",
+            ]
+        )
+    if walk_rows:
+        lines.extend(
+            [
+                "| Split | Selected Field | Threshold | Status | Train Labels | Holdout Labels | Holdout Hit Rate | Holdout Avg Return 60m (bps) |",
+                "| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for row in walk_rows[:8]:
+            lines.append(
+                f"| {row.get('split_id')} | {row.get('threshold_field')} | {_threshold_value_text(row.get('threshold_value'))} | "
+                f"{row.get('split_status')} | {row.get('train_label_count_60m')} | {row.get('holdout_label_count_60m')} | "
+                f"{_pct(row.get('holdout_hit_rate_60m'))} | {_r(row.get('holdout_avg_signed_return_60m_bps'), 2)} |"
+            )
+    else:
+        lines.append("Insufficient chronological history for walk-forward validation.")
+
+    lines.append("")
+    return lines
+
+
+def _section_threshold_governance(governance_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Governance",
+        "",
+        "*Threshold governance classifies replay candidates for human review. It is advisory only "
+        "and never changes runtime thresholds or execution behavior.*",
+        "",
+    ]
+    if not governance_artifact:
+        lines.append("Threshold governance artifact was not generated.")
+        lines.append("")
+        return lines
+    if governance_artifact.get("error"):
+        lines.append(f"Threshold governance unavailable: `{governance_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = governance_artifact.get("report", {}) or {}
+    top = report.get("top_candidate_review", {}) or {}
+    walk = report.get("walk_forward_summary", {}) or {}
+    lines.extend(
+        [
+            f"- Overall status: **{report.get('overall_status')}**",
+            f"- Latest JSON: `{governance_artifact.get('latest_json_path') or governance_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{governance_artifact.get('latest_markdown_path') or governance_artifact.get('markdown_path')}`",
+            f"- Review ledger: `{governance_artifact.get('review_ledger_path')}`",
+            "",
+            "### Top Candidate",
+            "",
+            f"- Candidate: `{top.get('candidate_key')}`",
+            f"- Candidate status: **{top.get('governance_status')}**",
+            f"- Config hint: `{top.get('config_hint')}`",
+            f"- Next action: {top.get('recommended_next_action')}",
+            "",
+            "### Walk-Forward Evidence",
+            "",
+            f"- Robustness status: {walk.get('robustness_status')}",
+            f"- Evaluated splits: {walk.get('evaluated_split_count')} / {walk.get('split_count')}",
+            f"- Positive holdout rate: {_pct(walk.get('positive_holdout_rate'))}",
+            f"- Avg holdout return 60m: {_r(walk.get('avg_holdout_return_60m_bps'), 2)} bps",
+            "",
+            "### Governance Reasons",
+            "",
+        ]
+    )
+    for reason in top.get("reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    candidate_reviews = report.get("candidate_reviews", []) or []
+    if candidate_reviews:
+        lines.extend(
+            [
+                "",
+                "### Review Queue",
+                "",
+                "| Candidate | Status | Labels | Objective | Next Action |",
+                "| --- | --- | ---: | ---: | --- |",
+            ]
+        )
+        for row in candidate_reviews[:8]:
+            candidate = row.get("candidate", {}) or {}
+            lines.append(
+                f"| `{row.get('candidate_key')}` | {row.get('governance_status')} | "
+                f"{candidate.get('label_count_60m')} | {_r(candidate.get('objective_score'), 2)} | "
+                f"{row.get('recommended_next_action')} |"
+            )
+    lines.append("")
+    return lines
+
+
+def _section_threshold_policy_experiment(experiment_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Policy Experiment",
+        "",
+        "*The policy experiment sandbox compares a promoted threshold candidate against the "
+        "baseline research signal population. It is advisory only and never writes runtime "
+        "thresholds, parameter packs, or execution settings.*",
+        "",
+    ]
+    if not experiment_artifact:
+        lines.append("Threshold policy experiment artifact was not generated.")
+        lines.append("")
+        return lines
+    if experiment_artifact.get("error"):
+        lines.append(f"Threshold policy experiment unavailable: `{experiment_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = experiment_artifact.get("report", {}) or {}
+    pack = report.get("candidate_policy_pack", {}) or {}
+    full_sample = report.get("full_sample_comparison", {}) or {}
+    baseline = full_sample.get("baseline", {}) or {}
+    candidate = full_sample.get("candidate", {}) or {}
+    delta = full_sample.get("delta", {}) or {}
+    walk = (report.get("walk_forward_comparison", {}) or {}).get("summary", {}) or {}
+    lines.extend(
+        [
+            f"- Experiment status: **{report.get('experiment_status')}**",
+            f"- Latest JSON: `{experiment_artifact.get('latest_json_path') or experiment_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{experiment_artifact.get('latest_markdown_path') or experiment_artifact.get('markdown_path')}`",
+            f"- Candidate policy pack: `{experiment_artifact.get('latest_candidate_policy_pack_path') or experiment_artifact.get('candidate_policy_pack_path')}`",
+            f"- Runtime config changed: `{report.get('runtime_config_changed')}`",
+            "",
+            "### Candidate Policy Pack",
+            "",
+            f"- Candidate: `{pack.get('source_candidate_key') or 'none'}`",
+            f"- Governance status: {pack.get('source_governance_status')}",
+            f"- Config hint: `{pack.get('config_hint') or 'none'}`",
+            f"- Research only: `{pack.get('research_only')}`",
+            "",
+            "### Decision Reasons",
+            "",
+        ]
+    )
+    for reason in report.get("experiment_reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    if baseline or candidate:
+        lines.extend(
+            [
+                "",
+                "### Baseline vs Candidate",
+                "",
+                "| Metric | Baseline | Candidate | Delta |",
+                "| --- | ---: | ---: | ---: |",
+                f"| Signals | {baseline.get('signal_count')} | {candidate.get('signal_count')} | {delta.get('signal_count_delta')} |",
+                f"| 60m labels | {baseline.get('label_count_60m')} | {candidate.get('label_count_60m')} | {delta.get('label_count_delta')} |",
+                f"| 60m hit rate | {_pct(baseline.get('hit_rate_60m'))} | {_pct(candidate.get('hit_rate_60m'))} | {_pct(delta.get('hit_rate_delta'))} |",
+                f"| Avg 60m return | {_r(baseline.get('avg_signed_return_60m_bps'), 2)} bps | {_r(candidate.get('avg_signed_return_60m_bps'), 2)} bps | {_r(delta.get('avg_return_delta_bps'), 2)} bps |",
+                f"| Max drawdown | {_r(baseline.get('max_drawdown_bps'), 2)} bps | {_r(candidate.get('max_drawdown_bps'), 2)} bps | {_r(delta.get('max_drawdown_delta_bps'), 2)} bps |",
+                "",
+                "### Walk-Forward Sandbox",
+                "",
+                f"- Robustness status: {walk.get('robustness_status')}",
+                f"- Evaluated splits: {walk.get('evaluated_split_count')} / {walk.get('split_count')}",
+                f"- Positive delta rate: {_pct(walk.get('positive_delta_rate'))}",
+                f"- Avg holdout return delta: {_r(walk.get('avg_holdout_return_delta_bps'), 2)} bps",
+                "",
+            ]
+        )
+
+    regime_rows = report.get("regime_comparison", []) or []
+    if regime_rows:
+        lines.extend(
+            [
+                "### Regime Guardrails",
+                "",
+                "| Regime | Value | Status | Candidate Labels | Return Delta | Hit-Rate Delta |",
+                "| --- | --- | --- | ---: | ---: | ---: |",
+            ]
+        )
+        for row in regime_rows[:8]:
+            lines.append(
+                f"| {row.get('regime_field')} | {row.get('regime_value')} | {row.get('regime_status')} | "
+                f"{row.get('candidate_label_count_60m')} | {_r(row.get('avg_return_delta_bps'), 2)} bps | "
+                f"{_pct(row.get('hit_rate_delta'))} |"
+            )
+    lines.append("")
+    return lines
+
+
+def _section_threshold_shadow_simulation(shadow_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Shadow Simulation",
+        "",
+        "*Shadow simulation estimates which historical signals would have remained visible or "
+        "been suppressed under an approved threshold candidate. It is advisory only and never "
+        "changes live signal generation or execution behavior.*",
+        "",
+    ]
+    if not shadow_artifact:
+        lines.append("Threshold shadow simulation artifact was not generated.")
+        lines.append("")
+        return lines
+    if shadow_artifact.get("error"):
+        lines.append(f"Threshold shadow simulation unavailable: `{shadow_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = shadow_artifact.get("report", {}) or {}
+    rule = report.get("threshold_rule", {}) or {}
+    impact = report.get("impact_summary", {}) or {}
+    baseline = report.get("baseline_metrics", {}) or {}
+    retained = report.get("retained_metrics", {}) or {}
+    suppressed = report.get("suppressed_metrics", {}) or {}
+    delta = report.get("retained_vs_baseline_delta", {}) or {}
+    lines.extend(
+        [
+            f"- Shadow status: **{report.get('shadow_status')}**",
+            f"- Latest JSON: `{shadow_artifact.get('latest_json_path') or shadow_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{shadow_artifact.get('latest_markdown_path') or shadow_artifact.get('markdown_path')}`",
+            f"- Retained signals CSV: `{shadow_artifact.get('latest_retained_signals_csv_path') or shadow_artifact.get('retained_signals_csv_path')}`",
+            f"- Suppressed signals CSV: `{shadow_artifact.get('latest_suppressed_signals_csv_path') or shadow_artifact.get('suppressed_signals_csv_path')}`",
+            f"- Runtime config changed: `{report.get('runtime_config_changed')}`",
+            f"- Rule: `{rule.get('field')} {rule.get('operator', '>=')} {rule.get('value')}`",
+            "",
+            "### Shadow Reasons",
+            "",
+        ]
+    )
+    for reason in report.get("shadow_reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    if impact:
+        lines.extend(
+            [
+                "",
+                "### Signal Stream Impact",
+                "",
+                "| Metric | Value |",
+                "| --- | ---: |",
+                f"| Eligible signals | {impact.get('eligible_signal_count')} |",
+                f"| Retained signals | {impact.get('retained_signal_count')} |",
+                f"| Suppressed signals | {impact.get('suppressed_signal_count')} |",
+                f"| Retention ratio | {_pct(impact.get('retention_ratio'))} |",
+                f"| False positives removed | {impact.get('false_positive_removed_count')} |",
+                f"| True positives lost | {impact.get('true_positive_lost_count')} |",
+                f"| Avoided suppressed return | {_r(impact.get('avoided_suppressed_return_bps'), 2)} bps |",
+                "",
+                "### Baseline vs Shadow-Retained",
+                "",
+                "| Metric | Baseline | Retained | Delta | Suppressed |",
+                "| --- | ---: | ---: | ---: | ---: |",
+                f"| Signals | {baseline.get('signal_count')} | {retained.get('signal_count')} | {delta.get('signal_count_delta')} | {suppressed.get('signal_count')} |",
+                f"| 60m labels | {baseline.get('label_count_60m')} | {retained.get('label_count_60m')} | {delta.get('label_count_delta')} | {suppressed.get('label_count_60m')} |",
+                f"| 60m hit rate | {_pct(baseline.get('hit_rate_60m'))} | {_pct(retained.get('hit_rate_60m'))} | {_pct(delta.get('hit_rate_delta'))} | {_pct(suppressed.get('hit_rate_60m'))} |",
+                f"| Avg 60m return | {_r(baseline.get('avg_signed_return_60m_bps'), 2)} bps | {_r(retained.get('avg_signed_return_60m_bps'), 2)} bps | {_r(delta.get('avg_return_delta_bps'), 2)} bps | {_r(suppressed.get('avg_signed_return_60m_bps'), 2)} bps |",
+                "",
+            ]
+        )
+
+    regime_rows = report.get("regime_shadow", []) or []
+    if regime_rows:
+        lines.extend(
+            [
+                "### Largest Regime Impacts",
+                "",
+                "| Segment | Value | Suppressed | False Positives Removed | True Positives Lost | Return Delta |",
+                "| --- | --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for row in regime_rows[:8]:
+            lines.append(
+                f"| {row.get('segment_field')} | {row.get('segment_value')} | {row.get('suppressed_signal_count')} | "
+                f"{row.get('false_positive_removed_count')} | {row.get('true_positive_lost_count')} | "
+                f"{_r(row.get('avg_return_delta_bps'), 2)} bps |"
+            )
+    lines.append("")
+    return lines
+
+
+def _section_threshold_shadow_review(review_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Shadow Review",
+        "",
+        "*Shadow review converts automated shadow simulation evidence into an advisory "
+        "promotion-readiness decision. It can recommend human review, but it never "
+        "changes runtime thresholds, signal generation, or execution behavior.*",
+        "",
+    ]
+    if not review_artifact:
+        lines.append("Threshold shadow review artifact was not generated.")
+        lines.append("")
+        return lines
+    if review_artifact.get("error"):
+        lines.append(f"Threshold shadow review unavailable: `{review_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = review_artifact.get("report", {}) or {}
+    rule = report.get("threshold_rule", {}) or {}
+    observation = report.get("observation_summary", {}) or {}
+    impact = report.get("impact_summary", {}) or {}
+    guardrails = report.get("guardrail_summary", {}) or {}
+    delta = report.get("retained_vs_baseline_delta", {}) or {}
+    lines.extend(
+        [
+            f"- Review status: **{report.get('review_status')}**",
+            f"- Latest JSON: `{review_artifact.get('latest_json_path') or review_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{review_artifact.get('latest_markdown_path') or review_artifact.get('markdown_path')}`",
+            f"- Segment failures CSV: `{review_artifact.get('latest_segments_csv_path') or review_artifact.get('segments_csv_path')}`",
+            f"- Runtime config changed: `{report.get('runtime_config_changed')}`",
+            f"- Manual promotion review required: `{report.get('requires_manual_promotion_review')}`",
+            f"- Rule: `{rule.get('field')} {rule.get('operator', '>=')} {rule.get('value')}`",
+            f"- Next action: {report.get('recommended_next_action')}",
+            "",
+            "### Review Reasons",
+            "",
+        ]
+    )
+    for reason in report.get("review_reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    lines.extend(
+        [
+            "",
+            "### Promotion Guardrails",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Observation dates | {observation.get('distinct_signal_dates')} |",
+            f"| Eligible signals | {impact.get('eligible_signal_count')} |",
+            f"| Retained signals | {impact.get('retained_signal_count')} |",
+            f"| Suppressed signals | {impact.get('suppressed_signal_count')} |",
+            f"| False positives removed | {guardrails.get('false_positive_removed_count')} |",
+            f"| False-positive removal rate | {_pct(guardrails.get('false_positive_removal_rate'))} |",
+            f"| True positives lost | {impact.get('true_positive_lost_count')} |",
+            f"| True-positive loss rate | {_pct(guardrails.get('true_positive_loss_rate'))} |",
+            f"| Retained avg-return delta | {_r(delta.get('avg_return_delta_bps'), 2)} bps |",
+            f"| Retained hit-rate delta | {_pct(delta.get('hit_rate_delta'))} |",
+            f"| Bad regime segments | {guardrails.get('bad_regime_count')} |",
+            f"| Bad bucket segments | {guardrails.get('bad_bucket_count')} |",
+            "",
+        ]
+    )
+
+    segment_failures = report.get("segment_failures", []) or []
+    if segment_failures:
+        lines.extend(
+            [
+                "### Segment Guardrail Failures",
+                "",
+                "| Kind | Field | Value | Suppressed | True Positives Lost | Return Delta | Reason |",
+                "| --- | --- | --- | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in segment_failures[:8]:
+            reasons = "; ".join(str(item) for item in row.get("review_reasons", []) or [])
+            lines.append(
+                f"| {row.get('segment_kind')} | {row.get('segment_field')} | {row.get('segment_value')} | "
+                f"{row.get('suppressed_signal_count')} | {row.get('true_positive_lost_count')} | "
+                f"{_r(row.get('avg_return_delta_bps'), 2)} bps | {reasons} |"
+            )
+    lines.append("")
+    return lines
+
+
+def _section_threshold_promotion_review(promotion_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Promotion Review Package",
+        "",
+        "*Promotion review packages translate PROMOTION_READY shadow evidence into a "
+        "human approve/reject/defer decision bundle. The package is advisory only and "
+        "never changes runtime thresholds, signal generation, or execution behavior.*",
+        "",
+    ]
+    if not promotion_artifact:
+        lines.append("Threshold promotion review package was not generated.")
+        lines.append("")
+        return lines
+    if promotion_artifact.get("error"):
+        lines.append(f"Threshold promotion review unavailable: `{promotion_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = promotion_artifact.get("report", {}) or {}
+    candidate = report.get("promotion_candidate", {}) or {}
+    rule = candidate.get("threshold_rule", {}) or {}
+    status_chain = report.get("status_chain", {}) or {}
+    impact = report.get("impact_summary", {}) or {}
+    guardrails = report.get("guardrail_summary", {}) or {}
+    risk = report.get("risk_flags", {}) or {}
+    delta = report.get("retained_vs_baseline_delta", {}) or {}
+    lines.extend(
+        [
+            f"- Promotion review status: **{report.get('promotion_review_status')}**",
+            f"- Latest JSON: `{promotion_artifact.get('latest_json_path') or promotion_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{promotion_artifact.get('latest_markdown_path') or promotion_artifact.get('markdown_path')}`",
+            f"- Review ledger: `{promotion_artifact.get('review_ledger_path')}`",
+            f"- Runtime config changed: `{report.get('runtime_config_changed')}`",
+            f"- Manual review required: `{report.get('manual_review_required')}`",
+            f"- Next action: {report.get('recommended_next_action')}",
+            "",
+            "### Status Chain",
+            "",
+            f"- Governance status: {status_chain.get('governance_status')}",
+            f"- Policy experiment status: {status_chain.get('policy_experiment_status')}",
+            f"- Shadow simulation status: {status_chain.get('shadow_simulation_status')}",
+            f"- Shadow review status: {status_chain.get('shadow_review_status')}",
+            "",
+            "### Candidate",
+            "",
+            f"- Candidate: `{candidate.get('source_candidate_key') or candidate.get('candidate_name') or 'none'}`",
+            f"- Config hint: `{candidate.get('config_hint') or 'none'}`",
+            f"- Rule: `{rule.get('field')} {rule.get('operator', '>=')} {rule.get('value')}`",
+            "",
+            "### Review Reasons",
+            "",
+        ]
+    )
+    for reason in report.get("promotion_review_reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    lines.extend(
+        [
+            "",
+            "### Evidence Summary",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Eligible signals | {impact.get('eligible_signal_count')} |",
+            f"| Retained signals | {impact.get('retained_signal_count')} |",
+            f"| Suppressed signals | {impact.get('suppressed_signal_count')} |",
+            f"| False positives removed | {risk.get('false_positive_removed_count')} |",
+            f"| False-positive removal rate | {_pct(guardrails.get('false_positive_removal_rate'))} |",
+            f"| True positives lost | {risk.get('true_positive_lost_count')} |",
+            f"| True-positive loss rate | {_pct(guardrails.get('true_positive_loss_rate'))} |",
+            f"| Retained avg-return delta | {_r(delta.get('avg_return_delta_bps'), 2)} bps |",
+            f"| Retained hit-rate delta | {_pct(delta.get('hit_rate_delta'))} |",
+            f"| Segment failures | {risk.get('segment_failure_count')} |",
+            "",
+            "### Monitoring And Rollback",
+            "",
+        ]
+    )
+    for item in (report.get("monitoring_plan", []) or [])[:4]:
+        lines.append(f"- {item}")
+    for item in (report.get("rollback_notes", []) or [])[:4]:
+        lines.append(f"- {item}")
+    lines.append("")
+    return lines
+
+
+def _section_threshold_post_promotion_monitor(monitor_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Post-Promotion Monitor",
+        "",
+        "*Post-promotion monitoring watches manually approved threshold candidates against "
+        "newer signal outcomes. It can recommend reaffirm, watch, or rollback review, "
+        "but it never applies or reverts runtime thresholds.*",
+        "",
+    ]
+    if not monitor_artifact:
+        lines.append("Threshold post-promotion monitor artifact was not generated.")
+        lines.append("")
+        return lines
+    if monitor_artifact.get("error"):
+        lines.append(f"Threshold post-promotion monitor unavailable: `{monitor_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = monitor_artifact.get("report", {}) or {}
+    rule = report.get("threshold_rule", {}) or {}
+    window = report.get("post_approval_window", {}) or {}
+    impact = report.get("post_approval_impact", {}) or {}
+    retained = report.get("post_approval_retained_metrics", {}) or {}
+    drift = report.get("drift_from_shadow_expectation", {}) or {}
+    segment_summary = report.get("segment_summary", {}) or {}
+    lines.extend(
+        [
+            f"- Monitor status: **{report.get('monitor_status')}**",
+            f"- Latest JSON: `{monitor_artifact.get('latest_json_path') or monitor_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{monitor_artifact.get('latest_markdown_path') or monitor_artifact.get('markdown_path')}`",
+            f"- Segment monitor CSV: `{monitor_artifact.get('latest_segments_csv_path') or monitor_artifact.get('segments_csv_path')}`",
+            f"- Runtime config changed: `{report.get('runtime_config_changed')}`",
+            f"- Rule: `{rule.get('field')} {rule.get('operator', '>=')} {rule.get('value')}`",
+            f"- Next action: {report.get('recommended_next_action')}",
+            "",
+            "### Monitor Reasons",
+            "",
+        ]
+    )
+    for reason in report.get("monitor_reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    lines.extend(
+        [
+            "",
+            "### Post-Approval Window",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Approval timestamp | {window.get('approval_timestamp')} |",
+            f"| Post-approval signals | {window.get('post_approval_signal_count')} |",
+            f"| Post-approval signal dates | {window.get('post_approval_signal_dates')} |",
+            f"| Eligible signals | {impact.get('eligible_signal_count')} |",
+            f"| Retained signals | {impact.get('retained_signal_count')} |",
+            f"| Suppressed signals | {impact.get('suppressed_signal_count')} |",
+            f"| False positives removed | {impact.get('false_positive_removed_count')} |",
+            f"| True positives lost | {impact.get('true_positive_lost_count')} |",
+            "",
+            "### Drift From Shadow Expectation",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Retained labels | {retained.get('label_count_60m')} |",
+            f"| Retained hit rate | {_pct(retained.get('hit_rate_60m'))} |",
+            f"| Retained avg return | {_r(retained.get('avg_signed_return_60m_bps'), 2)} bps |",
+            f"| Hit-rate drift | {_pct(drift.get('retained_hit_rate_delta_vs_shadow'))} |",
+            f"| Avg-return drift | {_r(drift.get('retained_avg_return_delta_bps_vs_shadow'), 2)} bps |",
+            f"| True-positive lost drift | {drift.get('true_positive_lost_delta_vs_shadow')} |",
+            f"| Deteriorating segments | {segment_summary.get('deteriorating_segment_count')} |",
+            f"| Watch segments | {segment_summary.get('watch_segment_count')} |",
+            "",
+        ]
+    )
+    segment_rows = report.get("segment_monitoring", []) or []
+    if segment_rows:
+        lines.extend(
+            [
+                "### Segment Watchlist",
+                "",
+                "| Kind | Field | Value | Status | Retained Labels | Avg Return | True Positives Lost |",
+                "| --- | --- | --- | --- | ---: | ---: | ---: |",
+            ]
+        )
+        for row in segment_rows[:8]:
+            lines.append(
+                f"| {row.get('segment_kind')} | {row.get('segment_field')} | {row.get('segment_value')} | "
+                f"{row.get('segment_status')} | {row.get('retained_label_count_60m')} | "
+                f"{_r(row.get('retained_avg_return_60m_bps'), 2)} bps | {row.get('true_positive_lost_count')} |"
+            )
+    lines.append("")
+    return lines
+
+
+def _section_threshold_adoption_reconciliation(reconciliation_artifact: dict[str, Any] | None) -> list[str]:
+    lines = [
+        "## Threshold Adoption Reconciliation",
+        "",
+        "*Adoption reconciliation checks whether an APPROVED threshold promotion decision "
+        "matches the active runtime policy view. It is read-only: the report can identify "
+        "adopted, not-adopted, mismatched, rolled-back, or unknown states, but it never "
+        "applies or reverts thresholds.*",
+        "",
+    ]
+    if not reconciliation_artifact:
+        lines.append("Threshold adoption reconciliation artifact was not generated.")
+        lines.append("")
+        return lines
+    if reconciliation_artifact.get("error"):
+        lines.append(f"Threshold adoption reconciliation unavailable: `{reconciliation_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = reconciliation_artifact.get("report", {}) or {}
+    comparison = report.get("comparison", {}) or {}
+    runtime_state = report.get("runtime_state", {}) or {}
+    active_pack = runtime_state.get("active_parameter_pack", {}) or {}
+    post_monitor = report.get("post_promotion_monitor_summary", {}) or {}
+    lines.extend(
+        [
+            f"- Adoption status: **{report.get('adoption_status')}**",
+            f"- Latest JSON: `{reconciliation_artifact.get('latest_json_path') or reconciliation_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{reconciliation_artifact.get('latest_markdown_path') or reconciliation_artifact.get('markdown_path')}`",
+            f"- Comparison CSV: `{reconciliation_artifact.get('latest_comparison_csv_path') or reconciliation_artifact.get('comparison_csv_path')}`",
+            f"- Runtime config changed: `{report.get('runtime_config_changed')}`",
+            f"- Config hint: `{comparison.get('config_hint') or 'none'}`",
+            f"- Next action: {report.get('recommended_next_action')}",
+            "",
+            "### Reconciliation Reasons",
+            "",
+        ]
+    )
+    for reason in report.get("adoption_reasons", []) or ["No reasons recorded."]:
+        lines.append(f"- {reason}")
+
+    lines.extend(
+        [
+            "",
+            "### Runtime Comparison",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Candidate value | {comparison.get('candidate_value')} |",
+            f"| Active runtime value | {comparison.get('observed_runtime_value')} |",
+            f"| Active runtime source | {comparison.get('observed_runtime_source')} |",
+            f"| Code default value | {comparison.get('default_runtime_value')} |",
+            f"| Matches candidate | {comparison.get('matches_candidate')} |",
+            f"| Matches default | {comparison.get('matches_default')} |",
+            f"| Active parameter pack | {active_pack.get('name')} |",
+            f"| Post-promotion monitor status | {post_monitor.get('monitor_status')} |",
+            "",
+        ]
+    )
+    return lines
+
+
 def _section_probability_calibration(day_df: pd.DataFrame) -> list[str]:
     lines = [
         "## 13. Probability Calibration",
@@ -1365,17 +2093,24 @@ def _section_regime_performance(day_df: pd.DataFrame) -> list[str]:
 
         lines.append(f"### {regime_label}")
         lines.append("")
-        lines.append("| Regime | N | Hit Rate 60m | Avg Signed Return 60m (bps) | Avg Composite |")
-        lines.append("| --- | ---: | ---: | ---: | ---: |")
+        lines.append("| Regime | N | Hit Rate 60m | Hit Rate 95% CI | Avg Signed Return 60m (bps) | Return 95% CI (bps) | Evidence | Avg Composite |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |")
 
         for regime_val, group in dir_rows.groupby(regime_col, dropna=False):
             if pd.isna(regime_val):
                 continue
             n = len(group)
-            hr = _pct(_numeric(group.get("correct_60m", pd.Series())).mean())
-            avg_ret = _r(_numeric(group.get("signed_return_60m_bps", pd.Series())).mean(), 2)
+            correct = _numeric(group.get("correct_60m", pd.Series()))
+            signed = _numeric(group.get("signed_return_60m_bps", pd.Series()))
+            confidence = outcome_confidence_fields(correct, signed, sample_count=n)
+            hr = _pct(correct.mean())
+            hit_ci = _ci_pct(confidence.get("hit_rate_ci_low"), confidence.get("hit_rate_ci_high"))
+            avg_ret = _r(signed.mean(), 2)
+            ret_ci = _ci_bps(confidence.get("return_ci_low_bps"), confidence.get("return_ci_high_bps"))
             avg_cs = _r(_numeric(group.get("composite_signal_score", pd.Series())).mean(), 1)
-            lines.append(f"| {regime_val} | {n} | {hr} | {avg_ret} | {avg_cs} |")
+            lines.append(
+                f"| {regime_val} | {n} | {hr} | {hit_ci} | {avg_ret} | {ret_ci} | {confidence.get('sample_quality')} | {avg_cs} |"
+            )
 
         lines.append("")
 
@@ -1610,6 +2345,8 @@ def _section_dataset_summary(df: pd.DataFrame, day_df: pd.DataFrame) -> list[str
     dir_today = len(_directional_rows(day_df))
     trade_all = int((df.get("trade_status", pd.Series()) == "TRADE").sum())
     trade_today = int((day_df.get("trade_status", pd.Series()) == "TRADE").sum())
+    quality_all = label_quality_summary(df)
+    quality_today = label_quality_summary(day_df)
 
     lines = [
         "## Signal Dataset Summary",
@@ -1622,6 +2359,9 @@ def _section_dataset_summary(df: pd.DataFrame, day_df: pd.DataFrame) -> list[str
         f"| Trading days | {dates} | 1 |",
         f"| Directional signals | {dir_all} | {dir_today} |",
         f"| Trade-qualified signals | {trade_all} | {trade_today} |",
+        f"| Raw 60m labels | {quality_all.get('raw_labeled_rows')} | {quality_today.get('raw_labeled_rows')} |",
+        f"| Quality-approved 60m labels | {quality_all.get('quality_labeled_rows')} | {quality_today.get('quality_labeled_rows')} |",
+        f"| Excluded 60m labels | {quality_all.get('excluded_labeled_rows')} | {quality_today.get('excluded_labeled_rows')} |",
     ]
 
     if dates > 0 and total > 0:
@@ -1980,6 +2720,58 @@ def _section_feature_variance(day_df: pd.DataFrame) -> list[str]:
         lines.append("All features show healthy variance and dispersion.")
         lines.append("")
 
+    return lines
+
+
+def _section_drift_monitor(drift_artifact: dict[str, Any] | None) -> list[str]:
+    lines = ["## Signal Drift Monitor", ""]
+    if not drift_artifact:
+        lines.append("Drift monitor artifact was not generated.")
+        lines.append("")
+        return lines
+    if drift_artifact.get("error"):
+        lines.append(f"Drift monitor unavailable: `{drift_artifact.get('error')}`")
+        lines.append("")
+        return lines
+
+    report = drift_artifact.get("report", {})
+    overall = report.get("overall_outcome_drift", {})
+    baseline = overall.get("baseline", {})
+    recent = overall.get("recent", {})
+    label_drift = report.get("label_quality_drift", {})
+
+    lines.extend(
+        [
+            f"- Monitor status: **{report.get('monitor_status', 'UNKNOWN')}**",
+            f"- Latest JSON: `{drift_artifact.get('latest_json_path') or drift_artifact.get('json_path')}`",
+            f"- Latest Markdown: `{drift_artifact.get('latest_markdown_path') or drift_artifact.get('markdown_path')}`",
+            f"- Trend history: `{drift_artifact.get('trend_history_path') or 'not recorded'}`",
+            f"- Trend dashboard: `{drift_artifact.get('trend_dashboard_markdown_path') or 'not recorded'}`",
+            "",
+            "| Window | Signals | Quality Labels | Evidence | Hit Rate 60m | Avg Return 60m (bps) |",
+            "| --- | ---: | ---: | --- | ---: | ---: |",
+            f"| Baseline | {baseline.get('signal_count')} | {baseline.get('labeled_60m')} | {baseline.get('sample_quality')} | {baseline.get('hit_rate_60m')} | {baseline.get('avg_signed_return_60m_bps')} |",
+            f"| Recent | {recent.get('signal_count')} | {recent.get('labeled_60m')} | {recent.get('sample_quality')} | {recent.get('hit_rate_60m')} | {recent.get('avg_signed_return_60m_bps')} |",
+            "",
+            f"- Outcome evidence status: {overall.get('outcome_evidence_status')}",
+            f"- Hit-rate delta: {_r(overall.get('hit_rate_delta'))}",
+            f"- Hit-rate CI overlap: {overall.get('hit_rate_ci_overlap')}",
+            f"- Avg return delta (bps): {_r(overall.get('avg_return_delta_bps'))}",
+            f"- Return CI overlap: {overall.get('return_ci_overlap')}",
+            f"- Quality label coverage delta: {_r(label_drift.get('quality_coverage_delta'))}",
+            "",
+        ]
+    )
+
+    warnings = report.get("warnings", [])
+    lines.append("### Drift Warnings")
+    lines.append("")
+    if warnings:
+        for item in warnings[:8]:
+            lines.append(f"- **{item.get('severity')}** `{item.get('category')}` — {item.get('message')}")
+    else:
+        lines.append("- None")
+    lines.append("")
     return lines
 
 
@@ -2495,6 +3287,170 @@ def _summarize_score_calibration(day_df: pd.DataFrame) -> str:
     return f"Score calibration: {summary}{cal_note}"
 
 
+def _summarize_threshold_replay(day_df: pd.DataFrame) -> str:
+    replay = build_threshold_replay_summary(day_df, top_n=5)
+    walk_summary = (replay.get("walk_forward_validation", {}) or {}).get("summary", {}) or {}
+    walk_note = ""
+    if walk_summary:
+        walk_note = (
+            f" Walk-forward robustness: {walk_summary.get('robustness_status')} "
+            f"across {walk_summary.get('evaluated_split_count')} evaluated split(s), "
+            f"avg holdout {_r(walk_summary.get('avg_holdout_return_60m_bps'), 2)} bps."
+        )
+    rows = replay.get("threshold_replay_candidates", []) or []
+    if not rows:
+        return "Threshold replay unavailable because the report slice has no usable directional, labeled signal rows."
+    advisory = [row for row in rows if row.get("is_advisory_candidate")]
+    if not advisory:
+        best = rows[0]
+        return (
+            "Threshold replay produced only low-evidence candidates. "
+            f"Best observed slice was {best.get('threshold_field')} >= {_threshold_value_text(best.get('threshold_value'))} "
+            f"with {best.get('label_count_60m')} label(s), avg {_r(best.get('avg_signed_return_60m_bps'), 2)} bps, "
+            f"and evidence status {best.get('sample_quality')}.{walk_note}"
+        )
+    best = advisory[0]
+    return (
+        f"Best advisory threshold candidate: {best.get('threshold_field')} >= "
+        f"{_threshold_value_text(best.get('threshold_value'))}, labels={best.get('label_count_60m')}, "
+        f"hit rate {_pct(best.get('hit_rate_60m'))}, avg {_r(best.get('avg_signed_return_60m_bps'), 2)} bps, "
+        f"holdout avg {_r(best.get('holdout_avg_signed_return_60m_bps'), 2)} bps, "
+        f"stability {best.get('stability_status')}.{walk_note}"
+    )
+
+
+def _summarize_threshold_governance(governance_artifact: dict[str, Any] | None) -> str:
+    if not governance_artifact:
+        return "Threshold governance artifact was not generated."
+    if governance_artifact.get("error"):
+        return f"Threshold governance unavailable: {governance_artifact.get('error')}"
+    report = governance_artifact.get("report", {}) or {}
+    top = report.get("top_candidate_review", {}) or {}
+    reasons = top.get("reasons", []) or []
+    reason_text = f" Reasons: {'; '.join(str(item) for item in reasons[:2])}." if reasons else ""
+    return (
+        f"Threshold governance status {report.get('overall_status')}; "
+        f"top candidate {top.get('candidate_key')} is {top.get('governance_status')}. "
+        f"Next action: {top.get('recommended_next_action')}.{reason_text}"
+    )
+
+
+def _summarize_threshold_policy_experiment(experiment_artifact: dict[str, Any] | None) -> str:
+    if not experiment_artifact:
+        return "Threshold policy experiment artifact was not generated."
+    if experiment_artifact.get("error"):
+        return f"Threshold policy experiment unavailable: {experiment_artifact.get('error')}"
+    report = experiment_artifact.get("report", {}) or {}
+    reasons = report.get("experiment_reasons", []) or []
+    full_sample = report.get("full_sample_comparison", {}) or {}
+    delta = full_sample.get("delta", {}) or {}
+    walk = (report.get("walk_forward_comparison", {}) or {}).get("summary", {}) or {}
+    reason_text = f" Reason: {str(reasons[0])}" if reasons else ""
+    return (
+        f"Threshold policy experiment status {report.get('experiment_status')}; "
+        f"full-sample avg-return delta {_r(delta.get('avg_return_delta_bps'), 2)} bps, "
+        f"hit-rate delta {_pct(delta.get('hit_rate_delta'))}, "
+        f"walk-forward robustness {walk.get('robustness_status')}.{reason_text}"
+    )
+
+
+def _summarize_threshold_shadow_simulation(shadow_artifact: dict[str, Any] | None) -> str:
+    if not shadow_artifact:
+        return "Threshold shadow simulation artifact was not generated."
+    if shadow_artifact.get("error"):
+        return f"Threshold shadow simulation unavailable: {shadow_artifact.get('error')}"
+    report = shadow_artifact.get("report", {}) or {}
+    impact = report.get("impact_summary", {}) or {}
+    delta = report.get("retained_vs_baseline_delta", {}) or {}
+    reasons = report.get("shadow_reasons", []) or []
+    reason_text = f" Reason: {str(reasons[0])}" if reasons else ""
+    return (
+        f"Threshold shadow simulation status {report.get('shadow_status')}; "
+        f"retained {impact.get('retained_signal_count')} and suppressed {impact.get('suppressed_signal_count')} "
+        f"of {impact.get('eligible_signal_count')} eligible signal(s), "
+        f"removed {impact.get('false_positive_removed_count')} false positive(s), "
+        f"lost {impact.get('true_positive_lost_count')} true positive(s), "
+        f"retained avg-return delta {_r(delta.get('avg_return_delta_bps'), 2)} bps.{reason_text}"
+    )
+
+
+def _summarize_threshold_shadow_review(review_artifact: dict[str, Any] | None) -> str:
+    if not review_artifact:
+        return "Threshold shadow review artifact was not generated."
+    if review_artifact.get("error"):
+        return f"Threshold shadow review unavailable: {review_artifact.get('error')}"
+    report = review_artifact.get("report", {}) or {}
+    guardrails = report.get("guardrail_summary", {}) or {}
+    delta = report.get("retained_vs_baseline_delta", {}) or {}
+    reasons = report.get("review_reasons", []) or []
+    reason_text = f" Reason: {str(reasons[0])}" if reasons else ""
+    return (
+        f"Threshold shadow review status {report.get('review_status')}; "
+        f"manual promotion review required {report.get('requires_manual_promotion_review')}, "
+        f"false-positive removal rate {_pct(guardrails.get('false_positive_removal_rate'))}, "
+        f"true-positive loss rate {_pct(guardrails.get('true_positive_loss_rate'))}, "
+        f"retained avg-return delta {_r(delta.get('avg_return_delta_bps'), 2)} bps. "
+        f"Next action: {report.get('recommended_next_action')}.{reason_text}"
+    )
+
+
+def _summarize_threshold_promotion_review(promotion_artifact: dict[str, Any] | None) -> str:
+    if not promotion_artifact:
+        return "Threshold promotion review package was not generated."
+    if promotion_artifact.get("error"):
+        return f"Threshold promotion review unavailable: {promotion_artifact.get('error')}"
+    report = promotion_artifact.get("report", {}) or {}
+    candidate = report.get("promotion_candidate", {}) or {}
+    risk = report.get("risk_flags", {}) or {}
+    reasons = report.get("promotion_review_reasons", []) or []
+    reason_text = f" Reason: {str(reasons[0])}" if reasons else ""
+    return (
+        f"Threshold promotion review status {report.get('promotion_review_status')}; "
+        f"candidate {candidate.get('source_candidate_key') or candidate.get('candidate_name')}, "
+        f"manual review required {report.get('manual_review_required')}, "
+        f"false positives removed {risk.get('false_positive_removed_count')}, "
+        f"true positives lost {risk.get('true_positive_lost_count')}. "
+        f"Next action: {report.get('recommended_next_action')}.{reason_text}"
+    )
+
+
+def _summarize_threshold_post_promotion_monitor(monitor_artifact: dict[str, Any] | None) -> str:
+    if not monitor_artifact:
+        return "Threshold post-promotion monitor artifact was not generated."
+    if monitor_artifact.get("error"):
+        return f"Threshold post-promotion monitor unavailable: {monitor_artifact.get('error')}"
+    report = monitor_artifact.get("report", {}) or {}
+    impact = report.get("post_approval_impact", {}) or {}
+    drift = report.get("drift_from_shadow_expectation", {}) or {}
+    reasons = report.get("monitor_reasons", []) or []
+    reason_text = f" Reason: {str(reasons[0])}" if reasons else ""
+    return (
+        f"Threshold post-promotion monitor status {report.get('monitor_status')}; "
+        f"retained {impact.get('retained_signal_count')} and suppressed {impact.get('suppressed_signal_count')} "
+        f"post-approval signal(s), hit-rate drift {_pct(drift.get('retained_hit_rate_delta_vs_shadow'))}, "
+        f"avg-return drift {_r(drift.get('retained_avg_return_delta_bps_vs_shadow'), 2)} bps. "
+        f"Next action: {report.get('recommended_next_action')}.{reason_text}"
+    )
+
+
+def _summarize_threshold_adoption_reconciliation(reconciliation_artifact: dict[str, Any] | None) -> str:
+    if not reconciliation_artifact:
+        return "Threshold adoption reconciliation artifact was not generated."
+    if reconciliation_artifact.get("error"):
+        return f"Threshold adoption reconciliation unavailable: {reconciliation_artifact.get('error')}"
+    report = reconciliation_artifact.get("report", {}) or {}
+    comparison = report.get("comparison", {}) or {}
+    reasons = report.get("adoption_reasons", []) or []
+    reason_text = f" Reason: {str(reasons[0])}" if reasons else ""
+    return (
+        f"Threshold adoption reconciliation status {report.get('adoption_status')}; "
+        f"candidate value {comparison.get('candidate_value')}, active runtime value "
+        f"{comparison.get('observed_runtime_value')} from {comparison.get('observed_runtime_source')}, "
+        f"matches candidate {comparison.get('matches_candidate')}. "
+        f"Next action: {report.get('recommended_next_action')}.{reason_text}"
+    )
+
+
 def _summarize_probability_calibration(day_df: pd.DataFrame) -> str:
     prob_col = "hybrid_move_probability" if "hybrid_move_probability" in day_df.columns else "move_probability"
     if prob_col not in day_df.columns or "correct_60m" not in day_df.columns:
@@ -2860,6 +3816,357 @@ def _summarize_feature_variance(day_df: pd.DataFrame) -> str:
     return "All features show healthy variance — no structural data issues detected."
 
 
+def _summarize_drift_monitor(drift_artifact: dict[str, Any] | None) -> str:
+    if not drift_artifact:
+        return "Signal drift monitor artifact was not generated."
+    if drift_artifact.get("error"):
+        return f"Signal drift monitor unavailable: {drift_artifact.get('error')}"
+    report = drift_artifact.get("report", {})
+    status = report.get("monitor_status", "UNKNOWN")
+    warnings = report.get("warnings", [])
+    overall = report.get("overall_outcome_drift", {})
+    hit_delta = overall.get("hit_rate_delta")
+    ret_delta = overall.get("avg_return_delta_bps")
+    if warnings:
+        warning_types = sorted({str(item.get("category")) for item in warnings if item.get("category")})
+        warning_text = f"{len(warnings)} warning(s): {', '.join(warning_types[:4])}."
+    else:
+        warning_text = "No drift warnings triggered."
+    return (
+        f"Drift monitor status {status}; hit-rate delta {_r(hit_delta)}, "
+        f"avg-return delta {_r(ret_delta)} bps. {warning_text}"
+    )
+
+
+def _build_daily_drift_artifact(
+    frame: pd.DataFrame,
+    *,
+    dataset_path: Path,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+) -> dict[str, Any]:
+    drift_output_dir = report_output_dir / "drift_monitoring" if explicit_output_dir else DEFAULT_DRIFT_OUTPUT_DIR
+    report_name = "signal_drift_cumulative" if mode == "cumulative" else f"signal_drift_{report_date.strftime('%Y%m%d')}"
+    try:
+        return write_signal_drift_report(
+            frame,
+            dataset_path=str(dataset_path),
+            output_dir=drift_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Signal drift monitor failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_governance_artifact(
+    frame: pd.DataFrame,
+    *,
+    dataset_path: Path,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+) -> dict[str, Any]:
+    governance_output_dir = (
+        report_output_dir / "threshold_governance" if explicit_output_dir else DEFAULT_THRESHOLD_GOVERNANCE_DIR
+    )
+    report_name = (
+        "threshold_governance_cumulative"
+        if mode == "cumulative"
+        else f"threshold_governance_{report_date.strftime('%Y%m%d')}"
+    )
+    try:
+        return write_threshold_governance_report(
+            frame,
+            dataset_path=str(dataset_path),
+            output_dir=governance_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold governance failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_policy_experiment_artifact(
+    frame: pd.DataFrame,
+    *,
+    dataset_path: Path,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+    governance_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    experiment_output_dir = (
+        report_output_dir / "threshold_policy_experiments"
+        if explicit_output_dir
+        else DEFAULT_THRESHOLD_POLICY_EXPERIMENT_DIR
+    )
+    report_name = (
+        "threshold_policy_experiment_cumulative"
+        if mode == "cumulative"
+        else f"threshold_policy_experiment_{report_date.strftime('%Y%m%d')}"
+    )
+    governance_artifact = governance_artifact or {}
+    governance_report = governance_artifact.get("report", {}) or {}
+    top_candidate = governance_report.get("top_candidate_review", {}) or {}
+    governance_report_path = governance_artifact.get("latest_json_path") or governance_artifact.get("json_path")
+    candidate_status = top_candidate.get("governance_status")
+    has_concrete_candidate = bool(top_candidate.get("threshold_field")) and top_candidate.get("threshold_value") is not None
+    try:
+        if governance_artifact.get("error"):
+            return write_threshold_policy_experiment_skip(
+                reason=f"Governance artifact unavailable: {governance_artifact.get('error')}",
+                dataset_path=str(dataset_path),
+                governance_report_path=governance_report_path,
+                output_dir=experiment_output_dir,
+                report_name=report_name,
+                write_latest=True,
+            )
+        if candidate_status != PROMOTE_TO_REVIEW or not has_concrete_candidate:
+            return write_threshold_policy_experiment_skip(
+                reason=(
+                    "No promoted concrete threshold candidate is available; "
+                    f"governance status is {candidate_status or governance_report.get('overall_status') or 'UNKNOWN'}."
+                ),
+                candidate_review=top_candidate,
+                dataset_path=str(dataset_path),
+                governance_report_path=governance_report_path,
+                output_dir=experiment_output_dir,
+                report_name=report_name,
+                write_latest=True,
+            )
+        return write_threshold_policy_experiment_report(
+            frame,
+            governance_report=governance_report,
+            candidate_review=top_candidate,
+            dataset_path=str(dataset_path),
+            governance_report_path=governance_report_path,
+            output_dir=experiment_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold policy experiment failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_shadow_simulation_artifact(
+    frame: pd.DataFrame,
+    *,
+    dataset_path: Path,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+    policy_experiment_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    shadow_output_dir = (
+        report_output_dir / "threshold_shadow_simulation"
+        if explicit_output_dir
+        else DEFAULT_THRESHOLD_SHADOW_SIMULATION_DIR
+    )
+    report_name = (
+        "threshold_shadow_simulation_cumulative"
+        if mode == "cumulative"
+        else f"threshold_shadow_simulation_{report_date.strftime('%Y%m%d')}"
+    )
+    policy_experiment_artifact = policy_experiment_artifact or {}
+    policy_experiment_report = policy_experiment_artifact.get("report", {}) or {}
+    policy_experiment_report_path = (
+        policy_experiment_artifact.get("latest_json_path") or policy_experiment_artifact.get("json_path")
+    )
+    try:
+        if policy_experiment_artifact.get("error"):
+            return write_threshold_shadow_simulation_skip(
+                reason=f"Policy experiment artifact unavailable: {policy_experiment_artifact.get('error')}",
+                policy_experiment_report=policy_experiment_report,
+                dataset_path=str(dataset_path),
+                policy_experiment_report_path=policy_experiment_report_path,
+                output_dir=shadow_output_dir,
+                report_name=report_name,
+                write_latest=True,
+            )
+        return write_threshold_shadow_simulation_report(
+            frame,
+            policy_experiment_report=policy_experiment_report,
+            dataset_path=str(dataset_path),
+            policy_experiment_report_path=policy_experiment_report_path,
+            output_dir=shadow_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold shadow simulation failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_shadow_review_artifact(
+    *,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+    shadow_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    review_output_dir = (
+        report_output_dir / "threshold_shadow_review"
+        if explicit_output_dir
+        else DEFAULT_THRESHOLD_SHADOW_REVIEW_DIR
+    )
+    report_name = (
+        "threshold_shadow_review_cumulative"
+        if mode == "cumulative"
+        else f"threshold_shadow_review_{report_date.strftime('%Y%m%d')}"
+    )
+    shadow_artifact = shadow_artifact or {}
+    shadow_report = shadow_artifact.get("report", {}) or {}
+    shadow_report_path = shadow_artifact.get("latest_json_path") or shadow_artifact.get("json_path")
+    try:
+        if shadow_artifact.get("error"):
+            return write_threshold_shadow_review_skip(
+                reason=f"Shadow simulation artifact unavailable: {shadow_artifact.get('error')}",
+                shadow_report=shadow_report,
+                shadow_simulation_report_path=shadow_report_path,
+                output_dir=review_output_dir,
+                report_name=report_name,
+                write_latest=True,
+            )
+        return write_threshold_shadow_review_report(
+            shadow_report,
+            shadow_simulation_report_path=shadow_report_path,
+            output_dir=review_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold shadow review failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_promotion_review_artifact(
+    *,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+    shadow_review_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    promotion_output_dir = (
+        report_output_dir / "threshold_promotion_review"
+        if explicit_output_dir
+        else DEFAULT_THRESHOLD_PROMOTION_REVIEW_DIR
+    )
+    report_name = (
+        "threshold_promotion_review_cumulative"
+        if mode == "cumulative"
+        else f"threshold_promotion_review_{report_date.strftime('%Y%m%d')}"
+    )
+    shadow_review_artifact = shadow_review_artifact or {}
+    shadow_review_report = shadow_review_artifact.get("report", {}) or {}
+    shadow_review_report_path = shadow_review_artifact.get("latest_json_path") or shadow_review_artifact.get("json_path")
+    try:
+        if shadow_review_artifact.get("error"):
+            shadow_review_report = {
+                "review_status": "ERROR",
+                "review_reasons": [f"Shadow review artifact unavailable: {shadow_review_artifact.get('error')}"],
+            }
+        return write_threshold_promotion_review_package(
+            shadow_review_report,
+            shadow_review_report_path=shadow_review_report_path,
+            output_dir=promotion_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold promotion review failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_post_promotion_monitor_artifact(
+    frame: pd.DataFrame,
+    *,
+    dataset_path: Path,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+    promotion_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    monitor_output_dir = (
+        report_output_dir / "threshold_post_promotion_monitoring"
+        if explicit_output_dir
+        else DEFAULT_THRESHOLD_POST_PROMOTION_MONITOR_DIR
+    )
+    report_name = (
+        "threshold_post_promotion_monitor_cumulative"
+        if mode == "cumulative"
+        else f"threshold_post_promotion_monitor_{report_date.strftime('%Y%m%d')}"
+    )
+    promotion_artifact = promotion_artifact or {}
+    promotion_report = promotion_artifact.get("report", {}) or {}
+    promotion_report_path = promotion_artifact.get("latest_json_path") or promotion_artifact.get("json_path")
+    try:
+        return write_threshold_post_promotion_monitor_report(
+            frame,
+            promotion_package_report=promotion_report,
+            promotion_package_report_path=promotion_report_path,
+            ledger_path=promotion_artifact.get("review_ledger_path"),
+            dataset_path=str(dataset_path),
+            output_dir=monitor_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold post-promotion monitor failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
+def _build_daily_threshold_adoption_reconciliation_artifact(
+    *,
+    report_date: date,
+    mode: str,
+    explicit_output_dir: bool,
+    report_output_dir: Path,
+    promotion_artifact: dict[str, Any] | None,
+    post_promotion_monitor_artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    reconciliation_output_dir = (
+        report_output_dir / "threshold_adoption_reconciliation"
+        if explicit_output_dir
+        else DEFAULT_THRESHOLD_ADOPTION_RECONCILIATION_DIR
+    )
+    report_name = (
+        "threshold_adoption_reconciliation_cumulative"
+        if mode == "cumulative"
+        else f"threshold_adoption_reconciliation_{report_date.strftime('%Y%m%d')}"
+    )
+    promotion_artifact = promotion_artifact or {}
+    post_promotion_monitor_artifact = post_promotion_monitor_artifact or {}
+    try:
+        return write_threshold_adoption_reconciliation_report(
+            promotion_package_report=promotion_artifact.get("report", {}) or {},
+            promotion_package_report_path=promotion_artifact.get("latest_json_path") or promotion_artifact.get("json_path"),
+            ledger_path=promotion_artifact.get("review_ledger_path"),
+            post_promotion_monitor_report=post_promotion_monitor_artifact.get("report", {}) or {},
+            post_promotion_monitor_report_path=(
+                post_promotion_monitor_artifact.get("latest_json_path")
+                or post_promotion_monitor_artifact.get("json_path")
+            ),
+            output_dir=reconciliation_output_dir,
+            report_name=report_name,
+            write_latest=True,
+        )
+    except Exception as exc:
+        logger.warning("Threshold adoption reconciliation failed during daily report generation: %s", exc, exc_info=True)
+        return {"error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
@@ -2969,6 +4276,46 @@ SECTION_THEORY_CONTEXT: dict[str, str] = {
         "The Kelly Criterion requires accurate probability estimates for optimal "
         "geometric growth. Reference: Brier score, Kelly Criterion, isotonic regression."
     ),
+    "Threshold Replay Diagnostics": (
+        "Threshold replay evaluates candidate score and probability floors against "
+        "historical quality-approved outcomes. Chronological holdout performance and "
+        "sample-size guardrails reduce the risk of selecting thresholds that only worked "
+        "because of small-sample noise."
+    ),
+    "Threshold Governance": (
+        "Governance turns replay evidence into a human-review queue. Promotion requires "
+        "stable walk-forward evidence and explicit review before any policy-pack experiment."
+    ),
+    "Threshold Policy Experiment": (
+        "The policy experiment sandbox compares a governed threshold rule against the "
+        "baseline signal population before any runtime policy change. Full-sample deltas, "
+        "walk-forward holdouts, and regime guardrails reduce threshold overfitting risk."
+    ),
+    "Threshold Shadow Simulation": (
+        "Shadow simulation converts an approved research threshold into a counterfactual "
+        "signal stream: retained signals remain visible, suppressed signals are analyzed "
+        "for false positives removed and true positives lost before any live adoption."
+    ),
+    "Threshold Shadow Review": (
+        "Shadow review applies promotion-readiness guardrails to the simulated signal stream. "
+        "It checks sample size, false-positive removal, true-positive loss, retained edge, "
+        "and segment degradation before recommending any human policy review."
+    ),
+    "Threshold Promotion Review Package": (
+        "Promotion packages convert research evidence into a human decision record. "
+        "The separation between evidence, approval, and runtime application reduces "
+        "model-risk and prevents accidental threshold deployment."
+    ),
+    "Threshold Post-Promotion Monitor": (
+        "Post-promotion monitoring compares newly realized signal outcomes with the "
+        "shadow evidence that justified approval. This closes the model-risk loop by "
+        "detecting degradation before a manually adopted threshold becomes trusted by habit."
+    ),
+    "Threshold Adoption Reconciliation": (
+        "Adoption reconciliation separates human approval from actual runtime policy state. "
+        "A threshold is trustworthy only when the ledger, candidate package, active parameter "
+        "pack, and post-promotion monitor agree on what policy is in force."
+    ),
     "Reversal Diagnostics": (
         "Reversal risk arises from the interaction of informed and uninformed flow. "
         "In Kyle (1985), informed traders move prices gradually; after information "
@@ -3032,6 +4379,11 @@ SECTION_THEORY_CONTEXT: dict[str, str] = {
         "Features with near-zero variance carry near-zero mutual information with the "
         "target and should be excluded or re-parameterized. High-dispersion features can "
         "dominate scoring unless normalized."
+    ),
+    "Signal Drift Monitor": (
+        "Drift monitoring compares recent evidence with a baseline window. Persistent "
+        "degradation in quality-approved hit rate, signed returns, calibration, label "
+        "coverage, or policy retention can indicate model decay or a market-regime shift."
     ),
 }
 
@@ -3131,6 +4483,7 @@ def generate_daily_report(
         update_signal_dataset_outcomes(dataset_path=ds_path)
         logger.info("Signal outcome evaluation complete.")
 
+    explicit_output_dir = output_dir is not None
     out_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3150,8 +4503,77 @@ def generate_daily_report(
     # In cumulative mode the analysis data is the full dataset.
     # In daily mode, enforce strict day-only scope across *all* sections.
     is_cumulative = mode == "cumulative"
-    analysis_df = df if is_cumulative else day_df
-    scope_df = df if is_cumulative else analysis_df
+    analysis_raw_df = df if is_cumulative else day_df
+    scope_raw_df = df if is_cumulative else analysis_raw_df
+    analysis_df = apply_quality_label_view(analysis_raw_df)
+    scope_df = apply_quality_label_view(scope_raw_df)
+    metric_df = apply_quality_label_view(df)
+    metric_day_df = apply_quality_label_view(day_df)
+    drift_artifact = _build_daily_drift_artifact(
+        df,
+        dataset_path=ds_path,
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+    )
+    threshold_governance_artifact = _build_daily_threshold_governance_artifact(
+        metric_df,
+        dataset_path=ds_path,
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+    )
+    threshold_policy_experiment_artifact = _build_daily_threshold_policy_experiment_artifact(
+        metric_df,
+        dataset_path=ds_path,
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+        governance_artifact=threshold_governance_artifact,
+    )
+    threshold_shadow_simulation_artifact = _build_daily_threshold_shadow_simulation_artifact(
+        metric_df,
+        dataset_path=ds_path,
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+        policy_experiment_artifact=threshold_policy_experiment_artifact,
+    )
+    threshold_shadow_review_artifact = _build_daily_threshold_shadow_review_artifact(
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+        shadow_artifact=threshold_shadow_simulation_artifact,
+    )
+    threshold_promotion_review_artifact = _build_daily_threshold_promotion_review_artifact(
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+        shadow_review_artifact=threshold_shadow_review_artifact,
+    )
+    threshold_post_promotion_monitor_artifact = _build_daily_threshold_post_promotion_monitor_artifact(
+        metric_df,
+        dataset_path=ds_path,
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+        promotion_artifact=threshold_promotion_review_artifact,
+    )
+    threshold_adoption_reconciliation_artifact = _build_daily_threshold_adoption_reconciliation_artifact(
+        report_date=report_date,
+        mode=mode,
+        explicit_output_dir=explicit_output_dir,
+        report_output_dir=out_dir,
+        promotion_artifact=threshold_promotion_review_artifact,
+        post_promotion_monitor_artifact=threshold_post_promotion_monitor_artifact,
+    )
 
     # Determine date range for cumulative reports
     if is_cumulative and "signal_timestamp" in df.columns:
@@ -3228,6 +4650,9 @@ def generate_daily_report(
         ("Signal Dataset Summary",
          _section_dataset_summary(df, day_df),
          _summarize_dataset_summary(df, day_df)),
+        ("Signal Drift Monitor",
+         _section_drift_monitor(drift_artifact),
+         _summarize_drift_monitor(drift_artifact)),
         ("Macroeconomic Environment",
          _section_macro_environment(analysis_df),
          _summarize_macro(analysis_df)),
@@ -3267,6 +4692,30 @@ def generate_daily_report(
         ("Score Calibration",
          _section_score_calibration(analysis_df),
          _summarize_score_calibration(analysis_df)),
+        ("Threshold Replay Diagnostics",
+         _section_threshold_replay(metric_df),
+         _summarize_threshold_replay(metric_df)),
+        ("Threshold Governance",
+         _section_threshold_governance(threshold_governance_artifact),
+         _summarize_threshold_governance(threshold_governance_artifact)),
+        ("Threshold Policy Experiment",
+         _section_threshold_policy_experiment(threshold_policy_experiment_artifact),
+         _summarize_threshold_policy_experiment(threshold_policy_experiment_artifact)),
+        ("Threshold Shadow Simulation",
+         _section_threshold_shadow_simulation(threshold_shadow_simulation_artifact),
+         _summarize_threshold_shadow_simulation(threshold_shadow_simulation_artifact)),
+        ("Threshold Shadow Review",
+         _section_threshold_shadow_review(threshold_shadow_review_artifact),
+         _summarize_threshold_shadow_review(threshold_shadow_review_artifact)),
+        ("Threshold Promotion Review Package",
+         _section_threshold_promotion_review(threshold_promotion_review_artifact),
+         _summarize_threshold_promotion_review(threshold_promotion_review_artifact)),
+        ("Threshold Post-Promotion Monitor",
+         _section_threshold_post_promotion_monitor(threshold_post_promotion_monitor_artifact),
+         _summarize_threshold_post_promotion_monitor(threshold_post_promotion_monitor_artifact)),
+        ("Threshold Adoption Reconciliation",
+         _section_threshold_adoption_reconciliation(threshold_adoption_reconciliation_artifact),
+         _summarize_threshold_adoption_reconciliation(threshold_adoption_reconciliation_artifact)),
         ("Probability Calibration",
          _section_probability_calibration(analysis_df),
          _summarize_probability_calibration(analysis_df)),
@@ -3277,14 +4726,14 @@ def generate_daily_report(
          _section_regime_performance(analysis_df),
          _summarize_regime_performance(analysis_df)),
         ("Information Coefficient",
-         _section_information_coefficient(df, day_df),
-         _summarize_information_coefficient(df, day_df)),
+         _section_information_coefficient(metric_df, metric_day_df),
+         _summarize_information_coefficient(metric_df, metric_day_df)),
         ("Signal Edge Distribution",
          _section_edge_distribution(analysis_df),
          _summarize_edge_distribution(analysis_df)),
         ("Signal Stability Metrics",
-         _section_signal_stability(df, day_df),
-         _summarize_signal_stability(df, day_df)),
+         _section_signal_stability(metric_df, metric_day_df),
+         _summarize_signal_stability(metric_df, metric_day_df)),
         ("Exit Horizon Diagnostic",
          _section_exit_horizon(analysis_df),
          _summarize_exit_horizon(analysis_df)),
@@ -3329,6 +4778,17 @@ def generate_daily_report(
         filename = f"signal_research_report_{report_date.strftime('%Y%m%d')}.md"
     report_path = out_dir / filename
     report_path.write_text(report_text, encoding="utf-8")
+    manifest_path = write_report_reproducibility_manifest(
+        report_path=report_path,
+        dataset_path=ds_path,
+        frame=analysis_df,
+        report_kind="daily_signal_research_report",
+        report_date=report_date,
+        mode=mode,
+        run_evaluation=run_evaluation,
+        narrative=narrative,
+    )
 
     logger.info("%s research report written to %s", mode.capitalize(), report_path)
+    logger.info("Report reproducibility manifest written to %s", manifest_path)
     return report_path

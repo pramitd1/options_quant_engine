@@ -44,6 +44,7 @@ from research.signal_evaluation.dataset import (
     SIGNAL_DATASET_PATH,
     load_signals_dataset,
 )
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 from config.signal_evaluation_scoring import get_signal_evaluation_selection_policy
 from tuning.objectives import apply_selection_policy
 
@@ -551,7 +552,7 @@ def print_recommendation(results: list[dict]):
 
 # ── save artifacts ─────────────────────────────────────────────────────────────
 
-def save_artifacts(results: list[dict]):
+def save_artifacts(results: list[dict], *, label_quality: dict | None = None, dataset_name: str | None = None):
     rows = []
     for r in results:
         row = {
@@ -584,7 +585,8 @@ def save_artifacts(results: list[dict]):
         json.dump(
             {
                 "report_date": TODAY,
-                "dataset": CUMULATIVE_DATASET_PATH.name,
+                "dataset": dataset_name or CUMULATIVE_DATASET_PATH.name,
+                "label_quality_summary": label_quality or {},
                 "selection_policy": SELECTION_POLICY,
                 "results": results,
             },
@@ -604,6 +606,8 @@ def main():
     # ── load dataset ──────────────────────────────────────────────────────────
     dataset_path = CUMULATIVE_DATASET_PATH if CUMULATIVE_DATASET_PATH.exists() else SIGNAL_DATASET_PATH
     df = load_signals_dataset(dataset_path)
+    quality_summary = label_quality_summary(df)
+    df = apply_quality_label_view(df)
 
     print()
     print("=" * W)
@@ -641,7 +645,7 @@ def main():
 
     # ── save ──────────────────────────────────────────────────────────────────
     section("OUTPUT ARTIFACTS")
-    save_artifacts(results)
+    save_artifacts(results, label_quality=quality_summary, dataset_name=dataset_path.name)
     print()
 
 

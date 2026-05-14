@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -23,6 +24,14 @@ from research.signal_evaluation.daily_research_report import (
     _section_alpha_decay,
     _section_premium_analytics,
     _section_score_calibration,
+    _section_threshold_replay,
+    _section_threshold_governance,
+    _section_threshold_policy_experiment,
+    _section_threshold_shadow_simulation,
+    _section_threshold_shadow_review,
+    _section_threshold_promotion_review,
+    _section_threshold_post_promotion_monitor,
+    _section_threshold_adoption_reconciliation,
     _section_dataset_summary,
     _section_information_coefficient,
     _section_edge_distribution,
@@ -93,6 +102,39 @@ def _sample_dataset() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _policy_experiment_dataset(days: int = 120) -> pd.DataFrame:
+    rows = []
+    base_ts = pd.Timestamp("2026-01-01 09:20:00+05:30")
+    for i in range(days):
+        ts = base_ts + pd.Timedelta(days=i)
+        high_score = i >= 30
+        rows.append(
+            {
+                "signal_id": f"policy_sig_{i}",
+                "signal_timestamp": ts.isoformat(),
+                "symbol": "NIFTY",
+                "direction": "CALL" if i % 2 == 0 else "PUT",
+                "trade_status": "TRADE",
+                "signal_regime": "EXPANSION_BIAS" if high_score else "CONFLICTED",
+                "macro_regime": "RISK_ON" if i % 3 else "RISK_OFF",
+                "gamma_regime": "SHORT_GAMMA_ZONE" if i % 2 else "LONG_GAMMA_ZONE",
+                "volatility_regime": "NORMAL",
+                "global_risk_state": "CALM",
+                "composite_signal_score": 82.0 if high_score else 52.0,
+                "tradeability_score": 78.0 if high_score else 45.0,
+                "move_probability": 0.72 if high_score else 0.48,
+                "ml_confidence_score": 0.74 if high_score else 0.42,
+                "correct_60m": 1.0 if high_score else 0.0,
+                "signed_return_60m_bps": 24.0 if high_score else -8.0,
+                "calibration_label": 1.0 if high_score else 0.0,
+                "calibration_label_available": True,
+                "primary_outcome_return_bps": 24.0 if high_score else -8.0,
+                "label_quality_status": "CLEAN",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 class TestDirectionalRows:
     def test_includes_directional_non_trade_rows(self):
         df = _sample_dataset()
@@ -142,6 +184,276 @@ class TestSectionBuilders:
         assert "5m" in text
         assert "60m" in text
         assert "session_close" in text
+        assert "Hit Rate 95% CI" in text
+        assert "INSUFFICIENT_EVIDENCE" in text
+
+    def test_threshold_replay_section_has_candidate_table(self):
+        df = _sample_dataset()
+        df["signal_timestamp"] = pd.to_datetime(df["signal_timestamp"])
+        lines = _section_threshold_replay(df)
+        text = "\n".join(lines)
+        assert "Threshold Replay Diagnostics" in text
+        assert "Overall Candidate Thresholds" in text
+        assert "Regime-Conditioned Candidates" in text
+        assert "Walk-Forward Threshold Validation" in text
+
+    def test_threshold_governance_section_shows_review_status(self):
+        artifact = {
+            "json_path": "threshold_governance.json",
+            "markdown_path": "threshold_governance.md",
+            "review_ledger_path": "threshold_governance_review_ledger.csv",
+            "report": {
+                "overall_status": "WATCHLIST",
+                "walk_forward_summary": {
+                    "robustness_status": "MIXED",
+                    "evaluated_split_count": 2,
+                    "split_count": 3,
+                    "positive_holdout_rate": 0.5,
+                    "avg_holdout_return_60m_bps": 3.2,
+                },
+                "top_candidate_review": {
+                    "candidate_key": "composite_signal_score>=75.0",
+                    "governance_status": "WATCHLIST",
+                    "config_hint": "evaluation_thresholds.selection.composite_signal_score_floor",
+                    "recommended_next_action": "Keep collecting labels.",
+                    "reasons": ["More walk-forward evidence required."],
+                },
+                "candidate_reviews": [],
+            },
+        }
+        text = "\n".join(_section_threshold_governance(artifact))
+
+        assert "Threshold Governance" in text
+        assert "WATCHLIST" in text
+        assert "composite_signal_score>=75.0" in text
+
+    def test_threshold_policy_experiment_section_shows_status(self):
+        artifact = {
+            "json_path": "threshold_policy_experiment.json",
+            "markdown_path": "threshold_policy_experiment.md",
+            "candidate_policy_pack_path": "candidate_pack.json",
+            "report": {
+                "experiment_status": "APPROVED_FOR_POLICY_EXPERIMENT",
+                "runtime_config_changed": False,
+                "experiment_reasons": ["Candidate passed sandbox guardrails."],
+                "candidate_policy_pack": {
+                    "source_candidate_key": "composite_signal_score>=75.0",
+                    "source_governance_status": "PROMOTE_TO_REVIEW",
+                    "config_hint": "evaluation_thresholds.selection.composite_signal_score_floor",
+                    "research_only": True,
+                },
+                "full_sample_comparison": {
+                    "baseline": {"signal_count": 100, "label_count_60m": 100, "hit_rate_60m": 0.55, "avg_signed_return_60m_bps": 4.0},
+                    "candidate": {"signal_count": 45, "label_count_60m": 45, "hit_rate_60m": 0.7, "avg_signed_return_60m_bps": 12.0},
+                    "delta": {"signal_count_delta": -55, "label_count_delta": -55, "hit_rate_delta": 0.15, "avg_return_delta_bps": 8.0},
+                },
+                "walk_forward_comparison": {
+                    "summary": {
+                        "robustness_status": "ROBUST",
+                        "evaluated_split_count": 3,
+                        "split_count": 3,
+                        "positive_delta_rate": 1.0,
+                        "avg_holdout_return_delta_bps": 6.0,
+                    },
+                },
+                "regime_comparison": [],
+            },
+        }
+        text = "\n".join(_section_threshold_policy_experiment(artifact))
+
+        assert "Threshold Policy Experiment" in text
+        assert "APPROVED_FOR_POLICY_EXPERIMENT" in text
+        assert "composite_signal_score>=75.0" in text
+
+    def test_threshold_shadow_simulation_section_shows_signal_stream_impact(self):
+        artifact = {
+            "json_path": "threshold_shadow_simulation.json",
+            "markdown_path": "threshold_shadow_simulation.md",
+            "retained_signals_csv_path": "retained.csv",
+            "suppressed_signals_csv_path": "suppressed.csv",
+            "report": {
+                "shadow_status": "SHADOW_SIMULATION_READY",
+                "runtime_config_changed": False,
+                "shadow_reasons": ["Approved threshold replayed as shadow simulation."],
+                "threshold_rule": {"field": "composite_signal_score", "operator": ">=", "value": 75.0},
+                "impact_summary": {
+                    "eligible_signal_count": 100,
+                    "retained_signal_count": 60,
+                    "suppressed_signal_count": 40,
+                    "retention_ratio": 0.6,
+                    "false_positive_removed_count": 25,
+                    "true_positive_lost_count": 5,
+                    "avoided_suppressed_return_bps": 120.0,
+                },
+                "baseline_metrics": {"signal_count": 100, "label_count_60m": 100, "hit_rate_60m": 0.55, "avg_signed_return_60m_bps": 4.0},
+                "retained_metrics": {"signal_count": 60, "label_count_60m": 60, "hit_rate_60m": 0.7, "avg_signed_return_60m_bps": 12.0},
+                "suppressed_metrics": {"signal_count": 40, "label_count_60m": 40, "hit_rate_60m": 0.35, "avg_signed_return_60m_bps": -3.0},
+                "retained_vs_baseline_delta": {"signal_count_delta": -40, "label_count_delta": -40, "hit_rate_delta": 0.15, "avg_return_delta_bps": 8.0},
+                "regime_shadow": [],
+            },
+        }
+        text = "\n".join(_section_threshold_shadow_simulation(artifact))
+
+        assert "Threshold Shadow Simulation" in text
+        assert "SHADOW_SIMULATION_READY" in text
+        assert "False positives removed" in text
+
+    def test_threshold_shadow_review_section_shows_promotion_readiness(self):
+        artifact = {
+            "json_path": "threshold_shadow_review.json",
+            "markdown_path": "threshold_shadow_review.md",
+            "segments_csv_path": "segments.csv",
+            "report": {
+                "review_status": "PROMOTION_READY",
+                "runtime_config_changed": False,
+                "requires_manual_promotion_review": True,
+                "recommended_next_action": "Open a human promotion review.",
+                "review_reasons": ["Shadow evidence meets guardrails."],
+                "threshold_rule": {"field": "composite_signal_score", "operator": ">=", "value": 75.0},
+                "observation_summary": {"distinct_signal_dates": 60},
+                "impact_summary": {
+                    "eligible_signal_count": 100,
+                    "retained_signal_count": 70,
+                    "suppressed_signal_count": 30,
+                    "true_positive_lost_count": 0,
+                },
+                "guardrail_summary": {
+                    "false_positive_removed_count": 25,
+                    "false_positive_removal_rate": 0.83,
+                    "true_positive_loss_rate": 0.0,
+                    "bad_regime_count": 0,
+                    "bad_bucket_count": 0,
+                },
+                "retained_vs_baseline_delta": {"hit_rate_delta": 0.14, "avg_return_delta_bps": 8.0},
+                "segment_failures": [],
+            },
+        }
+        text = "\n".join(_section_threshold_shadow_review(artifact))
+
+        assert "Threshold Shadow Review" in text
+        assert "PROMOTION_READY" in text
+        assert "Manual promotion review required" in text
+
+    def test_threshold_promotion_review_section_shows_manual_package(self):
+        artifact = {
+            "json_path": "threshold_promotion_review.json",
+            "markdown_path": "threshold_promotion_review.md",
+            "review_ledger_path": "threshold_promotion_review_ledger.csv",
+            "report": {
+                "promotion_review_status": "PROMOTION_REVIEW_READY",
+                "runtime_config_changed": False,
+                "manual_review_required": True,
+                "recommended_next_action": "Open the promotion review ledger.",
+                "promotion_review_reasons": ["Shadow review is PROMOTION_READY."],
+                "status_chain": {
+                    "governance_status": "PROMOTE_TO_REVIEW",
+                    "policy_experiment_status": "APPROVED_FOR_POLICY_EXPERIMENT",
+                    "shadow_simulation_status": "SHADOW_SIMULATION_READY",
+                    "shadow_review_status": "PROMOTION_READY",
+                },
+                "promotion_candidate": {
+                    "source_candidate_key": "composite_signal_score>=75.0",
+                    "config_hint": "evaluation_thresholds.selection.composite_signal_score_floor",
+                    "threshold_rule": {"field": "composite_signal_score", "operator": ">=", "value": 75.0},
+                },
+                "impact_summary": {
+                    "eligible_signal_count": 100,
+                    "retained_signal_count": 70,
+                    "suppressed_signal_count": 30,
+                },
+                "guardrail_summary": {"false_positive_removal_rate": 0.83, "true_positive_loss_rate": 0.0},
+                "risk_flags": {
+                    "false_positive_removed_count": 25,
+                    "true_positive_lost_count": 0,
+                    "segment_failure_count": 0,
+                },
+                "retained_vs_baseline_delta": {"hit_rate_delta": 0.14, "avg_return_delta_bps": 8.0},
+                "monitoring_plan": ["Track retained/suppressed counts."],
+                "rollback_notes": ["No rollback required from package generation."],
+            },
+        }
+        text = "\n".join(_section_threshold_promotion_review(artifact))
+
+        assert "Threshold Promotion Review Package" in text
+        assert "PROMOTION_REVIEW_READY" in text
+        assert "composite_signal_score>=75.0" in text
+
+    def test_threshold_post_promotion_monitor_section_shows_health_status(self):
+        artifact = {
+            "json_path": "threshold_post_promotion_monitor.json",
+            "markdown_path": "threshold_post_promotion_monitor.md",
+            "segments_csv_path": "threshold_post_promotion_monitor_segments.csv",
+            "report": {
+                "monitor_status": "POST_PROMOTION_HEALTHY",
+                "runtime_config_changed": False,
+                "recommended_next_action": "Reaffirm the approved candidate.",
+                "monitor_reasons": ["Post-approval evidence remains consistent."],
+                "threshold_rule": {"field": "composite_signal_score", "operator": ">=", "value": 75.0},
+                "post_approval_window": {
+                    "approval_timestamp": "2026-02-01T00:00:00Z",
+                    "post_approval_signal_count": 60,
+                    "post_approval_signal_dates": 60,
+                },
+                "post_approval_impact": {
+                    "eligible_signal_count": 60,
+                    "retained_signal_count": 40,
+                    "suppressed_signal_count": 20,
+                    "false_positive_removed_count": 20,
+                    "true_positive_lost_count": 0,
+                },
+                "post_approval_retained_metrics": {
+                    "label_count_60m": 40,
+                    "hit_rate_60m": 1.0,
+                    "avg_signed_return_60m_bps": 23.0,
+                },
+                "drift_from_shadow_expectation": {
+                    "retained_hit_rate_delta_vs_shadow": 0.0,
+                    "retained_avg_return_delta_bps_vs_shadow": -1.0,
+                    "true_positive_lost_delta_vs_shadow": 0,
+                },
+                "segment_summary": {
+                    "deteriorating_segment_count": 0,
+                    "watch_segment_count": 0,
+                },
+                "segment_monitoring": [],
+            },
+        }
+        text = "\n".join(_section_threshold_post_promotion_monitor(artifact))
+
+        assert "Threshold Post-Promotion Monitor" in text
+        assert "POST_PROMOTION_HEALTHY" in text
+        assert "Avg-return drift" in text
+
+    def test_threshold_adoption_reconciliation_section_shows_adoption_status(self):
+        artifact = {
+            "json_path": "threshold_adoption_reconciliation.json",
+            "markdown_path": "threshold_adoption_reconciliation.md",
+            "comparison_csv_path": "threshold_adoption_reconciliation_comparison.csv",
+            "report": {
+                "adoption_status": "ADOPTED_MANUALLY",
+                "runtime_config_changed": False,
+                "recommended_next_action": "Continue post-promotion monitoring.",
+                "adoption_reasons": ["Active runtime value matches the approved threshold candidate."],
+                "comparison": {
+                    "config_hint": "evaluation_thresholds.selection.composite_signal_score_floor",
+                    "candidate_value": 82.0,
+                    "observed_runtime_value": 82.0,
+                    "observed_runtime_source": "runtime_config",
+                    "default_runtime_value": 75.0,
+                    "matches_candidate": True,
+                    "matches_default": False,
+                },
+                "runtime_state": {
+                    "active_parameter_pack": {"name": "baseline_v1", "layers": ["baseline_v1"], "override_keys": []},
+                },
+                "post_promotion_monitor_summary": {"monitor_status": "POST_PROMOTION_HEALTHY"},
+            },
+        }
+        text = "\n".join(_section_threshold_adoption_reconciliation(artifact))
+
+        assert "Threshold Adoption Reconciliation" in text
+        assert "ADOPTED_MANUALLY" in text
+        assert "Active runtime value" in text
 
     def test_alpha_decay_has_ascii_chart(self):
         df = _sample_dataset()
@@ -241,6 +553,33 @@ class TestGenerateReport:
         assert report_path.exists()
         assert report_path.name == "signal_research_report_20260316.md"
 
+    def test_generate_report_writes_reproducibility_manifest(self, tmp_path):
+        df = _sample_dataset()
+        df.loc[1, "signal_timestamp"] = "2026-03-16 10:05:00+05:30"
+        csv_path = tmp_path / "signals_dataset.csv"
+        df.to_csv(csv_path, index=False)
+        output_dir = tmp_path / "reports"
+
+        report_path = generate_daily_report(
+            report_date=date(2026, 3, 16),
+            dataset_path=csv_path,
+            output_dir=output_dir,
+            run_evaluation=False,
+            narrative=False,
+        )
+
+        manifest_path = report_path.with_suffix(".manifest.json")
+        assert manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["report_kind"] == "daily_signal_research_report"
+        assert manifest["report_date"] == "2026-03-16"
+        assert manifest["mode"] == "daily"
+        assert manifest["dataset"]["sha256"]
+        assert manifest["report"]["sha256"]
+        assert manifest["frame"]["row_count"] == 10
+        assert manifest["timestamp_parse"]["parsed_count"] == 10
+        assert manifest["timestamp_parse"]["failed_count"] == 0
+
     def test_report_contains_all_sections(self, tmp_path):
         df = _sample_dataset()
         csv_path = tmp_path / "signals_dataset.csv"
@@ -255,6 +594,7 @@ class TestGenerateReport:
         required_sections = [
             "Executive Summary",
             "Signal Dataset Summary",
+            "Signal Drift Monitor",
             "Macroeconomic Environment",
             "Market Structure Context",
             "Signal Generation Summary",
@@ -267,6 +607,14 @@ class TestGenerateReport:
             "Tradeability Analysis",
             "Premium Analytics",
             "Score Calibration",
+            "Threshold Replay Diagnostics",
+            "Threshold Governance",
+            "Threshold Policy Experiment",
+            "Threshold Shadow Simulation",
+            "Threshold Shadow Review",
+            "Threshold Promotion Review Package",
+            "Threshold Post-Promotion Monitor",
+            "Threshold Adoption Reconciliation",
             "Probability Calibration",
             "Reversal Diagnostics",
             "Regime Performance",
@@ -297,6 +645,161 @@ class TestGenerateReport:
         assert "Pramit Dutta" in content
         assert "Quant Engines" in content
         assert "Signal Terminology" in content
+
+    def test_report_writes_latest_signal_drift_artifact(self, tmp_path):
+        df = _sample_dataset()
+        csv_path = tmp_path / "signals_dataset.csv"
+        df.to_csv(csv_path, index=False)
+        output_dir = tmp_path / "reports"
+        report_path = generate_daily_report(
+            report_date=date(2026, 3, 16),
+            dataset_path=csv_path,
+            output_dir=output_dir,
+        )
+
+        latest_json = output_dir / "drift_monitoring" / "latest_signal_drift.json"
+        latest_md = output_dir / "drift_monitoring" / "latest_signal_drift.md"
+        trend_history = output_dir / "drift_monitoring" / "signal_drift_trend_history.csv"
+        trend_json = output_dir / "drift_monitoring" / "latest_signal_drift_trend.json"
+        trend_md = output_dir / "drift_monitoring" / "latest_signal_drift_trend.md"
+        threshold_json = output_dir / "threshold_governance" / "latest_threshold_governance.json"
+        threshold_md = output_dir / "threshold_governance" / "latest_threshold_governance.md"
+        threshold_candidates = output_dir / "threshold_governance" / "latest_threshold_governance_candidates.csv"
+        policy_experiment_json = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment.json"
+        policy_experiment_md = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment.md"
+        policy_experiment_pack = output_dir / "threshold_policy_experiments" / "latest_candidate_threshold_policy_pack.json"
+        shadow_json = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation.json"
+        shadow_md = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation.md"
+        shadow_retained = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation_retained_signals.csv"
+        shadow_suppressed = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation_suppressed_signals.csv"
+        shadow_review_json = output_dir / "threshold_shadow_review" / "latest_threshold_shadow_review.json"
+        shadow_review_md = output_dir / "threshold_shadow_review" / "latest_threshold_shadow_review.md"
+        shadow_review_segments = output_dir / "threshold_shadow_review" / "latest_threshold_shadow_review_segments.csv"
+        promotion_review_json = output_dir / "threshold_promotion_review" / "latest_threshold_promotion_review.json"
+        promotion_review_md = output_dir / "threshold_promotion_review" / "latest_threshold_promotion_review.md"
+        promotion_review_ledger = output_dir / "threshold_promotion_review" / "threshold_promotion_review_ledger.csv"
+        post_promotion_json = output_dir / "threshold_post_promotion_monitoring" / "latest_threshold_post_promotion_monitor.json"
+        post_promotion_md = output_dir / "threshold_post_promotion_monitoring" / "latest_threshold_post_promotion_monitor.md"
+        post_promotion_segments = output_dir / "threshold_post_promotion_monitoring" / "latest_threshold_post_promotion_monitor_segments.csv"
+        assert report_path.exists()
+        assert latest_json.exists()
+        assert latest_md.exists()
+        assert trend_history.exists()
+        assert trend_json.exists()
+        assert trend_md.exists()
+        assert threshold_json.exists()
+        assert threshold_md.exists()
+        assert threshold_candidates.exists()
+        assert policy_experiment_json.exists()
+        assert policy_experiment_md.exists()
+        assert policy_experiment_pack.exists()
+        assert shadow_json.exists()
+        assert shadow_md.exists()
+        assert shadow_retained.exists()
+        assert shadow_suppressed.exists()
+        assert shadow_review_json.exists()
+        assert shadow_review_md.exists()
+        assert shadow_review_segments.exists()
+        assert promotion_review_json.exists()
+        assert promotion_review_md.exists()
+        assert promotion_review_ledger.parent.exists()
+        assert post_promotion_json.exists()
+        assert post_promotion_md.exists()
+        assert post_promotion_segments.exists()
+        content = report_path.read_text(encoding="utf-8")
+        assert "Signal Drift Monitor" in content
+        assert "Trend dashboard" in content
+        assert "Threshold Governance" in content
+        assert "Threshold Policy Experiment" in content
+        assert "Threshold Shadow Simulation" in content
+        assert "Threshold Shadow Review" in content
+        assert "Threshold Promotion Review Package" in content
+        assert "Threshold Post-Promotion Monitor" in content
+        policy_payload = json.loads(policy_experiment_json.read_text(encoding="utf-8"))
+        assert policy_payload["experiment_status"] == "SKIPPED_NO_PROMOTED_CANDIDATE"
+        shadow_payload = json.loads(shadow_json.read_text(encoding="utf-8"))
+        assert shadow_payload["shadow_status"] == "SKIPPED_POLICY_EXPERIMENT_NOT_APPROVED"
+        shadow_review_payload = json.loads(shadow_review_json.read_text(encoding="utf-8"))
+        assert shadow_review_payload["review_status"] == "SKIPPED_SHADOW_NOT_READY"
+        promotion_review_payload = json.loads(promotion_review_json.read_text(encoding="utf-8"))
+        assert promotion_review_payload["promotion_review_status"] == "SKIPPED_SHADOW_REVIEW_NOT_READY"
+        post_promotion_payload = json.loads(post_promotion_json.read_text(encoding="utf-8"))
+        assert post_promotion_payload["monitor_status"] == "POST_PROMOTION_SKIPPED_NO_APPROVAL"
+
+    def test_report_runs_threshold_policy_experiment_for_promoted_candidate(self, tmp_path):
+        df = _policy_experiment_dataset()
+        csv_path = tmp_path / "signals_dataset.csv"
+        df.to_csv(csv_path, index=False)
+        output_dir = tmp_path / "reports"
+        report_path = generate_daily_report(
+            report_date=date(2026, 4, 30),
+            dataset_path=csv_path,
+            output_dir=output_dir,
+            run_evaluation=False,
+        )
+
+        policy_experiment_json = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment.json"
+        policy_experiment_md = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment.md"
+        policy_experiment_pack = output_dir / "threshold_policy_experiments" / "latest_candidate_threshold_policy_pack.json"
+        policy_experiment_splits = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment_splits.csv"
+        policy_experiment_regimes = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment_regimes.csv"
+        policy_experiment_quality = output_dir / "threshold_policy_experiments" / "latest_threshold_policy_experiment_quality_buckets.csv"
+        shadow_json = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation.json"
+        shadow_md = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation.md"
+        shadow_retained = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation_retained_signals.csv"
+        shadow_suppressed = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation_suppressed_signals.csv"
+        shadow_regimes = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation_regimes.csv"
+        shadow_buckets = output_dir / "threshold_shadow_simulation" / "latest_threshold_shadow_simulation_buckets.csv"
+        shadow_review_json = output_dir / "threshold_shadow_review" / "latest_threshold_shadow_review.json"
+        shadow_review_md = output_dir / "threshold_shadow_review" / "latest_threshold_shadow_review.md"
+        shadow_review_segments = output_dir / "threshold_shadow_review" / "latest_threshold_shadow_review_segments.csv"
+        promotion_review_json = output_dir / "threshold_promotion_review" / "latest_threshold_promotion_review.json"
+        promotion_review_md = output_dir / "threshold_promotion_review" / "latest_threshold_promotion_review.md"
+        promotion_review_ledger = output_dir / "threshold_promotion_review" / "threshold_promotion_review_ledger.csv"
+        post_promotion_json = output_dir / "threshold_post_promotion_monitoring" / "latest_threshold_post_promotion_monitor.json"
+        post_promotion_md = output_dir / "threshold_post_promotion_monitoring" / "latest_threshold_post_promotion_monitor.md"
+        post_promotion_segments = output_dir / "threshold_post_promotion_monitoring" / "latest_threshold_post_promotion_monitor_segments.csv"
+
+        assert report_path.exists()
+        assert policy_experiment_json.exists()
+        assert policy_experiment_md.exists()
+        assert policy_experiment_pack.exists()
+        assert policy_experiment_splits.exists()
+        assert policy_experiment_regimes.exists()
+        assert policy_experiment_quality.exists()
+        assert shadow_json.exists()
+        assert shadow_md.exists()
+        assert shadow_retained.exists()
+        assert shadow_suppressed.exists()
+        assert shadow_regimes.exists()
+        assert shadow_buckets.exists()
+        assert shadow_review_json.exists()
+        assert shadow_review_md.exists()
+        assert shadow_review_segments.exists()
+        assert promotion_review_json.exists()
+        assert promotion_review_md.exists()
+        assert promotion_review_ledger.parent.exists()
+        assert post_promotion_json.exists()
+        assert post_promotion_md.exists()
+        assert post_promotion_segments.exists()
+        policy_payload = json.loads(policy_experiment_json.read_text(encoding="utf-8"))
+        assert policy_payload["experiment_status"] == "APPROVED_FOR_POLICY_EXPERIMENT"
+        assert policy_payload["runtime_config_changed"] is False
+        assert policy_payload["candidate_policy_pack"]["research_only"] is True
+        assert policy_payload["full_sample_comparison"]["delta"]["avg_return_delta_bps"] > 0
+        shadow_payload = json.loads(shadow_json.read_text(encoding="utf-8"))
+        assert shadow_payload["shadow_status"] == "SHADOW_SIMULATION_READY"
+        assert shadow_payload["impact_summary"]["false_positive_removed_count"] == 30
+        assert shadow_payload["impact_summary"]["true_positive_lost_count"] == 0
+        shadow_review_payload = json.loads(shadow_review_json.read_text(encoding="utf-8"))
+        assert shadow_review_payload["review_status"] == "PROMOTION_READY"
+        assert shadow_review_payload["requires_manual_promotion_review"] is True
+        promotion_review_payload = json.loads(promotion_review_json.read_text(encoding="utf-8"))
+        assert promotion_review_payload["promotion_review_status"] == "PROMOTION_REVIEW_READY"
+        assert promotion_review_payload["manual_review_required"] is True
+        assert promotion_review_payload["runtime_config_changed"] is False
+        post_promotion_payload = json.loads(post_promotion_json.read_text(encoding="utf-8"))
+        assert post_promotion_payload["monitor_status"] == "POST_PROMOTION_SKIPPED_NO_APPROVAL"
 
     def test_report_auto_detects_latest_date(self, tmp_path):
         df = _sample_dataset()

@@ -54,6 +54,7 @@ from research.decision_policy.policy_config import (
     SIZING_TIERS,
 )
 from research.decision_policy.policy_engine import apply_policies
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,10 @@ def _prepare_dataset() -> pd.DataFrame:
     """Load, extend with ML, apply all policies, add helper columns."""
     df = _load_dataset()
     df = _ensure_ml_columns(df)
+    quality_summary = label_quality_summary(df)
     df = apply_policies(df)
+    df = apply_quality_label_view(df)
+    df.attrs["label_quality_summary"] = quality_summary
 
     # Parse year from signal_timestamp
     if "signal_timestamp" in df.columns:
@@ -961,6 +965,7 @@ def run_policy_robustness_analysis() -> dict[str, Any]:
 
     # Section 1: Data
     df = _prepare_dataset()
+    quality_summary = df.attrs.get("label_quality_summary", label_quality_summary(df))
     policies = _discover_policies(df)
     logger.info("Dataset: %d signals, %d columns, %d policies", len(df), len(df.columns), len(policies))
 
@@ -1017,6 +1022,7 @@ def run_policy_robustness_analysis() -> dict[str, Any]:
     master = {
         "evaluation_date": datetime.now().isoformat(),
         "dataset_size": len(df),
+        "label_quality_summary": quality_summary,
         "policies_evaluated": policies,
         "retention_coverage": retention,
         "yearly_stability": yearly,

@@ -50,6 +50,12 @@ from utils.numerics import safe_float as _safe_float  # noqa: F401
 from utils.regime_normalization import normalize_iv_decimal
 
 
+PRIMARY_LABEL_HORIZON_MINUTES = 60
+PRIMARY_LABEL_HORIZON = f"{PRIMARY_LABEL_HORIZON_MINUTES}m"
+PRIMARY_LABEL_COLUMN = f"correct_{PRIMARY_LABEL_HORIZON}"
+PRIMARY_RETURN_COLUMN = f"signed_return_{PRIMARY_LABEL_HORIZON}_bps"
+
+
 def _coerce_ts(value) -> pd.Timestamp:
     """
     Purpose:
@@ -135,6 +141,166 @@ def _bucket_probability(value) -> str | None:
     """
     value = _safe_float(value, None)
     return bucket_from_thresholds(value, MOVE_PROBABILITY_BUCKETS, "0.00_0.34")
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(missing, bool):
+        return missing
+    return False
+
+
+def _truthy_flag(value) -> bool:
+    if _is_missing(value):
+        return False
+    if isinstance(value, str):
+        token = value.strip().upper()
+        if token in {"TRUE", "T", "YES", "Y", "1", "1.0"}:
+            return True
+        if token in {"FALSE", "F", "NO", "N", "0", "0.0", ""}:
+            return False
+    try:
+        return bool(int(float(value)))
+    except (TypeError, ValueError):
+        return bool(value)
+
+
+def _binary_label(value) -> int | None:
+    if _is_missing(value):
+        return None
+    if isinstance(value, str):
+        token = value.strip().upper()
+        if token in {"TRUE", "T", "YES", "Y", "1", "1.0"}:
+            return 1
+        if token in {"FALSE", "F", "NO", "N", "0", "0.0"}:
+            return 0
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric == 1.0:
+        return 1
+    if numeric == 0.0:
+        return 0
+    return None
+
+
+def _normalized_outcome_status(row: dict, primary_label: int | None) -> str:
+    raw_status = str(row.get("outcome_status") or "").upper().strip()
+    if raw_status in {"", "NAN", "NONE", "<NA>", "NA"}:
+        return "UNKNOWN" if primary_label is not None else "PENDING"
+    return raw_status
+
+
+def _append_unique_reason(reasons: list[str], reason: str) -> None:
+    if reason and reason not in reasons:
+        reasons.append(reason)
+
+
+def _derive_label_quality_fields(row: dict) -> dict:
+    primary_label = _binary_label(row.get(PRIMARY_LABEL_COLUMN))
+    primary_return = _safe_float(row.get(PRIMARY_RETURN_COLUMN), None)
+    outcome_status = _normalized_outcome_status(row, primary_label)
+    reasons: list[str] = []
+    score = 100.0
+    hard_block = False
+
+    if _signal_direction_multiplier(row.get("direction")) == 0:
+        _append_unique_reason(reasons, "direction_unresolved")
+        score = min(score, 15.0)
+        hard_block = True
+
+    if _truthy_flag(row.get("target_stop_same_bar_ambiguous")):
+        _append_unique_reason(reasons, "target_stop_ambiguous")
+        score = min(score, 25.0)
+        hard_block = True
+
+    intraday_disabled_reason = str(row.get("intraday_eval_disabled_reason") or "").strip()
+    if intraday_disabled_reason:
+        _append_unique_reason(reasons, f"intraday_eval_disabled:{intraday_disabled_reason}")
+        score = min(score, 20.0)
+        hard_block = True
+
+    entry_spot = _safe_float(row.get("spot_at_signal"), None)
+    if entry_spot is None or entry_spot <= 0:
+        _append_unique_reason(reasons, "entry_spot_unavailable")
+        score = min(score, 20.0)
+        hard_block = True
+
+    if outcome_status == "PENDING":
+        _append_unique_reason(reasons, "outcome_pending")
+        score = min(score, 10.0)
+    elif outcome_status == "PARTIAL":
+        _append_unique_reason(reasons, "outcome_partial")
+        score = min(score, 85.0)
+    elif outcome_status == "UNKNOWN":
+        _append_unique_reason(reasons, "outcome_status_unknown")
+        score = min(score, 75.0)
+    elif outcome_status != "COMPLETE":
+        _append_unique_reason(reasons, f"outcome_status:{outcome_status.lower()}")
+        score = min(score, 60.0)
+
+    observed_minutes = _safe_float(row.get("observed_minutes"), None)
+    if observed_minutes is not None and observed_minutes < PRIMARY_LABEL_HORIZON_MINUTES and primary_label is None:
+        _append_unique_reason(reasons, "insufficient_observation_window")
+        score = min(score, 35.0)
+
+    if primary_label is None:
+        _append_unique_reason(reasons, "primary_horizon_unavailable")
+        score = min(score, 35.0)
+    elif primary_return is None:
+        _append_unique_reason(reasons, "primary_return_unavailable")
+        score = min(score, 70.0)
+
+    calibration_label_available = primary_label is not None and not hard_block
+    if not calibration_label_available and primary_label is not None:
+        score = min(score, 45.0)
+
+    if hard_block:
+        label_status = "AMBIGUOUS" if _truthy_flag(row.get("target_stop_same_bar_ambiguous")) else "UNUSABLE"
+    elif primary_label is None:
+        label_status = "PENDING" if outcome_status == "PENDING" else "PARTIAL"
+    elif reasons:
+        label_status = "USABLE_WITH_WARNINGS"
+    else:
+        label_status = "CLEAN"
+
+    return {
+        "label_quality_status": label_status,
+        "label_quality_score": round(float(score), 2),
+        "label_quality_reasons": "|".join(reasons),
+        "calibration_label": primary_label if calibration_label_available else pd.NA,
+        "calibration_label_horizon": PRIMARY_LABEL_HORIZON,
+        "calibration_label_available": bool(calibration_label_available),
+        "primary_outcome_horizon": PRIMARY_LABEL_HORIZON,
+        "primary_outcome_return_bps": round(float(primary_return), 2) if primary_return is not None else pd.NA,
+    }
+
+
+def apply_label_quality_fields(row: dict) -> dict:
+    """
+    Purpose:
+        Attach label-quality metadata to one signal-evaluation row.
+
+    Context:
+        Downstream calibration and research should only trust realized labels
+        that have a valid direction, a real primary horizon outcome, and no
+        known sequencing ambiguity.
+
+    Inputs:
+        row (dict): Signal-evaluation row, possibly pending or partially backfilled.
+
+    Returns:
+        dict: Copy of the row with additive label-quality and calibration-label fields.
+    """
+    updated = dict(row)
+    updated.update(_derive_label_quality_fields(updated))
+    return updated
 
 
 def build_signal_id(
@@ -265,6 +431,12 @@ def build_signal_evaluation_row(
     ranked_strikes = ranked_strikes_obj if isinstance(ranked_strikes_obj, list) else []
     option_chain_validation_obj = result.get("option_chain_validation")
     option_chain_validation = option_chain_validation_obj if isinstance(option_chain_validation_obj, dict) else {}
+    market_data_provenance_obj = result.get("market_data_provenance")
+    if not isinstance(market_data_provenance_obj, dict):
+        market_data_provenance_obj = trade.get("market_data_provenance")
+    if not isinstance(market_data_provenance_obj, dict):
+        market_data_provenance_obj = option_chain_validation.get("market_data_provenance")
+    market_data_provenance = market_data_provenance_obj if isinstance(market_data_provenance_obj, dict) else {}
 
     def _normalize_option_type(value):
         token = str(value or "").upper().strip()
@@ -323,6 +495,12 @@ def build_signal_evaluation_row(
     if not isinstance(provider_health_obj, dict):
         provider_health_obj = option_chain_validation.get("provider_health")
     provider_health = provider_health_obj if isinstance(provider_health_obj, dict) else {}
+    tradable_data_obj = trade.get("tradable_data")
+    if not isinstance(tradable_data_obj, dict):
+        tradable_data_obj = option_chain_validation.get("tradable_data")
+    tradable_data = tradable_data_obj if isinstance(tradable_data_obj, dict) else {}
+    calibration_guardrail_obj = trade.get("signal_confidence_calibration_guardrail")
+    calibration_guardrail = calibration_guardrail_obj if isinstance(calibration_guardrail_obj, dict) else {}
     regime_fingerprint, regime_fingerprint_id = build_regime_fingerprint(trade, provider_health)
     saved_paths = result.get("saved_paths") or {}
     captured_ts = resolve_research_as_of(captured_at, default=signal_timestamp).isoformat()
@@ -354,10 +532,72 @@ def build_signal_evaluation_row(
     if entry_price not in (None, 0.0) and spot_at_signal not in (None, 0.0):
         option_premium_pct_of_spot = round((entry_price / spot_at_signal) * 100.0, 4)
 
+    def _join_list(value):
+        if not isinstance(value, (list, tuple, set)):
+            return ""
+        return "|".join(str(item) for item in value if item not in (None, ""))
+
+    def _first_present(*values):
+        for value in values:
+            if value not in (None, ""):
+                return value
+        return None
+
+    option_validation_status = trade.get("option_chain_validation_status")
+    if option_validation_status in (None, "") and option_chain_validation:
+        provider_status = str(provider_health.get("summary_status") or "").upper().strip()
+        validation_issues = option_chain_validation.get("issues") if isinstance(option_chain_validation.get("issues"), list) else []
+        if option_chain_validation.get("is_valid", len(validation_issues) == 0) is False:
+            option_validation_status = "INVALID"
+        elif option_chain_validation.get("is_stale"):
+            option_validation_status = "STALE"
+        elif provider_status:
+            option_validation_status = provider_status
+        else:
+            option_validation_status = "GOOD"
+
     row = {
         "signal_id": signal_id,
         "signal_timestamp": _coerce_ts(signal_timestamp).isoformat(),
         "source": str(result.get("source") or "").upper().strip(),
+        "requested_option_source": _first_present(
+            trade.get("requested_option_source"),
+            market_data_provenance.get("requested_option_source"),
+        ),
+        "option_source": _first_present(trade.get("option_source"), market_data_provenance.get("option_source")),
+        "spot_source": _first_present(trade.get("spot_source"), market_data_provenance.get("spot_source")),
+        "market_data_source_consistency": _first_present(
+            trade.get("market_data_source_consistency"),
+            market_data_provenance.get("source_consistency"),
+        ),
+        "market_data_provenance_status": _first_present(
+            trade.get("market_data_provenance_status"),
+            market_data_provenance.get("status"),
+        ),
+        "market_data_trade_blocking_status": _first_present(
+            trade.get("market_data_trade_blocking_status"),
+            market_data_provenance.get("trade_blocking_status"),
+        ),
+        "market_data_timestamp_status": _first_present(
+            trade.get("market_data_timestamp_status"),
+            market_data_provenance.get("timestamp_status"),
+        ),
+        "market_data_timestamp_delta_seconds": _first_present(
+            trade.get("market_data_timestamp_delta_seconds"),
+            market_data_provenance.get("timestamp_delta_seconds"),
+        ),
+        "market_data_provenance_reasons": _join_list(
+            trade.get("market_data_provenance_reasons")
+            or market_data_provenance.get("reasons")
+        ),
+        "market_data_provenance_warnings": _join_list(
+            trade.get("market_data_provenance_warnings")
+            or market_data_provenance.get("warnings")
+        ),
+        "market_data_provenance_issues": _join_list(
+            trade.get("market_data_provenance_issues")
+            or market_data_provenance.get("issues")
+        ),
         "mode": str(result.get("mode") or "").upper().strip(),
         "symbol": normalize_underlying_symbol(result.get("symbol")),
         "ticker": spot_summary.get("ticker") or result.get("spot_snapshot", {}).get("ticker"),
@@ -486,6 +726,24 @@ def build_signal_evaluation_row(
         "macro_event_risk_score": trade.get("macro_event_risk_score"),
         "data_quality_score": trade.get("data_quality_score"),
         "data_quality_status": trade.get("data_quality_status"),
+        "option_chain_validation_status": option_validation_status,
+        "option_chain_is_valid": trade.get("option_chain_is_valid", option_chain_validation.get("is_valid")),
+        "option_chain_is_stale": trade.get("option_chain_is_stale", option_chain_validation.get("is_stale")),
+        "option_chain_issue_count": trade.get(
+            "option_chain_issue_count",
+            len(option_chain_validation.get("issues") if isinstance(option_chain_validation.get("issues"), list) else []),
+        ),
+        "option_chain_warning_count": trade.get(
+            "option_chain_warning_count",
+            len(option_chain_validation.get("warnings") if isinstance(option_chain_validation.get("warnings"), list) else []),
+        ),
+        "analytics_usable": trade.get("analytics_usable", option_chain_validation.get("analytics_usable")),
+        "execution_suggestion_usable": trade.get(
+            "execution_suggestion_usable",
+            option_chain_validation.get("execution_suggestion_usable"),
+        ),
+        "tradable_data_status": tradable_data.get("status"),
+        "tradable_data_score": tradable_data.get("score"),
         "provider_health_status": provider_health.get("summary_status"),
         "provider_health_row": provider_health.get("row_health"),
         "provider_health_pricing": provider_health.get("pricing_health"),
@@ -526,6 +784,13 @@ def build_signal_evaluation_row(
         "observed_minutes": 0.0,
         "evaluation_window_minutes": SIGNAL_EVALUATION_WINDOW_MINUTES,
         "directional_consistency_score": pd.NA,
+        "signal_confidence_score": trade.get("signal_confidence_score"),
+        "signal_confidence_level": trade.get("signal_confidence_level"),
+        "signal_confidence_calibration_status": trade.get("signal_confidence_calibration_status"),
+        "signal_confidence_calibration_sample_size": trade.get("signal_confidence_calibration_sample_size"),
+        "signal_confidence_calibration_regime_match": trade.get("signal_confidence_calibration_regime_match"),
+        "signal_confidence_calibration_guardrail_status": calibration_guardrail.get("status"),
+        "signal_confidence_recalibration_guards": _join_list(trade.get("signal_confidence_recalibration_guards")),
         "signal_calibration_bucket": _bucket_trade_strength(trade.get("trade_strength")),
         "probability_calibration_bucket": _bucket_probability(trade.get("hybrid_move_probability")),
         "notes": notes,
@@ -592,7 +857,7 @@ def build_signal_evaluation_row(
     row["horizon_edge_label"] = pd.NA
     row["tradeability_tier"] = pd.NA
     row["exit_quality_label"] = pd.NA
-    return row
+    return apply_label_quality_fields(row)
 
 
 def _nearest_spot_at_or_after(path: pd.DataFrame, target_ts: pd.Timestamp):
@@ -1044,7 +1309,7 @@ def compute_signal_evaluation_scores(row: dict) -> dict:
     else:
         updated["composite_signal_score"] = pd.NA
 
-    return updated
+    return apply_label_quality_fields(updated)
 
 
 def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_of=None) -> dict:
@@ -1069,7 +1334,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
     updated = dict(row)
     if realized_spot_path is None or realized_spot_path.empty:
         updated["outcome_status"] = "PENDING"
-        return updated
+        return apply_label_quality_fields(updated)
 
     path = realized_spot_path.copy()
     if "timestamp" not in path.columns or "spot" not in path.columns:
@@ -1081,7 +1346,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
     path = path[path["spot"] > 0].sort_values("timestamp").reset_index(drop=True)
     if path.empty:
         updated["outcome_status"] = "PENDING"
-        return updated
+        return apply_label_quality_fields(updated)
 
     signal_ts = _coerce_ts(updated["signal_timestamp"])
     as_of_ts = _coerce_ts(as_of) if as_of is not None else path["timestamp"].max()
@@ -1091,7 +1356,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
         updated["observed_minutes"] = 0.0
         updated["outcome_last_updated_at"] = as_of_ts.isoformat()
         updated["updated_at"] = as_of_ts.isoformat()
-        return updated
+        return apply_label_quality_fields(updated)
 
     observed_minutes = max((as_of_ts - signal_ts).total_seconds() / 60.0, 0.0)
     updated["observed_minutes"] = round(observed_minutes, 2)
@@ -1102,7 +1367,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
         first_spot = _nearest_spot_at_or_after(path, signal_ts)
         if first_spot in (None, 0):
             updated["outcome_status"] = "PENDING"
-            return updated
+            return apply_label_quality_fields(updated)
         entry_spot = first_spot
         updated["spot_at_signal"] = round(entry_spot, 4)
 
@@ -1188,7 +1453,7 @@ def evaluate_signal_outcomes(row: dict, realized_spot_path: pd.DataFrame, *, as_
         updated["outcome_status"] = "COMPLETE"
 
     updated["updated_at"] = as_of_ts.isoformat()
-    return updated
+    return apply_label_quality_fields(updated)
 
 
 def save_signal_evaluation(

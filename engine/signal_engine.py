@@ -122,6 +122,56 @@ def _dedupe_keep_order(items):
     return out
 
 
+def _build_runtime_data_contract(option_chain_validation):
+    """Return scalar trust fields for execution/operator views."""
+
+    validation = option_chain_validation if isinstance(option_chain_validation, dict) else {}
+    provider_health = validation.get("provider_health") if isinstance(validation.get("provider_health"), dict) else {}
+    provenance = validation.get("market_data_provenance") if isinstance(validation.get("market_data_provenance"), dict) else {}
+
+    issues = validation.get("issues") if isinstance(validation.get("issues"), list) else []
+    warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+
+    if not validation:
+        validation_status = "UNKNOWN"
+        option_is_valid = None
+        option_is_stale = None
+    else:
+        option_is_valid = bool(validation.get("is_valid", len(issues) == 0))
+        option_is_stale = bool(validation.get("is_stale", False))
+        provider_summary = _as_upper(provider_health.get("summary_status"))
+        if not option_is_valid:
+            validation_status = "INVALID"
+        elif option_is_stale:
+            validation_status = "STALE"
+        elif provider_summary in {"WEAK", "CAUTION", "GOOD"}:
+            validation_status = provider_summary
+        else:
+            validation_status = "GOOD"
+
+    return {
+        "option_chain_validation_status": validation_status,
+        "option_chain_is_valid": option_is_valid,
+        "option_chain_is_stale": option_is_stale,
+        "option_chain_issue_count": len(issues),
+        "option_chain_warning_count": len(warnings),
+        "provider_health_blocking_status": provider_health.get("trade_blocking_status"),
+        "provider_health_blocking_reasons": provider_health.get("trade_blocking_reasons") if isinstance(provider_health.get("trade_blocking_reasons"), list) else [],
+        "market_data_provenance": provenance or None,
+        "market_data_provenance_status": _as_upper(provenance.get("status")) or "UNKNOWN",
+        "market_data_trade_blocking_status": _as_upper(provenance.get("trade_blocking_status")) or None,
+        "requested_option_source": provenance.get("requested_option_source"),
+        "option_source": provenance.get("option_source"),
+        "spot_source": provenance.get("spot_source"),
+        "market_data_source_consistency": provenance.get("source_consistency"),
+        "market_data_timestamp_status": provenance.get("timestamp_status"),
+        "market_data_timestamp_delta_seconds": provenance.get("timestamp_delta_seconds"),
+        "market_data_provenance_reasons": _dedupe_keep_order(provenance.get("reasons", []) if isinstance(provenance.get("reasons"), list) else []),
+        "market_data_provenance_warnings": _dedupe_keep_order(provenance.get("warnings", []) if isinstance(provenance.get("warnings"), list) else []),
+        "market_data_provenance_issues": _dedupe_keep_order(provenance.get("issues", []) if isinstance(provenance.get("issues"), list) else []),
+    }
+
+
 _DECAY_SIGNAL_STATE = {}
 _PATH_SIGNAL_STATE = {}
 _PATH_FILTER = None
@@ -3308,6 +3358,7 @@ def generate_trade(
     lot_size=LOT_SIZE,
     max_capital=MAX_CAPITAL_PER_TRADE,
     backtest_mode=False,
+    historical_mode=False,
     macro_event_state=None,
     macro_news_state=None,
     global_risk_state=None,
@@ -3344,6 +3395,7 @@ def generate_trade(
         lot_size (Any): Contract lot size used when translating premium into capital required.
         max_capital (Any): Maximum capital budget allowed for the trade.
         backtest_mode (Any): Whether the snapshot is being evaluated in a backtest or replay context.
+        historical_mode (Any): Whether auxiliary features must avoid live/current history fetches.
         macro_event_state (Any): Scheduled-event state produced by the macro layer.
         macro_news_state (Any): Headline-driven macro state produced by the news layer.
         global_risk_state (Any): Precomputed cross-asset risk state, when already available.
@@ -3364,6 +3416,7 @@ def generate_trade(
     selected_expiry = option_chain_validation.get("selected_expiry") if isinstance(option_chain_validation, dict) else None
 
     days_to_expiry = _estimate_days_to_expiry(option_chain_validation, valuation_time)
+    point_in_time_mode = bool(historical_mode or backtest_mode)
 
     # Build global context fields early so market-state fan-out can consume
     # volatility fallbacks (e.g., India VIX when provider IV is unavailable).
@@ -3417,9 +3470,19 @@ def generate_trade(
 
     # Compute TA features for signal integration
     from features.ta_indicators import get_ta_features_for_trade
-    ta_features = get_ta_features_for_trade(symbol, spot)
+    ta_features = get_ta_features_for_trade(
+        symbol,
+        spot,
+        as_of=valuation_time,
+        allow_live_history=not point_in_time_mode,
+    )
     market_state["ta_features"] = ta_features
-    mean_reversion_features = get_mean_reversion_features_for_trade(symbol, spot)
+    mean_reversion_features = get_mean_reversion_features_for_trade(
+        symbol,
+        spot,
+        as_of=valuation_time,
+        allow_live_history=not point_in_time_mode,
+    )
     market_state["mean_reversion_features"] = mean_reversion_features
 
     probability_state = _compute_probability_state(
@@ -3841,6 +3904,7 @@ def generate_trade(
 
     provider_health = provider_health if isinstance(provider_health, dict) else {}
     provider_health_summary = _as_upper(provider_health.get("summary_status"))
+    data_contract = _build_runtime_data_contract(option_chain_validation)
 
     at_flip_penalty_applied = 0
     at_flip_size_cap = 1.0
@@ -3987,6 +4051,7 @@ def generate_trade(
         "provider_health_tier": provider_health.get("market_data_readiness_tier"),
         "data_readiness_score": provider_health.get("market_data_readiness_score"),
         "data_confidence_tier": provider_health.get("market_data_readiness_tier"),
+        **data_contract,
         "analytics_usable": bool(option_chain_validation.get("analytics_usable")) if isinstance(option_chain_validation, dict) else False,
         "execution_suggestion_usable": bool(option_chain_validation.get("execution_suggestion_usable")) if isinstance(option_chain_validation, dict) else False,
         "tradable_data": option_chain_validation.get("tradable_data") if isinstance(option_chain_validation, dict) else None,
@@ -4380,12 +4445,16 @@ def generate_trade(
         payload.update(explainability)
         payload["explainability"] = explainability
 
-        # Note: confidence already computed early in the pipeline for sizing decisions.
-        # Just ensure it's in the final payload (it should already be there).
-        if "signal_confidence_score" not in payload:
-            confidence = compute_signal_confidence(payload)
-            payload["signal_confidence_score"] = confidence["confidence_score"]
-            payload["signal_confidence_level"] = confidence["confidence_level"]
+        # Confidence is computed early for advisory sizing, then recomputed here
+        # after calibration and regime diagnostics have been attached.
+        confidence = compute_signal_confidence(payload)
+        payload["signal_confidence_score"] = confidence["confidence_score"]
+        payload["signal_confidence_level"] = confidence["confidence_level"]
+        payload["signal_confidence_calibration_status"] = confidence.get("calibration_status")
+        payload["signal_confidence_calibration_sample_size"] = confidence.get("calibration_sample_size")
+        payload["signal_confidence_calibration_regime_match"] = confidence.get("calibration_regime_match")
+        payload["signal_confidence_calibration_guardrail"] = confidence.get("calibration_guardrail")
+        payload["signal_confidence_recalibration_guards"] = confidence.get("confidence_recalibration_guards", [])
 
         # Immutable audit log — best-effort, never raises.
         if not backtest_mode:

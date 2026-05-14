@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
+from config.policy_resolver import ParameterPackResolutionError
 from config.signal_policy import get_trade_runtime_thresholds
 from research.signal_evaluation.dataset import write_signals_dataset
 from tuning.experiments import run_parameter_experiment
@@ -141,6 +143,14 @@ def test_runtime_pack_context_restores_nested_overrides():
         assert get_trade_runtime_thresholds()["min_trade_strength"] == 42
 
     assert get_trade_runtime_thresholds()["min_trade_strength"] == baseline_pack
+
+
+def test_strict_runtime_pack_rejects_unknown_pack(monkeypatch):
+    monkeypatch.setenv("OQE_STRICT_PARAMETER_PACK", "1")
+
+    with pytest.raises(ParameterPackResolutionError):
+        with temporary_parameter_pack("missing_pack_for_strict_resolution_test"):
+            pass
 
 
 def test_objective_framework_uses_selection_thresholds():

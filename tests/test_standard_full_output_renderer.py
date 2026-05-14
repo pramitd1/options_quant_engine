@@ -85,12 +85,33 @@ def _base_payloads():
         "iv_surface_residual_penalty_score": 7,
         "option_efficiency_status": "UNAVAILABLE_NEUTRALIZED",
         "option_efficiency_reason": "option_efficiency_features_missing",
+        "market_data_provenance_status": "CAUTION",
+        "market_data_trade_blocking_status": "PASS",
+        "requested_option_source": "ZERODHA",
+        "option_source": "ZERODHA",
+        "spot_source": "YFINANCE_INTRADAY",
+        "market_data_source_consistency": "MIXED_SPOT_OPTION_SOURCE",
+        "market_data_timestamp_status": "ALIGNED",
+        "market_data_provenance_warnings": ["mixed_spot_option_source"],
+    }
+
+    market_data_provenance = {
+        "status": "CAUTION",
+        "trade_blocking_status": "PASS",
+        "requested_option_source": "ZERODHA",
+        "option_source": "ZERODHA",
+        "spot_source": "YFINANCE_INTRADAY",
+        "source_consistency": "MIXED_SPOT_OPTION_SOURCE",
+        "timestamp_status": "ALIGNED",
+        "warnings": ["mixed_spot_option_source"],
+        "issues": [],
     }
 
     result = {
         "symbol": "NIFTY",
         "mode": "LIVE",
         "source": "ZERODHA",
+        "market_data_provenance": market_data_provenance,
         "option_chain_rows": 0,
         "option_chain_frame": None,
         "previous_chain_frame": None,
@@ -119,6 +140,7 @@ def _base_payloads():
         "age_minutes": 0,
         "issues": [],
         "warnings": [],
+        "market_data_provenance": market_data_provenance,
     }
     option_chain_validation = {
         "validation_mode": "LIVE",
@@ -230,6 +252,9 @@ def test_standard_mode_renders_confidence_note_and_consistency_check() -> None:
     assert "historical_outcome_guard" in output
     assert "regime_segment_guard" in output
     assert "regime_segment_key" in output
+    assert "MARKET DATA PROVENANCE" in output
+    assert "requested_option_source" in output
+    assert "MIXED_SPOT_OPTION_SOURCE" in output
     assert "portfolio_book_heat" in output
     assert "portfolio_priority" in output
     assert "confidence_note" in output
@@ -262,6 +287,9 @@ def test_full_debug_mode_renders_confidence_note_and_consistency_check() -> None
     assert "data_readiness_score" in output
     assert "historical_outcome_guard" in output
     assert "regime_segment_guard" in output
+    assert "MARKET DATA PROVENANCE" in output
+    assert "requested_option_source" in output
+    assert "MIXED_SPOT_OPTION_SOURCE" in output
     assert "portfolio_book_heat" in output
     assert "portfolio_priority" in output
     assert "RELIABILITY DAMPING" in output
@@ -307,6 +335,8 @@ def test_compact_mode_uses_bias_and_execution_suggestion_wording() -> None:
         output = buffer.getvalue()
 
     assert "direction_bias" in output
+    assert "requested_option_source" in output
+    assert "source_consistency" in output
     assert "execution_suggestion_usable" in output
     assert "iv_hv_regime" in output
     assert "MICROSTRUCTURE_FRICTION" not in output

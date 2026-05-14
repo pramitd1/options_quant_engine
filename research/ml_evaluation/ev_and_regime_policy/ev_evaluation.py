@@ -46,6 +46,7 @@ from research.ml_evaluation.ev_and_regime_policy.ev_sizing_model import (
     assign_confidence_size,
     score_signals,
 )
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +505,8 @@ def run_ev_sizing_evaluation() -> dict[str, Any]:
     # ── 1. Load and prepare dataset ──────────────────────────────────
     df = _load_dataset()
     df = _ensure_ml_columns(df)
+    quality_summary = label_quality_summary(df)
+    df = apply_quality_label_view(df)
 
     if "signal_timestamp" in df.columns:
         ts = pd.to_datetime(df["signal_timestamp"], errors="coerce")
@@ -583,6 +586,7 @@ def run_ev_sizing_evaluation() -> dict[str, Any]:
         "n_signals": total_n,
         "rank_gate_percentile": RANK_GATE_PERCENTILE,
         "rank_threshold": round(rank_threshold, 4),
+        "label_quality_summary": quality_summary,
         "conditional_return_table": crt.build_meta,
         "comparison": comparison,
         "ev_bucket_breakdown": ev_buckets,

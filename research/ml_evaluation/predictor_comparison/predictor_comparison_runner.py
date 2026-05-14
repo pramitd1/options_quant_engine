@@ -40,6 +40,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+
 logger = logging.getLogger(__name__)
 
 # ── Paths ────────────────────────────────────────────────────────────
@@ -132,6 +134,7 @@ def _ensure_ml_columns(df: pd.DataFrame) -> pd.DataFrame:
 def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce numerics, add ML columns, compute derived predictor columns."""
     df = _ensure_ml_columns(df)
+    df = apply_quality_label_view(df)
 
     # Coerce all probability and outcome columns to numeric
     for col in [HIT_COL, RETURN_COL, RETURN_120_COL, MFE_COL, MAE_COL,
@@ -738,9 +741,11 @@ def run_predictor_comparison() -> dict[str, Any]:
     print("\n[1/6] Loading datasets …")
 
     cumul = _load_cumulative()
+    cumul_label_summary = label_quality_summary(cumul)
     print(f"  Cumulative: {len(cumul):,} rows")
 
     backtest = _load_backtest()
+    backtest_label_summary = label_quality_summary(backtest)
     print(f"  Backtest:   {len(backtest):,} rows")
 
     # ── Prepare datasets (ML inference + derived columns) ────────────
@@ -754,11 +759,13 @@ def run_predictor_comparison() -> dict[str, Any]:
     cumul_stats = {
         "total": len(cumul),
         "with_outcomes": int(cumul_hit.notna().sum()),
+        "label_quality": cumul_label_summary,
         "date_range": f"{cumul['signal_date'].min()} to {cumul['signal_date'].max()}" if "signal_date" in cumul.columns else "—",
     }
     bt_stats = {
         "total": len(backtest),
         "with_outcomes": int(bt_hit.notna().sum()),
+        "label_quality": backtest_label_summary,
         "date_range": "2016–2025 (10 years simulated)",
     }
     print(f"  Cumulative: {cumul_stats['with_outcomes']} rows with outcomes")

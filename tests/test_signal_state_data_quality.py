@@ -76,6 +76,72 @@ def test_data_quality_score_missing_provider_health_and_malformed_payload():
     assert "weak_provider_health" not in quality["reasons"]
 
 
+def test_data_quality_penalizes_caution_market_data_provenance():
+    quality = _compute_data_quality(
+        spot_validation={"is_valid": True, "is_stale": False},
+        option_chain_validation={
+            "is_valid": True,
+            "is_stale": False,
+            "market_data_provenance": {
+                "status": "CAUTION",
+                "trade_blocking_status": "PASS",
+                "reasons": ["mixed_spot_option_source"],
+            },
+        },
+        analytics_state={
+            "flip": 23000,
+            "gamma_regime": "SHORT_GAMMA_ZONE",
+            "final_flow_signal": "BULLISH_FLOW",
+            "dealer_pos": "Short Gamma",
+            "hedging_bias": "UPSIDE_ACCELERATION",
+            "vol_regime": "VOL_EXPANSION",
+        },
+        probability_state={
+            "rule_move_probability": 0.55,
+            "ml_move_probability": 0.52,
+            "hybrid_move_probability": 0.54,
+        },
+    )
+
+    assert quality["fatal"] is False
+    assert quality["score"] < 100
+    assert "market_data_provenance_caution" in quality["reasons"]
+    assert "market_data_provenance:mixed_spot_option_source" in quality["reasons"]
+
+
+def test_data_quality_marks_blocking_market_data_provenance_fatal():
+    quality = _compute_data_quality(
+        spot_validation={"is_valid": True, "is_stale": False},
+        option_chain_validation={
+            "is_valid": True,
+            "is_stale": False,
+            "market_data_provenance": {
+                "status": "WEAK",
+                "trade_blocking_status": "BLOCK",
+                "reasons": ["spot_option_timestamp_mismatch_critical"],
+            },
+        },
+        analytics_state={
+            "flip": 23000,
+            "gamma_regime": "SHORT_GAMMA_ZONE",
+            "final_flow_signal": "BULLISH_FLOW",
+            "dealer_pos": "Short Gamma",
+            "hedging_bias": "UPSIDE_ACCELERATION",
+            "vol_regime": "VOL_EXPANSION",
+        },
+        probability_state={
+            "rule_move_probability": 0.55,
+            "ml_move_probability": 0.52,
+            "hybrid_move_probability": 0.54,
+        },
+    )
+
+    assert quality["fatal"] is True
+    assert quality["status"] == "WEAK"
+    assert "weak_market_data_provenance" in quality["reasons"]
+    assert "market_data_provenance:spot_option_timestamp_mismatch_critical" in quality["reasons"]
+
+
 def test_data_quality_score_missing_analytics_keys_penalizes_and_records_reason():
     quality = _compute_data_quality(
         spot_validation={"is_valid": True, "is_stale": False},

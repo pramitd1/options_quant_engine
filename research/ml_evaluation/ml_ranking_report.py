@@ -16,6 +16,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+
 
 def build_ranking_report(df: pd.DataFrame) -> dict:
     """
@@ -33,7 +35,8 @@ def build_ranking_report(df: pd.DataFrame) -> dict:
     if "ml_rank_score" not in df.columns or "ml_rank_bucket" not in df.columns:
         return {"error": "ML rank columns not found in dataset"}
 
-    scored = df[df["ml_rank_score"].notna()].copy()
+    quality_df = apply_quality_label_view(df)
+    scored = quality_df[quality_df["ml_rank_score"].notna()].copy()
     if scored.empty:
         return {"error": "No signals with ml_rank_score available"}
 
@@ -52,6 +55,7 @@ def build_ranking_report(df: pd.DataFrame) -> dict:
             continue
 
         n = len(subset)
+        n_labeled = int(subset["correct_60m_num"].notna().sum())
         hit_rate_60m = _safe_mean(subset["correct_60m_num"])
         avg_return_60m = _safe_mean(subset["return_60m_bps"])
         avg_return_120m = _safe_mean(subset["return_120m_bps"])
@@ -61,6 +65,7 @@ def build_ranking_report(df: pd.DataFrame) -> dict:
         quintile_results.append({
             "bucket": bucket,
             "n": n,
+            "n_labeled_60m": n_labeled,
             "hit_rate_60m": _rnd(hit_rate_60m),
             "avg_signed_return_60m_bps": _rnd(avg_return_60m),
             "avg_signed_return_120m_bps": _rnd(avg_return_120m),
@@ -77,6 +82,7 @@ def build_ranking_report(df: pd.DataFrame) -> dict:
         "model": "GBT_shallow_v1",
         "role": "ranking",
         "n_scored": len(scored),
+        "label_quality_summary": label_quality_summary(df),
         "quintile_analysis": quintile_results,
         "spread": spread,
         "monotonic": monotonic,

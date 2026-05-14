@@ -49,10 +49,22 @@ from app.state import (
 )
 from app.styles import OQE_GLOBAL_CSS
 from data.replay_loader import list_replay_chain_snapshots
+from engine.runtime_metadata import build_trader_view
 from research.signal_evaluation import (
     SIGNAL_DATASET_PATH,
     build_research_report,
     load_signals_dataset,
+)
+from research.signal_evaluation.drift_alerts import (
+    DRIFT_ALERT_JSON_FILENAME,
+    DRIFT_REVIEW_LEDGER_FILENAME,
+    build_signal_drift_alert_summary,
+    default_drift_monitoring_dir,
+    load_json_file,
+)
+from research.signal_evaluation.drift_monitor import (
+    TREND_DASHBOARD_JSON_FILENAME,
+    TREND_HISTORY_FILENAME,
 )
 from scripts.daily_readiness_dashboard import summarize_daily_readiness, detect_daily_readiness_anomalies
 
@@ -838,13 +850,17 @@ def _render_decision_panel(trade: dict):
     Notes:
         Internal helper that keeps the surrounding implementation focused on higher-level trading logic.
     """
+    provider_health = trade.get("provider_health") if isinstance(trade.get("provider_health"), dict) else {}
     focus_cards = [
         ("Decision Class", trade.get("decision_classification")),
         ("Setup State", trade.get("setup_state")),
         ("Direction Source", trade.get("direction_source")),
         ("Execution Regime", trade.get("execution_regime")),
         ("Signal Regime", trade.get("signal_regime")),
-        ("Provider Health", (trade.get("provider_health") or {}).get("summary_status")),
+        ("Provider Health", trade.get("provider_health_summary") or provider_health.get("summary_status")),
+        ("Data Source", trade.get("requested_option_source") or trade.get("option_source")),
+        ("Source Consistency", trade.get("market_data_source_consistency")),
+        ("Data Provenance", trade.get("market_data_provenance_status")),
         ("Macro Adjustment", trade.get("macro_adjustment_score")),
         ("Position Size Multiplier", trade.get("macro_position_size_multiplier")),
         ("No-Trade Code", trade.get("no_trade_reason_code")),
@@ -900,8 +916,8 @@ def _render_signal_confidence_card(trade: dict):
     from analytics.signal_confidence import compute_signal_confidence
 
     result = compute_signal_confidence(trade)
-    score = result["confidence_score"]
-    level = result["confidence_level"]
+    score = trade.get("signal_confidence_score", result["confidence_score"])
+    level = trade.get("signal_confidence_level", result["confidence_level"])
 
     color_map = {
         "VERY_HIGH": "#166534",
@@ -953,6 +969,23 @@ def _render_signal_confidence_card(trade: dict):
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    calibration_guardrail = (
+        trade.get("signal_confidence_calibration_guardrail")
+        if isinstance(trade.get("signal_confidence_calibration_guardrail"), dict)
+        else result.get("calibration_guardrail")
+    )
+    calibration_guardrail = calibration_guardrail if isinstance(calibration_guardrail, dict) else {}
+    calibration_status = str(calibration_guardrail.get("status") or "").upper().strip()
+    if calibration_status and calibration_status not in {"PASS", "UNKNOWN"}:
+        sample = calibration_guardrail.get("sample_size")
+        regime_match = calibration_guardrail.get("regime_match")
+        bits = [f"Calibration: {calibration_status}"]
+        if sample is not None:
+            bits.append(f"n={sample}")
+        if regime_match:
+            bits.append(f"regime={regime_match}")
+        st.caption(" · ".join(bits))
 
     # Component breakdown table
     components = [
@@ -1521,12 +1554,13 @@ def _render_workstation(result: dict):
     if execution_trade is None and isinstance(full_trade, dict):
         execution_trade = full_trade.get("execution_trade")
     trade = full_trade or execution_trade
+    operator_trade = build_trader_view(trade, execution_trade=execution_trade) or execution_trade or trade
 
-    if execution_trade or trade:
-        _render_trade_metrics(execution_trade or trade)
-        _render_decision_panel(execution_trade or trade)
-        _render_signal_confidence_card(execution_trade or trade)
-        _render_overnight_risk_card(execution_trade or trade)
+    if operator_trade:
+        _render_trade_metrics(operator_trade)
+        _render_decision_panel(operator_trade)
+        _render_signal_confidence_card(operator_trade)
+        _render_overnight_risk_card(operator_trade)
     else:
         st.warning("No trade payload was returned for this snapshot.")
 
@@ -1548,6 +1582,7 @@ def _render_workstation(result: dict):
             _render_key_value_table("Macro Event Risk", result.get("macro_event_state", {}))
         with top_right:
             _render_key_value_table("Option Chain Validation", result.get("option_chain_validation", {}))
+            _render_key_value_table("Market Data Provenance", result.get("market_data_provenance", {}))
             _render_macro_news_section(result.get("macro_news_state", {}), result.get("headline_state", {}))
 
         global_market_snapshot = result.get("global_market_snapshot", {}) or {}
@@ -1831,6 +1866,184 @@ def _render_daily_readiness_panel(dataset: pd.DataFrame):
         else:
             st.success("No readiness anomalies detected in the selected dataset.")
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _load_csv_artifact(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception as exc:
+        _warn_once("streamlit_drift_csv_load_failed", "streamlit_app: failed to load drift CSV %s (%s)", path, exc)
+        return pd.DataFrame()
+
+
+def _drift_dashboard_artifact_paths(base_dir: str | Path | None = None) -> dict[str, Path]:
+    drift_dir = Path(base_dir) if base_dir is not None else default_drift_monitoring_dir()
+    return {
+        "base_dir": drift_dir,
+        "trend_history": drift_dir / TREND_HISTORY_FILENAME,
+        "trend_dashboard": drift_dir / TREND_DASHBOARD_JSON_FILENAME,
+        "alert_summary": drift_dir / DRIFT_ALERT_JSON_FILENAME,
+        "review_ledger": drift_dir / DRIFT_REVIEW_LEDGER_FILENAME,
+    }
+
+
+def _load_signal_drift_dashboard_state(base_dir: str | Path | None = None) -> dict:
+    paths = _drift_dashboard_artifact_paths(base_dir)
+    trend_dashboard = load_json_file(paths["trend_dashboard"])
+    alert_summary = load_json_file(paths["alert_summary"])
+    if not alert_summary and trend_dashboard:
+        alert_summary = build_signal_drift_alert_summary(
+            trend_dashboard,
+            trend_dashboard_path=paths["trend_dashboard"],
+            review_ledger_path=paths["review_ledger"],
+        )
+
+    return {
+        "paths": paths,
+        "trend_dashboard": trend_dashboard,
+        "alert_summary": alert_summary,
+        "trend_history": _load_csv_artifact(paths["trend_history"]),
+        "review_ledger": _load_csv_artifact(paths["review_ledger"]),
+    }
+
+
+def _prepare_drift_trend_chart_frame(history: pd.DataFrame) -> pd.DataFrame:
+    if history is None or history.empty or "generated_at" not in history.columns:
+        return pd.DataFrame()
+    frame = history.copy()
+    frame["generated_at"] = pd.to_datetime(frame["generated_at"], errors="coerce")
+    frame = frame.dropna(subset=["generated_at"]).sort_values("generated_at")
+    numeric_cols = [
+        "hit_rate_delta",
+        "avg_return_delta_bps",
+        "quality_coverage_delta",
+        "warning_count",
+    ]
+    available = [column for column in numeric_cols if column in frame.columns]
+    if not available:
+        return pd.DataFrame()
+    for column in available:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame.set_index("generated_at")[available].dropna(how="all")
+
+
+def _format_drift_value(value, *, digits: int = 4, suffix: str = "") -> str:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return "-"
+    return f"{numeric:.{digits}f}{suffix}"
+
+
+def _status_display_value(status: str | None) -> str:
+    return (status or "UNKNOWN").replace("_", " ")
+
+
+def _render_signal_drift_alert_dashboard():
+    """Render read-only signal drift trend, alert, and review artifacts."""
+    state = _load_signal_drift_dashboard_state()
+    paths = state["paths"]
+    alert = state["alert_summary"] or {}
+    trend = state["trend_dashboard"] or {}
+    history = state["trend_history"]
+    ledger = state["review_ledger"]
+
+    st.markdown('<div class="oqe-panel">', unsafe_allow_html=True)
+    st.subheader("Signal Drift Alerts")
+    st.caption(f"Drift artifacts: {_display_path(str(paths['base_dir']))}")
+
+    if not alert and not trend and history.empty:
+        st.info("No signal drift alert artifacts are available yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    latest = alert.get("latest_run", {}) or {}
+    summary = alert.get("lookback_summary", {}) or trend.get("lookback_summary", {}) or {}
+    metric_cols = st.columns(6)
+    metric_values = [
+        ("Ops Status", _status_display_value(alert.get("ops_status"))),
+        ("Trend", _status_display_value(alert.get("trend_assessment") or trend.get("trend_assessment"))),
+        ("Runs", str(alert.get("run_count") or trend.get("run_count") or 0)),
+        ("Latest Monitor", _status_display_value(latest.get("monitor_status"))),
+        ("Warnings", str(latest.get("warning_count") if latest.get("warning_count") is not None else "-")),
+        ("Avg Hit Delta", _format_drift_value(summary.get("avg_hit_rate_delta"))),
+    ]
+    for column, (label, value) in zip(metric_cols, metric_values):
+        with column:
+            _render_research_metric_card(label, value)
+
+    message = alert.get("operator_message")
+    ops_status = str(alert.get("ops_status") or "").upper()
+    if message:
+        if ops_status == "DETERIORATING":
+            st.error(message)
+        elif ops_status == "WATCH":
+            st.warning(message)
+        else:
+            st.info(message)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    overview_tab, trend_tab, warnings_tab, review_tab, artifacts_tab = st.tabs(
+        ["Overview", "Trend History", "Warnings", "Review Ledger", "Artifacts"]
+    )
+
+    with overview_tab:
+        reasons = alert.get("alert_reasons", []) or []
+        reason_frame = pd.DataFrame({"alert_reason": reasons})
+        _render_research_table("Alert Reasons", reason_frame)
+
+        latest_frame = pd.DataFrame(
+            [
+                {
+                    "report_name": latest.get("report_name"),
+                    "generated_at": latest.get("generated_at"),
+                    "monitor_status": latest.get("monitor_status"),
+                    "recent_start": latest.get("recent_start"),
+                    "recent_end": latest.get("recent_end"),
+                    "recent_hit_rate_60m": latest.get("recent_hit_rate_60m"),
+                    "hit_rate_delta": latest.get("hit_rate_delta"),
+                    "avg_return_delta_bps": latest.get("avg_return_delta_bps"),
+                    "report_json": latest.get("report_json"),
+                }
+            ]
+        )
+        _render_research_table("Latest Drift Run", latest_frame)
+
+    with trend_tab:
+        chart = _prepare_drift_trend_chart_frame(history)
+        if chart.empty:
+            st.info("No numeric trend history is available yet.")
+        else:
+            st.line_chart(chart)
+
+        display_cols = [
+            "generated_at",
+            "report_name",
+            "monitor_status",
+            "recent_hit_rate_60m",
+            "hit_rate_delta",
+            "avg_return_delta_bps",
+            "quality_coverage_delta",
+            "warning_count",
+            "report_json",
+        ]
+        _render_research_table("Trend History", history[[col for col in display_cols if col in history.columns]])
+
+    with warnings_tab:
+        warnings_df = pd.DataFrame(alert.get("warning_digest", []) or [])
+        _render_research_table("Latest Warning Digest", warnings_df)
+
+    with review_tab:
+        _render_research_table("Review Ledger", ledger)
+
+    with artifacts_tab:
+        artifact_rows = [
+            {"artifact": name, "path": str(path)}
+            for name, path in paths.items()
+            if name != "base_dir"
+        ]
+        _render_research_table("Drift Artifact Paths", pd.DataFrame(artifact_rows))
 
 
 def _render_signal_research_dashboard():
@@ -2259,15 +2472,6 @@ def main():
                 "chain",
                 source_label=requested_source_label,
             )
-            fallback_used = False
-            if not chain_files and requested_source_label is not None:
-                chain_files, skipped_chain_files = _list_replay_files(
-                    replay_dir,
-                    symbol,
-                    "chain",
-                    source_label=None,
-                )
-                fallback_used = bool(chain_files)
 
             default_chain = _select_default_option(chain_files)
             default_spot = _nearest_spot_for_chain(default_chain, spot_files) if default_chain else _select_default_option(spot_files)
@@ -2293,8 +2497,8 @@ def main():
             with st.expander("Replay Snapshot Inventory", expanded=False):
                 st.write(f"Spot snapshots found: {len(spot_files)}")
                 st.write(f"Option-chain snapshots found: {len(chain_files)}")
-                if fallback_used:
-                    st.info("No valid chain snapshots were found for the selected source label. Showing latest valid chains across any source.")
+                if not chain_files and requested_source_label is not None:
+                    st.warning("No valid chain snapshots were found for the selected source label. Choose ANY explicitly to browse across sources.")
                 if skipped_chain_files:
                     st.warning(f"Skipped {len(skipped_chain_files)} invalid/empty chain snapshot file(s).")
                 if replay_spot:
@@ -2365,6 +2569,7 @@ def main():
 
     with research_tab:
         _render_signal_research_dashboard()
+        _render_signal_drift_alert_dashboard()
 
     with replay_tools_tab:
         _render_replay_tools(result)

@@ -87,6 +87,36 @@ def test_live_calibration_gate_downgrades_stale_completed_trade_history(tmp_path
     assert result["reason"] == "stale_completed_trade_history"
 
 
+def test_live_calibration_gate_uses_quality_approved_labels(tmp_path):
+    rows = pd.DataFrame(
+        {
+            "signal_timestamp": pd.date_range("2026-04-17 09:15:00+05:30", periods=12, freq="5min"),
+            "trade_status": ["TRADE"] * 12,
+            "correct_60m": [1] * 12,
+            "calibration_label": [None] * 6 + [1, 0, 1, 0, 1, 0],
+            "calibration_label_available": [False] * 6 + [True] * 6,
+            "hybrid_move_probability": [0.75] * 12,
+            "outcome_status": ["COMPLETE"] * 12,
+        }
+    )
+    path = tmp_path / "signals_dataset_cumul.csv"
+    rows.to_csv(path, index=False)
+
+    result = _compute_calibration_gate_verdict(
+        dataset_path=path,
+        cache_state={},
+        lookback_trades=12,
+        max_ece=0.50,
+        max_brier=0.50,
+        max_top_decile_overconfidence=0.50,
+        min_completed_trades=6,
+    )
+
+    assert result["label_source"] == "calibration_label"
+    assert result["completed_trades"] == 6
+    assert result["verdict"] in {"GO", "CAUTION"}
+
+
 def test_live_directional_gate_ignores_repeated_same_direction_snapshot_spam(tmp_path):
     rows = []
     base = pd.Timestamp("2026-04-17 09:15:00+05:30")

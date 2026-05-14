@@ -1227,6 +1227,52 @@ Shadow mode is conservative:
 - candidate outputs are compared and logged side by side
 - canonical signal capture remains tied to the authoritative path only
 
+Signal-evaluation threshold shadow mode can be run end to end with one command:
+
+```bash
+python scripts/ops/run_threshold_shadow_mode.py
+```
+
+That command automatically builds threshold governance, the policy experiment
+sandbox, shadow signal-retention simulation, promotion-readiness review,
+manual promotion package, post-promotion monitor, and adoption reconciliation
+artifacts. It is advisory research automation only: it does not change runtime
+thresholds, parameter packs, signal generation, or execution behavior.
+
+When the shadow review reaches `PROMOTION_READY`, the same workflow also writes
+a manual promotion review package. To rebuild that package or record a human
+approve/reject/defer decision explicitly:
+
+```bash
+python scripts/ops/run_threshold_promotion_review.py --review-action DEFERRED --reviewer "<name>"
+```
+
+The decision is appended to `threshold_promotion_review_ledger.csv`; recording
+approval is an audit action only and still does not apply a runtime change.
+
+After an `APPROVED` ledger entry exists, post-promotion monitoring can compare
+newer signal outcomes against the shadow evidence that justified approval:
+
+```bash
+python scripts/ops/run_threshold_post_promotion_monitor.py
+```
+
+The monitor can classify the approved threshold as healthy, watch,
+deteriorating, insufficient-data, or skipped-no-approval. It can recommend
+manual review, but it does not apply or revert configuration.
+
+To verify whether an approved threshold is actually active in the current
+runtime policy view:
+
+```bash
+python scripts/ops/run_threshold_adoption_reconciliation.py
+```
+
+The reconciliation report can classify the adoption state as approved-but-not-adopted,
+adopted manually, mismatched, manually rolled back, or unknown. It
+only reports consistency between the ledger, promotion package, active
+parameter-pack policy, and post-promotion monitor.
+
 ## Tuning Workflow
 
 The tuning subsystem is designed for controlled research, not naive profit chasing:

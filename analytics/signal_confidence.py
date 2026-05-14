@@ -20,6 +20,10 @@ Downstream Usage:
 from __future__ import annotations
 
 from config.signal_policy import get_trade_runtime_thresholds
+from strategy.score_calibration import (
+    create_calibration_segment_key,
+    normalize_calibration_context,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +39,35 @@ def _safe_float(value, default: float = 0.0) -> float:
 
 def _clip(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _threshold(thresholds: dict, key: str, default: float) -> float:
+    return _safe_float((thresholds or {}).get(key), default)
+
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _resolve_feature_reliability_weights(trade: dict) -> dict[str, float]:
@@ -354,12 +387,190 @@ def _as_upper(value) -> str:
     return str(value or "").upper().strip()
 
 
-def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[str]]:
+def _runtime_calibration_context(trade: dict) -> dict[str, str]:
+    return normalize_calibration_context(
+        {
+            "direction": trade.get("direction"),
+            "gamma_regime": trade.get("gamma_regime"),
+            "vol_regime": trade.get("vol_regime") or trade.get("volatility_regime"),
+        }
+    )
+
+
+def _score_calibration_regime_match(trade: dict) -> tuple[str, dict[str, str], str | None]:
+    runtime_context = _runtime_calibration_context(trade)
+    expected_key = create_calibration_segment_key(runtime_context) if runtime_context else None
+    selected_key = trade.get("score_calibration_segment_key")
+    selected_context = normalize_calibration_context(
+        trade.get("score_calibration_segment_context")
+        if isinstance(trade.get("score_calibration_segment_context"), dict)
+        else {}
+    )
+
+    if not runtime_context:
+        return "UNKNOWN", runtime_context, expected_key
+    if selected_key and expected_key and str(selected_key) == expected_key:
+        return "FULL", runtime_context, expected_key
+    if not selected_context or str(selected_key or "").lower() == "default":
+        return "FALLBACK", runtime_context, expected_key
+
+    for key, value in selected_context.items():
+        if runtime_context.get(key) != value:
+            return "MISMATCH", runtime_context, expected_key
+
+    if set(selected_context.keys()) == set(runtime_context.keys()):
+        return "FULL", runtime_context, expected_key
+    return "PARTIAL", runtime_context, expected_key
+
+
+def _calibration_guardrail(trade: dict) -> tuple[float, list[str], dict]:
+    thresholds = _resolve_runtime_thresholds(trade)
+    cap = 100.0
+    reasons: list[str] = []
+
+    active = any(
+        key in trade
+        for key in (
+            "live_calibration_gate",
+            "score_calibration_enabled",
+            "score_calibration_applied",
+            "score_calibration_segment_key",
+            "regime_segment_guard",
+            "regime_segment_samples",
+            "direction_head_calibration_applied",
+        )
+    )
+
+    live_gate = trade.get("live_calibration_gate") if isinstance(trade.get("live_calibration_gate"), dict) else {}
+    regime_guard = trade.get("regime_segment_guard") if isinstance(trade.get("regime_segment_guard"), dict) else {}
+    sample_size = None
+    recency_days = None
+    live_verdict = _as_upper(live_gate.get("verdict"))
+    regime_verdict = _as_upper(regime_guard.get("verdict"))
+
+    min_completed = int(max(0.0, _threshold(thresholds, "confidence_guard_min_calibration_trades", 80.0)))
+    max_stale_days = _threshold(thresholds, "confidence_guard_max_calibration_staleness_days", 5.0)
+
+    if live_gate:
+        sample_size = int(_safe_float(live_gate.get("completed_trades"), 0.0))
+        recency_days = _safe_float(live_gate.get("days_since_last_completed_trade"), None)
+        live_reason = str(live_gate.get("reason") or "").strip()
+        if live_verdict == "BLOCK":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_live_calibration_block_cap", 52.0))
+            reasons.append("live_calibration_block")
+        elif live_verdict == "CAUTION":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_live_calibration_caution_cap", 68.0))
+            if live_reason in {"insufficient_completed_trades", "insufficient_recent_trades"}:
+                reasons.append("calibration_sample_insufficient")
+            elif live_reason == "stale_completed_trade_history":
+                reasons.append("calibration_history_stale")
+            else:
+                reasons.append("live_calibration_caution")
+        elif live_verdict in {"UNAVAILABLE", ""} and live_gate.get("ok") is False:
+            cap = min(cap, _threshold(thresholds, "confidence_guard_calibration_unavailable_cap", 72.0))
+            reasons.append("live_calibration_unavailable")
+
+        if min_completed > 0 and sample_size < min_completed:
+            cap = min(cap, _threshold(thresholds, "confidence_guard_insufficient_sample_cap", 66.0))
+            reasons.append("calibration_sample_insufficient")
+        if recency_days is not None and max_stale_days > 0 and recency_days > max_stale_days:
+            cap = min(cap, _threshold(thresholds, "confidence_guard_stale_calibration_cap", 64.0))
+            reasons.append("calibration_history_stale")
+
+    regime_sample = regime_guard.get("sample_size") if regime_guard else trade.get("regime_segment_samples")
+    if regime_sample is not None:
+        regime_sample_int = int(_safe_float(regime_sample, 0.0))
+        sample_size = regime_sample_int if sample_size is None else min(sample_size, regime_sample_int)
+    if regime_guard:
+        if regime_verdict == "BLOCK":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_regime_segment_block_cap", 55.0))
+            reasons.append("regime_segment_block")
+        elif regime_verdict == "CAUTION":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_regime_segment_caution_cap", 70.0))
+            reasons.append("regime_segment_caution")
+        elif regime_verdict == "UNAVAILABLE":
+            reason = str(regime_guard.get("reason") or "").strip()
+            if reason in {"segment_sample_too_small", "no_matching_segment", "segment_context_missing"}:
+                cap = min(cap, _threshold(thresholds, "confidence_guard_regime_segment_unavailable_cap", 72.0))
+                reasons.append("regime_segment_sample_insufficient")
+
+    regime_match, runtime_context, expected_segment_key = _score_calibration_regime_match(trade)
+    score_cal_enabled_present = "score_calibration_enabled" in trade
+    score_cal_enabled = _as_bool(trade.get("score_calibration_enabled"), default=False)
+    score_cal_applied = _as_bool(trade.get("score_calibration_applied"), default=False)
+    score_cal_attempted = (
+        trade.get("runtime_composite_score") is not None
+        or trade.get("score_calibration_segment_key") is not None
+        or score_cal_applied
+    )
+    if score_cal_enabled_present and score_cal_enabled and score_cal_attempted and not score_cal_applied:
+        cap = min(cap, _threshold(thresholds, "confidence_guard_score_calibration_unavailable_cap", 72.0))
+        reasons.append("score_calibration_unavailable")
+    elif score_cal_applied:
+        if regime_match == "MISMATCH":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_score_calibration_mismatch_cap", 60.0))
+            reasons.append("score_calibration_segment_mismatch")
+        elif regime_match == "FALLBACK":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_score_calibration_fallback_cap", 76.0))
+            reasons.append("score_calibration_segment_fallback")
+        elif regime_match == "PARTIAL":
+            cap = min(cap, _threshold(thresholds, "confidence_guard_score_calibration_partial_cap", 82.0))
+            reasons.append("score_calibration_segment_partial")
+
+    direction_head_used = _as_bool(trade.get("direction_head_used_for_final"), default=False)
+    direction_head_calibrated = _as_bool(trade.get("direction_head_calibration_applied"), default=False)
+    if direction_head_used and not direction_head_calibrated:
+        cap = min(cap, _threshold(thresholds, "confidence_guard_direction_head_uncalibrated_cap", 78.0))
+        reasons.append("direction_head_calibration_unavailable")
+
+    reasons = _dedupe_keep_order(reasons)
+    severe = {
+        "live_calibration_block",
+        "calibration_history_stale",
+        "score_calibration_segment_mismatch",
+        "regime_segment_block",
+    }
+    has_calibration_evidence = bool(live_gate or regime_guard or score_cal_attempted or direction_head_used)
+    if not active or not has_calibration_evidence:
+        status = "UNKNOWN"
+    elif any(reason in severe for reason in reasons):
+        status = "WEAK"
+    elif reasons:
+        status = "CAUTION"
+    else:
+        status = "PASS"
+
+    diagnostics = {
+        "status": status,
+        "reasons": reasons,
+        "sample_size": sample_size,
+        "min_sample_size": min_completed,
+        "recency_days": round(float(recency_days), 2) if recency_days is not None else None,
+        "max_recency_days": max_stale_days,
+        "regime_match": regime_match,
+        "runtime_context": runtime_context,
+        "expected_segment_key": expected_segment_key,
+        "selected_segment_key": trade.get("score_calibration_segment_key"),
+        "selected_segment_context": (
+            normalize_calibration_context(trade.get("score_calibration_segment_context"))
+            if isinstance(trade.get("score_calibration_segment_context"), dict)
+            else {}
+        ),
+        "score_calibration_applied": score_cal_applied,
+        "score_calibration_enabled": score_cal_enabled if score_cal_enabled_present else None,
+        "live_calibration_verdict": live_verdict or None,
+        "regime_segment_verdict": regime_verdict or None,
+        "confidence_cap": round(float(cap), 2) if cap < 100.0 else None,
+    }
+    return cap, reasons, diagnostics
+
+
+def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[str], bool, dict]:
     """Apply conservative caps when execution preconditions are not met.
 
     Returns
     -------
-    (capped_score, guard_caps, cap_was_applied)
+    (capped_score, guard_caps, cap_was_applied, calibration_guardrail)
         ``cap_was_applied`` is True only when the cap chain actually reduced the
         score below its raw weighted value.  When False the guards are still
         relevant context but none of them was the binding constraint.
@@ -411,8 +622,12 @@ def _apply_recalibration_guards(trade: dict, score: float) -> tuple[float, list[
         cap = min(cap, 55.0)
         guard_caps.append("direction_unresolved")
 
+    calibration_cap, calibration_guards, calibration_diagnostics = _calibration_guardrail(trade)
+    cap = min(cap, calibration_cap)
+    guard_caps.extend(calibration_guards)
+
     capped_score = round(min(score, cap), 2)
-    return (capped_score, guard_caps, capped_score < score)
+    return (capped_score, _dedupe_keep_order(guard_caps), capped_score < score, calibration_diagnostics)
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +671,15 @@ def compute_signal_confidence(trade: dict) -> dict:
             "option_efficiency_component": 0,
             "ta_component": 0,
             "confidence_recalibration_guards": [],
+            "calibration_status": "UNKNOWN",
+            "calibration_sample_size": None,
+            "calibration_regime_match": "UNKNOWN",
+            "calibration_guardrail": {
+                "status": "UNKNOWN",
+                "reasons": [],
+                "sample_size": None,
+                "regime_match": "UNKNOWN",
+            },
         }
 
     components = {
@@ -478,7 +702,7 @@ def compute_signal_confidence(trade: dict) -> dict:
         + _WEIGHTS["directional_bias"] * components["directional_bias_component"]
     )
     score = round(_clip(raw, 0, 100), 2)
-    score, applied_guards, cap_was_applied = _apply_recalibration_guards(trade, score)
+    score, applied_guards, cap_was_applied, calibration_guardrail = _apply_recalibration_guards(trade, score)
 
     bias_component = components["directional_bias_component"]
     bias_mult = _directional_bias_multiplier(bias_component)
@@ -492,6 +716,10 @@ def compute_signal_confidence(trade: dict) -> dict:
         "confidence_recalibration_guards": applied_guards,
         "confidence_cap_applied": cap_was_applied,
         "directional_bias_multiplier": round(bias_mult, 4),
+        "calibration_status": calibration_guardrail.get("status", "UNKNOWN"),
+        "calibration_sample_size": calibration_guardrail.get("sample_size"),
+        "calibration_regime_match": calibration_guardrail.get("regime_match", "UNKNOWN"),
+        "calibration_guardrail": calibration_guardrail,
         **components,
     }
     if "rolling_strength_zscore" in trade:

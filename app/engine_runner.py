@@ -48,7 +48,7 @@ from macro.macro_news_aggregator import build_macro_news_state
 from news.service import build_default_headline_service
 from engine.signal_engine import generate_trade
 from engine.pre_market_engine import initialize_pre_market_context
-from engine.runtime_metadata import TRADER_VIEW_KEYS, split_trade_payload
+from engine.runtime_metadata import TRADER_VIEW_KEYS, build_trader_view, split_trade_payload
 from risk import build_global_risk_state
 from research.signal_evaluation import (
     CAPTURE_POLICY_ALL,
@@ -200,8 +200,7 @@ def _trade_view_rows(trade: Dict[str, object]) -> pd.DataFrame:
     Notes:
         The helper keeps the surrounding module readable without changing runtime behavior.
     """
-    trader_view = (trade or {}).get("execution_trade") if isinstance(trade, dict) else None
-    trader_view = trader_view if isinstance(trader_view, dict) else trade
+    trader_view = build_trader_view(trade)
 
     rows = []
     for key in TRADER_VIEW_KEYS:
@@ -306,6 +305,20 @@ def _is_replay_like_mode(mode: str) -> bool:
     return str(mode or "").upper().strip() in {"REPLAY", "BACKTEST"}
 
 
+def _dedupe_keep_order(items) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        if item in (None, "", []):
+            continue
+        normalized = str(item)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def _ensure_spot_snapshot_validation(*, spot_snapshot: dict, replay_mode: bool) -> dict:
     """
     Purpose:
@@ -376,6 +389,184 @@ def _extract_spot_context(*, spot_snapshot: dict, replay_mode: bool) -> dict:
         "spot_timestamp": snapshot.get("timestamp"),
         "lookback_avg_range_pct": snapshot.get("lookback_avg_range_pct"),
     }
+
+
+def _coerce_ist_timestamp(value):
+    if value in (None, ""):
+        return None
+    try:
+        ts = pd.Timestamp(value)
+        if pd.isna(ts):
+            return None
+        if ts.tzinfo is None:
+            return ts.tz_localize("Asia/Kolkata")
+        return ts.tz_convert("Asia/Kolkata")
+    except Exception:
+        return None
+
+
+def _extract_option_chain_source(option_chain: pd.DataFrame, option_chain_validation: dict, requested_source: str) -> str | None:
+    provider_health = option_chain_validation.get("provider_health") if isinstance(option_chain_validation, dict) else {}
+    if isinstance(provider_health, dict):
+        provider_source = str(provider_health.get("source") or "").upper().strip()
+        if provider_source:
+            return provider_source
+
+    if option_chain is not None and not option_chain.empty and "source" in option_chain.columns:
+        try:
+            values = option_chain["source"].dropna().astype(str).str.upper().str.strip()
+            values = [value for value in values.unique().tolist() if value]
+            if values:
+                return values[0]
+        except Exception:
+            pass
+
+    return str(requested_source or "").upper().strip() or None
+
+
+def _extract_option_chain_timestamp(option_chain: pd.DataFrame):
+    if option_chain is None or option_chain.empty:
+        return None
+
+    timestamp_columns = (
+        "quote_timestamp",
+        "snapshot_timestamp",
+        "timestamp",
+        "TIMESTAMP",
+        "trade_timestamp",
+        "last_trade_time",
+        "updated_at",
+    )
+    for column in timestamp_columns:
+        if column not in option_chain.columns:
+            continue
+        try:
+            values = pd.to_datetime(option_chain[column], errors="coerce", utc=True).dropna()
+            if values.empty:
+                continue
+            return values.max().tz_convert("Asia/Kolkata")
+        except Exception:
+            continue
+    return None
+
+
+def _build_market_data_provenance(
+    *,
+    mode: str,
+    requested_source: str,
+    spot_snapshot: dict,
+    spot_validation: dict,
+    option_chain: pd.DataFrame,
+    option_chain_validation: dict,
+) -> dict:
+    requested = str(requested_source or "").upper().strip() or None
+    spot_source = str((spot_snapshot or {}).get("spot_source") or "").strip() or None
+    option_source = _extract_option_chain_source(option_chain, option_chain_validation, requested_source)
+    spot_consistency = str((spot_snapshot or {}).get("spot_option_source_consistency") or "").upper().strip()
+
+    warnings: list[str] = []
+    issues: list[str] = []
+    reasons: list[str] = []
+    status = "GOOD"
+    trade_blocking_status = "PASS"
+
+    source_consistency = "UNKNOWN"
+    if spot_consistency:
+        source_consistency = spot_consistency
+    elif spot_source and requested and spot_source.upper() in {"YFINANCE_INTRADAY", "QUOTE_FALLBACK"} and requested not in {"YFINANCE", "YAHOO"}:
+        source_consistency = "MIXED_SPOT_OPTION_SOURCE"
+    elif spot_source and option_source:
+        source_consistency = "SOURCE_NATIVE_SPOT" if str(spot_source).upper().startswith(str(option_source).upper()) else "MIXED_SPOT_OPTION_SOURCE"
+
+    if source_consistency == "MIXED_SPOT_OPTION_SOURCE":
+        status = "CAUTION"
+        warnings.append("mixed_spot_option_source")
+        reasons.append("mixed_spot_option_source")
+
+    spot_ts = _coerce_ist_timestamp((spot_snapshot or {}).get("timestamp"))
+    option_ts = _extract_option_chain_timestamp(option_chain)
+    timestamp_delta_seconds = None
+    timestamp_status = "UNAVAILABLE"
+    if spot_ts is not None and option_ts is not None:
+        timestamp_delta_seconds = round((option_ts - spot_ts).total_seconds(), 3)
+        abs_delta = abs(timestamp_delta_seconds)
+        same_session_date = spot_ts.date() == option_ts.date()
+        if str(mode or "").upper().strip() == "BACKTEST" and same_session_date:
+            timestamp_status = "SAME_SESSION_DATE"
+        elif abs_delta > 900:
+            timestamp_status = "MISMATCH_CRITICAL"
+            status = "WEAK"
+            trade_blocking_status = "BLOCK"
+            issues.append("spot_option_timestamp_mismatch_critical")
+            reasons.append("spot_option_timestamp_mismatch_critical")
+        elif abs_delta > 120:
+            timestamp_status = "MISMATCH_CAUTION"
+            if status != "WEAK":
+                status = "CAUTION"
+            warnings.append("spot_option_timestamp_mismatch")
+            reasons.append("spot_option_timestamp_mismatch")
+        else:
+            timestamp_status = "ALIGNED"
+    elif spot_ts is None:
+        timestamp_status = "SPOT_TIMESTAMP_UNAVAILABLE"
+    elif option_ts is None:
+        timestamp_status = "OPTION_TIMESTAMP_UNAVAILABLE"
+
+    if not (spot_validation or {}).get("is_valid", True):
+        if status != "WEAK":
+            status = "CAUTION"
+        reasons.append("spot_validation_not_clean")
+    if not (option_chain_validation or {}).get("is_valid", True):
+        status = "WEAK"
+        trade_blocking_status = "BLOCK"
+        reasons.append("option_chain_validation_not_clean")
+
+    return {
+        "status": status,
+        "trade_blocking_status": trade_blocking_status,
+        "requested_option_source": requested,
+        "option_source": option_source,
+        "spot_source": spot_source,
+        "source_consistency": source_consistency,
+        "spot_timestamp": spot_ts.isoformat() if spot_ts is not None else None,
+        "option_chain_timestamp": option_ts.isoformat() if option_ts is not None else None,
+        "timestamp_delta_seconds": timestamp_delta_seconds,
+        "timestamp_status": timestamp_status,
+        "warnings": _dedupe_keep_order(warnings),
+        "issues": _dedupe_keep_order(issues),
+        "reasons": _dedupe_keep_order(reasons),
+    }
+
+
+def _apply_market_data_provenance_to_validations(
+    *,
+    provenance: dict,
+    spot_validation: dict,
+    option_chain_validation: dict,
+) -> tuple[dict, dict]:
+    spot_out = dict(spot_validation or {})
+    chain_out = dict(option_chain_validation or {})
+    spot_warnings = list(spot_out.get("warnings") if isinstance(spot_out.get("warnings"), list) else [])
+    spot_issues = list(spot_out.get("issues") if isinstance(spot_out.get("issues"), list) else [])
+    chain_warnings = list(chain_out.get("warnings") if isinstance(chain_out.get("warnings"), list) else [])
+
+    for warning in provenance.get("warnings", []) or []:
+        spot_warnings.append(f"market_data_provenance:{warning}")
+        chain_warnings.append(f"market_data_provenance:{warning}")
+    for issue in provenance.get("issues", []) or []:
+        spot_issues.append(f"market_data_provenance:{issue}")
+
+    if provenance.get("trade_blocking_status") == "BLOCK":
+        spot_out["is_valid"] = False
+        spot_out["live_trading_valid"] = False
+        spot_issues.append("market_data_provenance_block")
+
+    spot_out["warnings"] = _dedupe_keep_order(spot_warnings)
+    spot_out["issues"] = _dedupe_keep_order(spot_issues)
+    spot_out["market_data_provenance"] = provenance
+    chain_out["warnings"] = _dedupe_keep_order(chain_warnings)
+    chain_out["market_data_provenance"] = provenance
+    return spot_out, chain_out
 
 
 def _neutral_global_market_snapshot(symbol: str, *, as_of, warning: str) -> dict:
@@ -504,6 +695,24 @@ def _prepare_snapshot_context(
         spot=spot_context.get("spot"),
         india_vix_level=_vix_for_validation,
     )
+    market_data_provenance = _build_market_data_provenance(
+        mode=mode,
+        requested_source=source,
+        spot_snapshot=spot_context["spot_snapshot"],
+        spot_validation=spot_context["spot_validation"],
+        option_chain=filtered_option_chain,
+        option_chain_validation=option_chain_validation,
+    )
+    spot_validation, option_chain_validation = _apply_market_data_provenance_to_validations(
+        provenance=market_data_provenance,
+        spot_validation=spot_context["spot_validation"],
+        option_chain_validation=option_chain_validation,
+    )
+    spot_context["spot_validation"] = spot_validation
+    spot_context["spot_snapshot"] = {
+        **spot_context["spot_snapshot"],
+        "validation": spot_validation,
+    }
     option_chain_frame = _prepare_option_chain_frame(filtered_option_chain)
 
     return {
@@ -519,6 +728,7 @@ def _prepare_snapshot_context(
         "option_chain": filtered_option_chain,
         "option_chain_validation": option_chain_validation,
         "option_chain_frame": option_chain_frame,
+        "market_data_provenance": market_data_provenance,
     }
 
 
@@ -678,23 +888,6 @@ def _load_market_inputs(
             replay_spot = replay_spot or replay_selection.get("spot_path")
             replay_chain = replay_chain or replay_selection.get("chain_path")
 
-            # If the selected source label has no valid chain snapshots,
-            # retry with any source so replay can still run using available data.
-            if not replay_chain:
-                fallback_selection = resolve_replay_snapshot_paths(
-                    symbol,
-                    replay_dir=replay_dir,
-                    source_label=None,
-                )
-                replay_spot = replay_spot or fallback_selection.get("spot_path")
-                replay_chain = replay_chain or fallback_selection.get("chain_path")
-                if replay_chain:
-                    replay_selection = {
-                        **fallback_selection,
-                        "selection_reason": "fallback_latest_valid_any_source",
-                        "requested_source_label": str(source or "").upper().strip() or None,
-                    }
-
         if replay_selection is None:
             replay_selection = {
                 "spot_path": replay_spot,
@@ -705,7 +898,11 @@ def _load_market_inputs(
             }
 
         if not replay_spot or not replay_chain:
-            raise ValueError("Replay mode requires both a spot snapshot and an option-chain snapshot.")
+            source_label = str(source or "").upper().strip() or "UNKNOWN"
+            raise ValueError(
+                "Replay mode requires both a spot snapshot and an option-chain "
+                f"snapshot for the selected source '{source_label}'."
+            )
 
         spot_snapshot = load_spot_snapshot(replay_spot)
         option_chain = load_option_chain_snapshot(replay_chain)
@@ -811,6 +1008,7 @@ def _build_result_payload(
     global_market_snapshot: dict,
     global_risk_state: dict,
     option_chain_validation: dict,
+    market_data_provenance: dict,
     option_chain: pd.DataFrame,
     option_chain_frame: pd.DataFrame,
     previous_chain: pd.DataFrame | None,
@@ -847,6 +1045,7 @@ def _build_result_payload(
         global_market_snapshot (dict): Cross-asset market snapshot used by the global-risk overlay.
         global_risk_state (dict): Structured state payload for global risk.
         option_chain_validation (dict): Input associated with option chain validation.
+        market_data_provenance (dict): Spot/option source and timestamp consistency diagnostics.
         option_chain (pd.DataFrame): Input associated with option chain.
         option_chain_frame (pd.DataFrame): Input associated with option chain frame.
         trade (dict | None): Input associated with trade.
@@ -891,6 +1090,7 @@ def _build_result_payload(
         "global_market_snapshot": global_market_snapshot,
         "global_risk_state": global_risk_state,
         "option_chain_validation": option_chain_validation,
+        "market_data_provenance": market_data_provenance,
         "option_chain_rows": len(option_chain) if option_chain is not None else 0,
         "option_chain_frame": option_chain_frame,
         "previous_chain_frame": previous_chain,
@@ -1132,6 +1332,7 @@ def _evaluate_snapshot_for_pack(
     context_manager = temporary_parameter_pack(parameter_pack_name) if parameter_pack_name else nullcontext()
     with context_manager:
         active_pack_name = get_active_parameter_pack()["name"]
+        point_in_time_mode = bool(backtest_mode or _is_replay_like_mode(mode or ""))
         
         macro_news_build_failed = False
         global_risk_build_failed = False
@@ -1228,6 +1429,7 @@ def _evaluate_snapshot_for_pack(
                 lot_size=lot_size,
                 max_capital=max_capital,
                 backtest_mode=backtest_mode,
+                historical_mode=point_in_time_mode,
                 macro_event_state=macro_event_state,
                 macro_news_state=macro_news_state,
                 global_risk_state=global_risk_state,
@@ -1459,6 +1661,7 @@ def run_preloaded_engine_snapshot(
             global_market_snapshot=snapshot_context["global_market_snapshot"],
             global_risk_state=global_risk_state,
             option_chain_validation=snapshot_context["option_chain_validation"],
+            market_data_provenance=snapshot_context.get("market_data_provenance", {}),
             option_chain=snapshot_context["option_chain"],
             option_chain_frame=snapshot_context["option_chain_frame"],
             previous_chain=previous_chain,

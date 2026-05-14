@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from research.signal_evaluation.dataset import ensure_signals_dataset_exists, load_signals_dataset
+from research.signal_evaluation.dataset import upsert_signal_rows
 from research.signal_evaluation.dataset import write_signals_dataset
 from research.signal_evaluation.evaluator import (
     build_signal_evaluation_row,
@@ -47,6 +49,30 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "chain": "debug_samples/chain.csv",
             },
             "option_chain_validation": {
+                "is_valid": True,
+                "is_stale": False,
+                "analytics_usable": True,
+                "execution_suggestion_usable": False,
+                "warnings": ["market_data_provenance:mixed_spot_option_source"],
+                "issues": [],
+                "tradable_data": {
+                    "status": "ANALYTICS_ONLY",
+                    "score": 0.44,
+                    "reasons": ["wide_spread"],
+                },
+                "market_data_provenance": {
+                    "status": "CAUTION",
+                    "trade_blocking_status": "PASS",
+                    "requested_option_source": "ICICI",
+                    "option_source": "ICICI",
+                    "spot_source": "YFINANCE_INTRADAY",
+                    "source_consistency": "MIXED_SPOT_OPTION_SOURCE",
+                    "timestamp_status": "ALIGNED",
+                    "timestamp_delta_seconds": 30.0,
+                    "warnings": ["mixed_spot_option_source"],
+                    "issues": [],
+                    "reasons": ["mixed_spot_option_source"],
+                },
                 "provider_health": {
                     "summary_status": "GOOD",
                     "row_health": "GOOD",
@@ -140,6 +166,17 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "hybrid_move_probability": 0.72,
                 "ml_move_probability": 0.68,
                 "large_move_probability": 0.72,
+                "signal_confidence_score": 68.5,
+                "signal_confidence_level": "MODERATE",
+                "signal_confidence_calibration_status": "CAUTION",
+                "signal_confidence_calibration_sample_size": 18,
+                "signal_confidence_calibration_regime_match": "PARTIAL",
+                "signal_confidence_calibration_guardrail": {
+                    "status": "CAUTION",
+                    "sample_size": 18,
+                    "regime_match": "PARTIAL",
+                },
+                "signal_confidence_recalibration_guards": ["thin_calibration_history"],
             },
         }
 
@@ -162,8 +199,31 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertAlmostEqual(row_a["target_premium_return_pct"], 30.0, places=4)
         self.assertAlmostEqual(row_a["stop_loss_premium_return_pct"], -14.9955, places=4)
         self.assertEqual(row_a["provider_health_status"], "GOOD")
+        self.assertEqual(row_a["requested_option_source"], "ICICI")
+        self.assertEqual(row_a["option_source"], "ICICI")
+        self.assertEqual(row_a["spot_source"], "YFINANCE_INTRADAY")
+        self.assertEqual(row_a["market_data_source_consistency"], "MIXED_SPOT_OPTION_SOURCE")
+        self.assertEqual(row_a["market_data_provenance_status"], "CAUTION")
+        self.assertEqual(row_a["market_data_timestamp_status"], "ALIGNED")
+        self.assertEqual(row_a["market_data_provenance_reasons"], "mixed_spot_option_source")
+        self.assertEqual(row_a["option_chain_validation_status"], "GOOD")
+        self.assertEqual(row_a["option_chain_is_valid"], True)
+        self.assertEqual(row_a["option_chain_warning_count"], 1)
+        self.assertEqual(row_a["analytics_usable"], True)
+        self.assertEqual(row_a["execution_suggestion_usable"], False)
+        self.assertEqual(row_a["tradable_data_status"], "ANALYTICS_ONLY")
+        self.assertEqual(row_a["signal_confidence_score"], 68.5)
+        self.assertEqual(row_a["signal_confidence_level"], "MODERATE")
+        self.assertEqual(row_a["signal_confidence_calibration_status"], "CAUTION")
+        self.assertEqual(row_a["signal_confidence_calibration_guardrail_status"], "CAUTION")
+        self.assertEqual(row_a["signal_confidence_recalibration_guards"], "thin_calibration_history")
         self.assertEqual(row_a["hybrid_move_probability"], 0.72)
         self.assertEqual(row_a["rule_move_probability"], 0.61)
+        self.assertEqual(row_a["label_quality_status"], "PENDING")
+        self.assertFalse(row_a["calibration_label_available"])
+        self.assertEqual(row_a["calibration_label_horizon"], "60m")
+        self.assertEqual(row_a["primary_outcome_horizon"], "60m")
+        self.assertIn("outcome_pending", row_a["label_quality_reasons"])
         self.assertEqual(row_a["global_risk_state"], "GLOBAL_NEUTRAL")
         self.assertEqual(row_a["global_risk_score"], 24)
         self.assertEqual(row_a["gamma_vol_acceleration_score"], 68)
@@ -254,6 +314,15 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("commodity_risk_score", frame.columns)
             self.assertIn("volatility_shock_score", frame.columns)
             self.assertIn("volatility_explosion_probability", frame.columns)
+            self.assertIn("market_data_provenance_status", frame.columns)
+            self.assertIn("option_chain_validation_status", frame.columns)
+            self.assertIn("signal_confidence_calibration_status", frame.columns)
+            self.assertIn("label_quality_status", frame.columns)
+            self.assertIn("label_quality_score", frame.columns)
+            self.assertIn("label_quality_reasons", frame.columns)
+            self.assertIn("calibration_label", frame.columns)
+            self.assertIn("calibration_label_available", frame.columns)
+            self.assertIn("primary_outcome_return_bps", frame.columns)
             self.assertEqual(len(frame), 0)
 
     def test_dataset_writes_sqlite_sidecar_for_durable_storage(self):
@@ -369,6 +438,12 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertGreater(enriched["tradeability_score"], 0)
         self.assertGreater(enriched["composite_signal_score"], 0)
         self.assertEqual(enriched["correct_session_close"], 1)
+        self.assertEqual(enriched["label_quality_status"], "CLEAN")
+        self.assertEqual(enriched["label_quality_reasons"], "")
+        self.assertTrue(enriched["calibration_label_available"])
+        self.assertEqual(enriched["calibration_label"], enriched["correct_60m"])
+        self.assertEqual(enriched["calibration_label_horizon"], "60m")
+        self.assertEqual(enriched["primary_outcome_return_bps"], enriched["signed_return_60m_bps"])
 
     def test_evaluate_signal_outcomes_labels_early_alpha_decay_and_exit_pressure(self):
         row = build_signal_evaluation_row(self._sample_result())
@@ -415,6 +490,9 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertTrue(pd.isna(enriched.get("spot_60m")))
         self.assertTrue(pd.isna(enriched.get("signed_return_60m_bps")))
         self.assertIn(enriched["outcome_status"], {"PENDING", "PARTIAL"})
+        self.assertFalse(enriched["calibration_label_available"])
+        self.assertIn(enriched["label_quality_status"], {"PENDING", "PARTIAL"})
+        self.assertIn("primary_horizon_unavailable", enriched["label_quality_reasons"])
 
     def test_save_signal_evaluation_upserts_by_signal_id(self):
         result = self._sample_result()
@@ -437,6 +515,7 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertEqual(len(frame), 1)
             self.assertEqual(frame.iloc[0]["signal_id"], build_signal_evaluation_row(result)["signal_id"])
             self.assertEqual(frame.iloc[0]["outcome_status"], "PARTIAL")
+            self.assertIn(str(frame.iloc[0]["calibration_label_available"]).lower(), {"false", "0", "0.0"})
 
     def test_save_signal_evaluation_supports_append_only_live_capture(self):
         result_a = self._sample_result()
@@ -455,6 +534,40 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             frame = load_signals_dataset(dataset_path)
             self.assertEqual(len(frame), 2)
             self.assertEqual(frame["signal_id"].nunique(), 2)
+
+    def test_concurrent_upserts_keep_csv_and_sqlite_consistent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset_path = Path(tmp_dir) / "signals_dataset.csv"
+
+            def write_row(index: int) -> None:
+                upsert_signal_rows(
+                    [
+                        {
+                            "signal_id": f"sig_{index:03d}",
+                            "signal_timestamp": f"2026-03-14T10:{index % 60:02d}:00+05:30",
+                            "updated_at": f"2026-03-14T10:{index % 60:02d}:00+05:30",
+                            "symbol": "NIFTY",
+                            "trade_status": "TRADE",
+                        }
+                    ],
+                    path=dataset_path,
+                    return_frame=False,
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(write_row, range(24)))
+
+            frame = load_signals_dataset(dataset_path)
+            csv_frame = pd.read_csv(dataset_path)
+            sqlite_path = dataset_path.with_suffix(".sqlite")
+            with sqlite3.connect(sqlite_path) as connection:
+                sqlite_count = connection.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+
+            self.assertEqual(len(frame), 24)
+            self.assertEqual(len(csv_frame), 24)
+            self.assertEqual(sqlite_count, 24)
+            self.assertSetEqual(set(frame["signal_id"]), {f"sig_{index:03d}" for index in range(24)})
+            self.assertSetEqual(set(csv_frame["signal_id"]), set(frame["signal_id"]))
 
     def test_no_direction_signal_does_not_force_directional_scoring(self):
         result = self._sample_result()
@@ -492,6 +605,9 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertTrue(pd.isna(enriched["magnitude_score"]))
         self.assertTrue(pd.isna(enriched["timing_score"]))
         self.assertTrue(pd.isna(enriched["tradeability_score"]))
+        self.assertEqual(enriched["label_quality_status"], "UNUSABLE")
+        self.assertFalse(enriched["calibration_label_available"])
+        self.assertIn("direction_unresolved", enriched["label_quality_reasons"])
 
     def test_row_builder_infers_missing_contract_keys_from_ranked_strikes(self):
         result = self._sample_result()
@@ -697,6 +813,44 @@ class CumulativeDatasetArchivalTests(unittest.TestCase):
                 cumul = pd.read_csv(cumul_csv)
                 self.assertEqual(len(cumul), 2)
                 self.assertSetEqual(set(cumul["signal_id"]), {"sig_x", "sig_y"})
+            finally:
+                ds_mod.SIGNAL_DATASET_PATH = orig_live
+                ds_mod.CUMULATIVE_DATASET_PATH = orig_cumul
+
+    def test_concurrent_live_upserts_sync_cumulative_consistently(self):
+        import research.signal_evaluation.dataset as ds_mod
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            live_csv = Path(tmp_dir) / "signals_dataset.csv"
+            cumul_csv = Path(tmp_dir) / "signals_dataset_cumul.csv"
+
+            orig_live = ds_mod.SIGNAL_DATASET_PATH
+            orig_cumul = ds_mod.CUMULATIVE_DATASET_PATH
+            ds_mod.SIGNAL_DATASET_PATH = live_csv
+            ds_mod.CUMULATIVE_DATASET_PATH = cumul_csv
+
+            try:
+                def write_row(index: int) -> None:
+                    upsert_signal_rows(
+                        self._make_rows([f"sig_live_{index:03d}"]),
+                        path=live_csv,
+                        return_frame=False,
+                    )
+
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    list(pool.map(write_row, range(20)))
+
+                live = load_signals_dataset(live_csv)
+                cumul = load_signals_dataset(cumul_csv)
+                cumul_csv_frame = pd.read_csv(cumul_csv)
+                with sqlite3.connect(cumul_csv.with_suffix(".sqlite")) as connection:
+                    cumul_sqlite_count = connection.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+
+                self.assertEqual(len(live), 20)
+                self.assertEqual(len(cumul), 20)
+                self.assertEqual(len(cumul_csv_frame), 20)
+                self.assertEqual(cumul_sqlite_count, 20)
+                self.assertSetEqual(set(live["signal_id"]), set(cumul["signal_id"]))
             finally:
                 ds_mod.SIGNAL_DATASET_PATH = orig_live
                 ds_mod.CUMULATIVE_DATASET_PATH = orig_cumul

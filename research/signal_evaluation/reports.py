@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view, has_quality_label_annotations
+from research.signal_evaluation.threshold_replay import run_regime_threshold_replay, run_threshold_replay
+
 
 RETURN_HORIZON_FIELDS = [
     "realized_return_5m",
@@ -64,6 +67,11 @@ def _signal_hit_flag(frame: pd.DataFrame) -> pd.Series:
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
+    quality_view = apply_quality_label_view(frame)
+    quality_hit = pd.to_numeric(quality_view.get("correct_60m", pd.Series(index=quality_view.index)), errors="coerce")
+    if has_quality_label_annotations(frame) or quality_hit.notna().any():
+        return quality_hit
+
     df = frame.copy()
     spot_at_signal = _safe_numeric(df.get("spot_at_signal", pd.Series(index=df.index)))
     spot_next_close = _safe_numeric(df.get("spot_next_close", pd.Series(index=df.index)))
@@ -102,7 +110,7 @@ def _group_hit_rate(frame: pd.DataFrame, group_field: str) -> pd.DataFrame:
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
-    df = frame.copy()
+    df = apply_quality_label_view(frame)
     if group_field not in df.columns:
         return pd.DataFrame(columns=[group_field, "signal_count", "hit_rate"])
 
@@ -178,7 +186,7 @@ def average_score_by_signal_quality(frame: pd.DataFrame) -> pd.DataFrame:
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
-    df = frame.copy()
+    df = apply_quality_label_view(frame)
     required = [
         "signal_quality",
         "direction_score",
@@ -395,4 +403,6 @@ def build_research_report(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "signal_count_by_regime": signal_count_by_regime(frame),
         "move_probability_calibration": move_probability_calibration(frame),
         "regime_fingerprint_performance": regime_fingerprint_performance(frame),
+        "threshold_replay_candidates": run_threshold_replay(frame),
+        "regime_threshold_replay_candidates": run_regime_threshold_replay(frame),
     }

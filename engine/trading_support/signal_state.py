@@ -199,6 +199,25 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
     if provider_blocking_status == "BLOCK":
         reasons.append("provider_health_trade_block")
 
+    provenance = option_chain_validation.get("market_data_provenance") or spot_validation.get("market_data_provenance") or {}
+    if not isinstance(provenance, dict):
+        provenance = {}
+    provenance_status = str(provenance.get("status") or "").upper().strip()
+    provenance_blocking_status = str(provenance.get("trade_blocking_status") or "").upper().strip()
+    provenance_reasons = [
+        str(reason)
+        for reason in (provenance.get("reasons") or [])
+        if str(reason).strip()
+    ]
+    if provenance_status == "WEAK":
+        score -= cfg.provider_health_weak_penalty
+        reasons.append("weak_market_data_provenance")
+    elif provenance_status == "CAUTION":
+        score -= cfg.provider_health_caution_penalty
+        reasons.append("market_data_provenance_caution")
+    for reason in provenance_reasons:
+        reasons.append(f"market_data_provenance:{reason}")
+
     critical_analytics = {
         "flip": analytics_state.get("flip"),
         "gamma_regime": analytics_state.get("gamma_regime"),
@@ -241,6 +260,8 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
 
     if provider_blocking_status == "BLOCK" and status in {"STRONG", "GOOD"}:
         status = "CAUTION"
+    if provenance_blocking_status == "BLOCK":
+        status = "WEAK"
 
     return {
         "score": score,
@@ -250,7 +271,11 @@ def _compute_data_quality(*, spot_validation, option_chain_validation, analytics
             "missing_critical": analytics_missing,
             "critical_missing_count": len(analytics_missing),
         },
-        "fatal": (not spot_validation.get("is_valid", True)) or (not option_chain_validation.get("is_valid", True)),
+        "fatal": (
+            (not spot_validation.get("is_valid", True))
+            or (not option_chain_validation.get("is_valid", True))
+            or provenance_blocking_status == "BLOCK"
+        ),
     }
 
 

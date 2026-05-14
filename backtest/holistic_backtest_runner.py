@@ -46,6 +46,7 @@ from data.historical_snapshot import (
     replay_historical_snapshot,
 )
 from research.signal_evaluation.evaluator import (
+    apply_label_quality_fields,
     build_signal_evaluation_row,
     compute_signal_evaluation_scores,
     evaluate_signal_outcomes,
@@ -275,10 +276,11 @@ def evaluate_eod_outcomes(
         updated["timing_score"] = pd.NA
         updated["composite_signal_score"] = pd.NA
         updated["intraday_eval_disabled_reason"] = "synthetic_intraday_path"
+        updated = apply_label_quality_fields(updated)
 
     entry_spot = updated.get("spot_at_signal")
     if not entry_spot or entry_spot == 0:
-        return updated
+        return apply_label_quality_fields(updated)
 
     direction = updated.get("direction")
     direction_mult = 1 if direction == "CALL" else (-1 if direction == "PUT" else 0)
@@ -287,7 +289,7 @@ def evaluate_eod_outcomes(
     # 2. EOD horizon fields (T+1, T+2, T+3, T+5 trading days)
     spot_daily = _load_spot_daily()
     if spot_daily.empty:
-        return updated
+        return apply_label_quality_fields(updated)
 
     future_dates = [d for d in available_dates if d > signal_date]
 
@@ -423,7 +425,7 @@ def evaluate_eod_outcomes(
             updated["stop_loss_hit"] = False
 
     updated = compute_signal_evaluation_scores(updated)
-    return updated
+    return apply_label_quality_fields(updated)
 
 
 # ---------------------------------------------------------------

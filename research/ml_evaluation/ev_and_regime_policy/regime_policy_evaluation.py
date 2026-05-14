@@ -48,6 +48,7 @@ from research.ml_evaluation.ev_and_regime_policy.regime_switching_policy import 
     VOL_COL,
     MACRO_COL,
 )
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +472,8 @@ def run_regime_policy_evaluation(
     else:
         df_base = _load_dataset()
         df_base = _ensure_ml_columns(df_base)
+    quality_summary = label_quality_summary(df_base)
+    df_base = apply_quality_label_view(df_base)
 
     if "signal_timestamp" in df_base.columns:
         ts = pd.to_datetime(df_base["signal_timestamp"], errors="coerce")
@@ -524,6 +527,7 @@ def run_regime_policy_evaluation(
     summary: dict[str, Any] = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "n_signals": total_n,
+        "label_quality_summary": quality_summary,
         "n_variants_tested": len(variants),
         "search_results": search_results,
         "best_variant": best_variant,

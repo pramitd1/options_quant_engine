@@ -32,6 +32,10 @@ from typing import Any
 DEFAULT_PARAMETER_PACK = "baseline_v1"
 
 
+class ParameterPackResolutionError(RuntimeError):
+    """Raised when strict parameter-pack resolution cannot load a requested pack."""
+
+
 @dataclass(frozen=True)
 class ParameterRuntimeContext:
     """
@@ -81,6 +85,17 @@ _REGIME_MAP_FIELDS = (
     "event_risk_bucket",
     "overnight_bucket",
 )
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _strict_parameter_pack_resolution_enabled() -> bool:
+    return _env_flag("OQE_STRICT_PARAMETER_PACK", default=False)
 
 
 def _parse_pack_layers(selection: Any) -> tuple[str, ...]:
@@ -136,16 +151,28 @@ def _load_pack_overrides(name: Any) -> tuple[str, dict[str, Any], tuple[str, ...
 
     merged_overrides: dict[str, Any] = {}
     resolved_layers: list[str] = []
+    failed_layers: list[tuple[str, Exception]] = []
     for layer in requested_layers:
         try:
             pack = resolve_parameter_pack(layer)
             merged_overrides.update(dict(pack.overrides))
             resolved_layers.append(layer)
         except Exception as exc:
+            failed_layers.append((layer, exc))
             logger.error("Failed to load parameter pack layer '%s': %s", layer, exc)
+
+    if failed_layers and _strict_parameter_pack_resolution_enabled():
+        details = "; ".join(f"{layer}: {exc}" for layer, exc in failed_layers)
+        raise ParameterPackResolutionError(
+            f"Strict parameter-pack resolution failed for {details}"
+        )
 
     if not resolved_layers:
         if DEFAULT_PARAMETER_PACK in requested_layers:
+            if _strict_parameter_pack_resolution_enabled():
+                raise ParameterPackResolutionError(
+                    f"Strict parameter-pack resolution failed for default pack '{DEFAULT_PARAMETER_PACK}'"
+                )
             return DEFAULT_PARAMETER_PACK, {}, (DEFAULT_PARAMETER_PACK,)
         logger.warning("Falling back to default pack '%s'", DEFAULT_PARAMETER_PACK)
         try:
@@ -153,6 +180,10 @@ def _load_pack_overrides(name: Any) -> tuple[str, dict[str, Any], tuple[str, ...
             return DEFAULT_PARAMETER_PACK, dict(fallback.overrides), (DEFAULT_PARAMETER_PACK,)
         except Exception as exc2:
             logger.critical("Even default pack failed to load: %s", exc2)
+            if _strict_parameter_pack_resolution_enabled():
+                raise ParameterPackResolutionError(
+                    f"Strict parameter-pack fallback failed for default pack '{DEFAULT_PARAMETER_PACK}': {exc2}"
+                ) from exc2
             return DEFAULT_PARAMETER_PACK, {}, (DEFAULT_PARAMETER_PACK,)
 
     layers_tuple = tuple(resolved_layers)
@@ -712,4 +743,3 @@ def evaluate_regime_pack_switch(
     state["active_since_ts"] = now
     state["consecutive_regime_hits"] = 0
     return {"apply": True, "reason": "switch_approved", "state": state}
-

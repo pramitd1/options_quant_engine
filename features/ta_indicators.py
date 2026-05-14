@@ -29,10 +29,49 @@ from data.historical_spot_fetcher import get_recent_spot_history
 logger = logging.getLogger(__name__)
 
 
+def _no_ta_signal(regime: str, *, warning: str | None = None) -> dict:
+    payload = {
+        "ta_direction": "NO_SIGNAL",
+        "ta_confidence": 0.0,
+        "ta_regime": regime,
+        "indicators": {},
+    }
+    if warning:
+        payload["ta_warning"] = warning
+    return payload
+
+
+def _prepare_history_frame(hist_df: pd.DataFrame | None, *, as_of=None) -> pd.DataFrame:
+    if hist_df is None or hist_df.empty:
+        return pd.DataFrame()
+
+    df = hist_df.copy()
+    if "close" not in df.columns and "Close" in df.columns:
+        df["close"] = df["Close"]
+
+    if as_of is not None and "timestamp" in df.columns:
+        try:
+            history_ts = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+            as_of_ts = pd.Timestamp(as_of)
+            if as_of_ts.tzinfo is None:
+                as_of_ts = as_of_ts.tz_localize("Asia/Kolkata")
+            else:
+                as_of_ts = as_of_ts.tz_convert("Asia/Kolkata")
+            df = df[history_ts <= as_of_ts.tz_convert("UTC")]
+        except Exception as exc:
+            logger.warning("Unable to filter TA history as_of=%r: %s", as_of, exc)
+
+    return df.dropna(subset=["close"]) if "close" in df.columns else pd.DataFrame()
+
+
 def build_ta_features(
     symbol: str,
     current_spot: float,
-    days_history: int = 30
+    days_history: int = 30,
+    *,
+    history_df: pd.DataFrame | None = None,
+    as_of=None,
+    allow_live_history: bool = True,
 ) -> dict:
     """
     Build technical analysis features for signal generation.
@@ -46,16 +85,18 @@ def build_ta_features(
         Dict with TA signals and metadata
     """
     try:
-        # Fetch historical data
-        hist_df = get_recent_spot_history(symbol, days_history)
+        if history_df is None:
+            if not allow_live_history:
+                return _no_ta_signal(
+                    "point_in_time_unavailable",
+                    warning="ta_history_not_supplied_for_historical_mode",
+                )
+            history_df = get_recent_spot_history(symbol, days_history)
+
+        hist_df = _prepare_history_frame(history_df, as_of=as_of)
 
         if hist_df.empty or len(hist_df) < 14:  # Need minimum data for indicators
-            return {
-                "ta_direction": "NO_SIGNAL",
-                "ta_confidence": 0.0,
-                "ta_regime": "insufficient_data",
-                "indicators": {}
-            }
+            return _no_ta_signal("insufficient_data")
 
         # Compute indicators
         indicators = _compute_ta_indicators(hist_df, current_spot)
@@ -67,17 +108,12 @@ def build_ta_features(
             "ta_direction": direction,
             "ta_confidence": confidence,
             "ta_regime": regime,
-            "indicators": indicators
+            "indicators": indicators,
         }
 
     except Exception as e:
         logger.error(f"Failed to build TA features for {symbol}: {e}")
-        return {
-            "ta_direction": "NO_SIGNAL",
-            "ta_confidence": 0.0,
-            "ta_regime": "error",
-            "indicators": {}
-        }
+        return _no_ta_signal("error")
 
 
 def _compute_ta_indicators(hist_df: pd.DataFrame, current_spot: float) -> dict:
@@ -195,7 +231,14 @@ def _generate_ta_signals(indicators: dict) -> tuple[str, float, str]:
 
 
 # Helper function to get TA features for a trade
-def get_ta_features_for_trade(symbol: str, spot_price: float) -> dict:
+def get_ta_features_for_trade(
+    symbol: str,
+    spot_price: float,
+    *,
+    history_df: pd.DataFrame | None = None,
+    as_of=None,
+    allow_live_history: bool = True,
+) -> dict:
     """
     Convenience function to get TA features for integration with trade evaluation.
 
@@ -206,4 +249,10 @@ def get_ta_features_for_trade(symbol: str, spot_price: float) -> dict:
     Returns:
         TA features dict ready for trade evaluation
     """
-    return build_ta_features(symbol, spot_price)
+    return build_ta_features(
+        symbol,
+        spot_price,
+        history_df=history_df,
+        as_of=as_of,
+        allow_live_history=allow_live_history,
+    )

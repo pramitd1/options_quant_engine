@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from research.signal_evaluation.dataset import CUMULATIVE_DATASET_PATH, load_signals_dataset
+from research.signal_evaluation.label_quality import has_quality_label_annotations, select_quality_labeled_rows
 from strategy.direction_probability_head import compute_direction_probability_head
 from strategy.score_calibration import ScoreCalibrator
 
@@ -37,6 +38,8 @@ def _to_upper(value) -> str:
 
 
 def _pick_target(df: pd.DataFrame) -> pd.Series:
+    if has_quality_label_annotations(df) and "correct_60m" in df.columns:
+        return (pd.to_numeric(df["correct_60m"], errors="coerce") > 0).astype(float)
     if "realized_return_60m" in df.columns:
         target = (pd.to_numeric(df["realized_return_60m"], errors="coerce") > 0).astype(float)
         return target
@@ -134,6 +137,10 @@ def main() -> int:
     df = load_signals_dataset(args.dataset)
     if df.empty:
         raise RuntimeError("Dataset is empty; cannot train direction probability calibrator")
+    if has_quality_label_annotations(df):
+        df = select_quality_labeled_rows(df, fallback_to_legacy=False)
+        if df.empty:
+            raise RuntimeError("No quality-approved labels available; cannot train direction probability calibrator")
 
     work = _build_head_probability_frame(df)
     if len(work) < max(50, int(args.min_samples)):
@@ -184,7 +191,7 @@ def main() -> int:
         "dataset_path": str(args.dataset),
         "calibrator_output_path": str(args.output),
         "samples": int(len(work)),
-        "target_definition": "realized_return_60m > 0 (fallback: signed_return_60m_bps/correct_60m)",
+        "target_definition": "quality-approved correct_60m when available; fallback: realized_return_60m > 0 / signed_return_60m_bps > 0 / correct_60m",
         "metrics": {
             "pre_brier": round(pre_brier, 8),
             "post_brier": round(post_brier, 8),

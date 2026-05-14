@@ -16,6 +16,7 @@ Downstream Usage:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from config.settings import ICICI_DEBUG, NSE_DEBUG
@@ -26,6 +27,7 @@ from data.provider_normalization import normalize_live_option_chain
 
 
 LoaderFactory = Callable[[], Any]
+_LOG = logging.getLogger(__name__)
 
 
 def _build_loader_factories() -> dict[str, LoaderFactory]:
@@ -100,6 +102,7 @@ class DataSourceRouter:
         """
         self.source = source.upper().strip()
         self.loader = None
+        self.last_validation = None
         loader_factories = _build_loader_factories()
         if self.source not in loader_factories:
             raise ValueError(
@@ -109,50 +112,35 @@ class DataSourceRouter:
 
     def get_option_chain(self, symbol: str):
         """
-        Fetch option-chain data for the selected source, with automatic fallback on weak data.
+        Fetch option-chain data for the selected source.
         """
         from data.option_chain_validation import validate_option_chain
-        
-        # Try primary source first
+
         fetch_method_name = _build_fetch_method_names()[self.source]
         raw_chain = getattr(self.loader, fetch_method_name)(symbol)
         normalized_chain = normalize_live_option_chain(raw_chain, source=self.source, symbol=symbol)
-        
-        # Validate the data quality
+
         validation = validate_option_chain(normalized_chain)
+        self.last_validation = validation
         provider_health = validation.get("provider_health", {})
-        summary_status = provider_health.get("summary_status", "GOOD")
-        
-        # If primary source has weak data, try fallback sources
-        if summary_status in ("WEAK", "CAUTION"):
-            fallback_sources = [s for s in ["ICICI", "NSE", "ZERODHA"] if s != self.source]
-            for fallback_source in fallback_sources:
-                try:
-                    # Create temporary loader for fallback
-                    loader_factories = _build_loader_factories()
-                    fallback_loader = loader_factories[fallback_source]()
-                    fallback_fetch_method = _build_fetch_method_names()[fallback_source]
-                    fallback_raw_chain = getattr(fallback_loader, fallback_fetch_method)(symbol)
-                    fallback_normalized = normalize_live_option_chain(fallback_raw_chain, source=fallback_source, symbol=symbol)
-                    
-                    # Validate fallback data
-                    fallback_validation = validate_option_chain(fallback_normalized)
-                    fallback_health = fallback_validation.get("provider_health", {})
-                    fallback_status = fallback_health.get("summary_status", "GOOD")
-                    
-                    # Use fallback if it's better
-                    if fallback_status == "GOOD" or (fallback_status == "CAUTION" and summary_status == "WEAK"):
-                        print(f"DataSourceRouter: Falling back from {self.source} ({summary_status}) to {fallback_source} ({fallback_status})")
-                        return fallback_normalized
-                        
-                    # Clean up fallback loader
-                    if hasattr(fallback_loader, "close"):
-                        fallback_loader.close()
-                        
-                except Exception as e:
-                    print(f"DataSourceRouter: Fallback to {fallback_source} failed: {e}")
-                    continue
-        
+        primary_valid = bool(validation.get("is_valid"))
+        summary_status = str(provider_health.get("summary_status") or "").upper().strip()
+        if not summary_status:
+            summary_status = "INVALID" if not primary_valid else "GOOD"
+
+        if not primary_valid or summary_status in ("WEAK", "CAUTION"):
+            _LOG.warning(
+                "Selected data source %s returned option-chain quality %s "
+                "(is_valid=%s, issues=%s, warnings=%s, blocking_reasons=%s). "
+                "Keeping the user-selected source; no fallback provider will be used.",
+                self.source,
+                summary_status,
+                primary_valid,
+                validation.get("issues", []),
+                validation.get("warnings", []),
+                provider_health.get("trade_blocking_reasons", []),
+            )
+
         return normalized_chain
 
     def get_expiry_candidates(self) -> list:

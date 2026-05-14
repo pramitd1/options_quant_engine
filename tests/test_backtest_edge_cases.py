@@ -256,6 +256,9 @@ def test_eod_outcomes_disable_intraday_scoring_for_synthetic_path(monkeypatch):
         assert pd.isna(out[f"spot_{horizon}m"])
         assert pd.isna(out[f"correct_{horizon}m"])
     assert out["intraday_eval_disabled_reason"] == "synthetic_intraday_path"
+    assert out["label_quality_status"] == "UNUSABLE"
+    assert out["calibration_label_available"] is False
+    assert "intraday_eval_disabled:synthetic_intraday_path" in out["label_quality_reasons"]
 
 
 def test_eod_outcomes_marks_same_bar_target_stop_as_ambiguous(monkeypatch):
@@ -299,3 +302,6 @@ def test_eod_outcomes_marks_same_bar_target_stop_as_ambiguous(monkeypatch):
     assert out.get("target_stop_same_bar_ambiguous") is True
     assert out.get("stop_loss_hit") is True
     assert out.get("exit_quality_label") == "AMBIGUOUS"
+    assert out.get("label_quality_status") == "AMBIGUOUS"
+    assert out.get("calibration_label_available") is False
+    assert "target_stop_ambiguous" in out.get("label_quality_reasons", "")

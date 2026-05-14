@@ -13,7 +13,7 @@ import pandas as pd
 from unittest.mock import patch, MagicMock
 
 from data.option_chain_validation import _detect_iv_anomalies, _detect_spot_jump
-from data.spot_downloader import get_spot_snapshot
+from data.spot_downloader import get_spot_snapshot, validate_spot_snapshot
 
 
 class TestIVAnomalyDetection:
@@ -124,6 +124,67 @@ class TestSpotPriceJumpDetection:
         assert len(warnings) == 0
 
 
+class TestSpotSnapshotValidation:
+    """Validate signal-quality handling for spot timestamps."""
+
+    def _base_snapshot(self, timestamp) -> dict:
+        return {
+            "spot": 100.0,
+            "day_open": 99.5,
+            "day_high": 101.0,
+            "day_low": 98.5,
+            "prev_close": 99.0,
+            "timestamp": timestamp,
+        }
+
+    def test_missing_timestamp_marks_signal_invalid(self):
+        snapshot = self._base_snapshot(None)
+        snapshot.pop("timestamp")
+
+        result = validate_spot_snapshot(snapshot)
+
+        assert result["is_valid"] is False
+        assert result["live_trading_valid"] is False
+        assert "missing_timestamp" in result["issues"]
+
+    def test_unparseable_timestamp_marks_signal_invalid(self):
+        result = validate_spot_snapshot(self._base_snapshot("not-a-timestamp"))
+
+        assert result["is_valid"] is False
+        assert result["live_trading_valid"] is False
+        assert "timestamp_parse_failed" in result["issues"]
+
+    def test_naive_timestamp_marks_live_signal_invalid(self):
+        naive_ts = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None).isoformat()
+
+        result = validate_spot_snapshot(self._base_snapshot(naive_ts))
+
+        assert result["is_valid"] is False
+        assert result["live_trading_valid"] is False
+        assert "naive_timestamp" in result["issues"]
+        assert "timestamp_assumed_ist" in result["warnings"]
+        assert result["age_minutes"] is not None
+
+    def test_future_timestamp_marks_signal_invalid(self):
+        future_ts = (pd.Timestamp.now(tz="Asia/Kolkata") + pd.Timedelta(minutes=10)).isoformat()
+
+        result = validate_spot_snapshot(self._base_snapshot(future_ts))
+
+        assert result["is_valid"] is False
+        assert any(str(issue).startswith("future_spot_snapshot_") for issue in result["issues"])
+
+    def test_replay_stale_timestamp_remains_analysis_usable(self):
+        result = validate_spot_snapshot(
+            self._base_snapshot("2020-01-01T09:15:00+05:30"),
+            replay_mode=True,
+        )
+
+        assert result["is_valid"] is True
+        assert result["replay_analysis_valid"] is True
+        assert result["live_trading_valid"] is False
+        assert any(str(warning).startswith("replay_stale_spot_snapshot_") for warning in result["warnings"])
+
+
 class TestSpotSnapshotRetry:
     """Test retry logic in get_spot_snapshot."""
     
@@ -153,6 +214,82 @@ class TestSpotSnapshotRetry:
         result = get_spot_snapshot('NIFTY')
         assert result['spot'] == 102.0
         assert mock_ticker.call_count == 1  # Only called once
+
+    @patch('yfinance.Ticker')
+    def test_prev_close_uses_latest_completed_daily_when_daily_lags(self, mock_ticker):
+        mock_ticker_instance = MagicMock()
+        mock_ticker.return_value = mock_ticker_instance
+
+        intraday_df = pd.DataFrame({
+            'Open': [100, 101],
+            'High': [102, 103],
+            'Low': [99, 100],
+            'Close': [101, 102],
+        }, index=pd.date_range('2026-03-20 10:00', periods=2, freq='5min', tz='Asia/Kolkata'))
+
+        daily_df = pd.DataFrame({
+            'Open': [98, 99],
+            'High': [101, 102],
+            'Low': [97, 98],
+            'Close': [100.0, 101.0],
+        }, index=pd.date_range('2026-03-18', periods=2, freq='D', tz='Asia/Kolkata'))
+
+        mock_ticker_instance.history.side_effect = [intraday_df, daily_df]
+
+        result = get_spot_snapshot('NIFTY')
+
+        assert result['prev_close'] == 101.0
+
+    @patch('yfinance.Ticker')
+    def test_prev_close_skips_current_daily_candle_when_present(self, mock_ticker):
+        mock_ticker_instance = MagicMock()
+        mock_ticker.return_value = mock_ticker_instance
+
+        intraday_df = pd.DataFrame({
+            'Open': [100, 101],
+            'High': [102, 103],
+            'Low': [99, 100],
+            'Close': [101, 102],
+        }, index=pd.date_range('2026-03-20 10:00', periods=2, freq='5min', tz='Asia/Kolkata'))
+
+        daily_df = pd.DataFrame({
+            'Open': [98, 99, 100],
+            'High': [101, 102, 103],
+            'Low': [97, 98, 99],
+            'Close': [100.0, 101.0, 102.0],
+        }, index=pd.date_range('2026-03-18', periods=3, freq='D', tz='Asia/Kolkata'))
+
+        mock_ticker_instance.history.side_effect = [intraday_df, daily_df]
+
+        result = get_spot_snapshot('NIFTY')
+
+        assert result['prev_close'] == 101.0
+
+    @patch('yfinance.Ticker')
+    def test_yfinance_spot_metadata_makes_mixed_source_explicit(self, mock_ticker):
+        mock_ticker_instance = MagicMock()
+        mock_ticker.return_value = mock_ticker_instance
+
+        intraday_df = pd.DataFrame({
+            'Open': [100, 101],
+            'High': [102, 103],
+            'Low': [99, 100],
+            'Close': [101, 102],
+        }, index=pd.date_range('2026-03-20 10:00', periods=2, freq='5min', tz='Asia/Kolkata'))
+        daily_df = pd.DataFrame({
+            'Open': [98, 99],
+            'High': [101, 102],
+            'Low': [97, 98],
+            'Close': [100.0, 101.0],
+        }, index=pd.date_range('2026-03-18', periods=2, freq='D', tz='Asia/Kolkata'))
+
+        mock_ticker_instance.history.side_effect = [intraday_df, daily_df]
+
+        result = get_spot_snapshot('NIFTY', source='ICICI')
+
+        assert result['spot_source'] == 'yfinance_intraday'
+        assert result['option_source_requested'] == 'ICICI'
+        assert result['spot_option_source_consistency'] == 'MIXED_SPOT_OPTION_SOURCE'
     
     @patch('yfinance.Ticker')
     def test_exhausts_retries_and_raises(self, mock_ticker):

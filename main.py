@@ -94,6 +94,11 @@ from research.signal_evaluation import (
     CAPTURE_POLICY_ALL,
     normalize_capture_policy,
 )
+from research.signal_evaluation.label_quality import (
+    QUALITY_HIT_COLUMN,
+    has_quality_label_annotations,
+    quality_label_mask,
+)
 
 
 def _refresh_interval_for_source(source: str) -> int:
@@ -402,11 +407,17 @@ def _compute_calibration_gate_verdict(
 
     trade_status = working["trade_status"].astype(str).str.upper()
     completed = working[trade_status.eq("TRADE")].copy()
-    completed["y"] = pd.to_numeric(completed["correct_60m"], errors="coerce")
+    label_source = "correct_60m"
+    if has_quality_label_annotations(completed):
+        quality_mask = quality_label_mask(completed, fallback_to_legacy=False)
+        completed = completed[quality_mask].copy()
+        label_source = QUALITY_HIT_COLUMN
+
+    completed["y"] = pd.to_numeric(completed[label_source], errors="coerce")
     completed["p"] = pd.to_numeric(completed["hybrid_move_probability"], errors="coerce")
     completed = completed.dropna(subset=["y", "p"])
 
-    if "outcome_status" in completed.columns:
+    if label_source == "correct_60m" and "outcome_status" in completed.columns:
         outcome_status = completed["outcome_status"].astype(str).str.upper()
         completed = completed[outcome_status.eq("COMPLETE") | outcome_status.eq("")]
 
@@ -420,6 +431,7 @@ def _compute_calibration_gate_verdict(
             "top_decile_overconfidence": None,
             "red_alerts": 0,
             "reason": "insufficient_completed_trades",
+            "label_source": label_source,
         }
         cache_state["cache_key"] = cache_key
         cache_state["last_result"] = result
@@ -440,6 +452,7 @@ def _compute_calibration_gate_verdict(
                 "red_alerts": 0,
                 "reason": "stale_completed_trade_history",
                 "days_since_last_completed_trade": round(float(staleness_days), 2),
+                "label_source": label_source,
             }
             cache_state["cache_key"] = cache_key
             cache_state["last_result"] = result
@@ -458,6 +471,7 @@ def _compute_calibration_gate_verdict(
             "top_decile_overconfidence": None,
             "red_alerts": 0,
             "reason": "insufficient_recent_trades",
+            "label_source": label_source,
         }
         cache_state["cache_key"] = cache_key
         cache_state["last_result"] = result
@@ -505,6 +519,7 @@ def _compute_calibration_gate_verdict(
         "brier": brier,
         "top_decile_overconfidence": top_decile_overconfidence,
         "red_alerts": red_alerts,
+        "label_source": label_source,
     }
     cache_state["cache_key"] = cache_key
     cache_state["last_result"] = result

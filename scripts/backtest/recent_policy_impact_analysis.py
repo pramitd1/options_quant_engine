@@ -28,6 +28,7 @@ from config.settings import (
 from data.expiry_resolver import filter_option_chain_by_expiry, ordered_expiries
 from data.historical_snapshot import get_available_dates, replay_historical_snapshot
 from research.signal_evaluation.evaluator import build_signal_evaluation_row
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 from tuning.runtime import temporary_parameter_pack
 
 
@@ -248,7 +249,8 @@ def _series_distribution(series: pd.Series) -> dict[str, Any]:
 
 
 def _hit_rates_by_regime(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    trade_frame = frame[frame["trade_status"] == "TRADE"].copy()
+    quality_frame = apply_quality_label_view(frame)
+    trade_frame = quality_frame[quality_frame["trade_status"] == "TRADE"].copy()
     if trade_frame.empty:
         return []
     trade_frame["correct_60m"] = pd.to_numeric(trade_frame.get("correct_60m"), errors="coerce")
@@ -269,10 +271,13 @@ def _hit_rates_by_regime(frame: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 def _summarize_frame(frame: pd.DataFrame) -> dict[str, Any]:
+    quality_summary = label_quality_summary(frame)
+    frame = apply_quality_label_view(frame)
     status_counts = frame["trade_status"].value_counts(dropna=False).to_dict() if "trade_status" in frame else {}
     trade_frame = frame[frame["trade_status"] == "TRADE"].copy()
     return {
         "signal_count": int(len(frame)),
+        "label_quality_summary": quality_summary,
         "status_counts": {str(key): int(value) for key, value in status_counts.items()},
         "direction_balance": _direction_balance(frame),
         "runtime_composite_distribution": _series_distribution(trade_frame.get("runtime_composite_score", pd.Series(dtype=float))),

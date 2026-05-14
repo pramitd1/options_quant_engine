@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from research.signal_evaluation.dataset import CUMULATIVE_DATASET_PATH, SIGNAL_DATASET_PATH, load_signals_dataset
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 from tuning.objectives import apply_selection_policy
 from scripts.predictor_comparative_report import PREDICTORS, SELECTION_POLICY
 
@@ -201,6 +202,9 @@ def main() -> int:
         print("Dataset is empty; nothing to analyze.")
         return 1
 
+    quality_summary = label_quality_summary(df)
+    df = apply_quality_label_view(df)
+
     ts = pd.to_datetime(df.get("signal_timestamp"), errors="coerce")
     df = df.copy()
     df["time_bucket"] = ts.apply(_time_bucket)
@@ -235,6 +239,7 @@ def main() -> int:
     payload = {
         "date": TODAY,
         "dataset": str(dataset_path),
+        "label_quality_summary": quality_summary,
         "baseline_predictor": BASELINE,
         "candidate_predictor": CANDIDATE,
         "selection_counts": {

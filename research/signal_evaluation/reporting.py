@@ -22,7 +22,13 @@ from typing import Any
 
 import pandas as pd
 
+from research.signal_evaluation.confidence import outcome_confidence_fields, sample_guardrail
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+from research.signal_evaluation.report_manifest import write_report_reproducibility_manifest
 from research.signal_evaluation.reports import build_research_report
+from research.signal_evaluation.threshold_governance import build_threshold_governance_report
+from research.signal_evaluation.threshold_replay import build_threshold_replay_summary
+from utils.timestamp_helpers import coerce_timestamp_series
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +75,10 @@ COVERAGE_FIELDS = (
     "market_charm_exposure",
     "correct_60m",
     "signed_return_60m_bps",
+    "calibration_label",
+    "calibration_label_available",
+    "label_quality_status",
+    "primary_outcome_return_bps",
 )
 
 from utils.numerics import safe_float as _safe_float  # noqa: F401
@@ -98,6 +108,16 @@ def _round_or_none(value: Any, digits: int = 4) -> float | None:
     return round(float(coerced), digits)
 
 
+def _interval_text(row: dict[str, Any], low_key: str, high_key: str, *, percent: bool = False) -> str:
+    low = row.get(low_key)
+    high = row.get(high_key)
+    if low is None or high is None:
+        return ""
+    if percent:
+        return f"{round(float(low) * 100, 2)}%-{round(float(high) * 100, 2)}%"
+    return f"{low}-{high}"
+
+
 def _frame_with_timestamp(frame: pd.DataFrame) -> pd.DataFrame:
     """
     Purpose:
@@ -117,7 +137,7 @@ def _frame_with_timestamp(frame: pd.DataFrame) -> pd.DataFrame:
     """
     enriched = frame.copy()
     if "signal_timestamp" in enriched.columns:
-        enriched["signal_timestamp"] = pd.to_datetime(enriched["signal_timestamp"], errors="coerce")
+        enriched["signal_timestamp"] = coerce_timestamp_series(enriched["signal_timestamp"])
     return enriched
 
 
@@ -141,7 +161,7 @@ def _evaluation_period(frame: pd.DataFrame) -> dict[str, Any]:
     if frame.empty or "signal_timestamp" not in frame.columns:
         return {"start": None, "end": None, "trading_days": 0}
 
-    timestamps = pd.to_datetime(frame["signal_timestamp"], errors="coerce").dropna()
+    timestamps = coerce_timestamp_series(frame["signal_timestamp"]).dropna()
     if timestamps.empty:
         return {"start": None, "end": None, "trading_days": 0}
 
@@ -174,12 +194,15 @@ def _counts_with_optional_hit_rate(frame: pd.DataFrame, field_name: str, top_n: 
     if frame.empty or field_name not in frame.columns:
         return []
 
-    working = frame.copy()
-    if "correct_60m" in working.columns:
-        working["correct_60m"] = pd.to_numeric(working["correct_60m"], errors="coerce")
+    working = apply_quality_label_view(frame)
+    working["correct_60m"] = pd.to_numeric(working.get("correct_60m", pd.Series(index=working.index)), errors="coerce")
 
     rows = []
     for field_value, group in working.dropna(subset=[field_name]).groupby(field_name, dropna=False):
+        confidence = outcome_confidence_fields(
+            group.get("correct_60m", pd.Series(dtype=float)),
+            group.get("signed_return_60m_bps", pd.Series(dtype=float)),
+        )
         rows.append(
             {
                 field_name: str(field_value),
@@ -189,6 +212,7 @@ def _counts_with_optional_hit_rate(frame: pd.DataFrame, field_name: str, top_n: 
                     pd.to_numeric(group.get("composite_signal_score", pd.Series(dtype=float)), errors="coerce").mean(),
                     2,
                 ),
+                **confidence,
             }
         )
 
@@ -221,7 +245,7 @@ def _signal_frequency_summary(frame: pd.DataFrame) -> dict[str, Any]:
             "active_days": 0,
         }
 
-    timestamps = pd.to_datetime(frame["signal_timestamp"], errors="coerce").dropna()
+    timestamps = coerce_timestamp_series(frame["signal_timestamp"]).dropna()
     if timestamps.empty:
         return {
             "average_signals_per_day": 0.0,
@@ -309,8 +333,18 @@ def _horizon_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
         raw_series = pd.to_numeric(frame.get(raw_field, pd.Series(dtype=float)), errors="coerce") if raw_field else pd.Series(dtype=float)
         signed_series = pd.to_numeric(frame.get(signed_field, pd.Series(dtype=float)), errors="coerce")
         correct_series = pd.to_numeric(frame.get(correct_field, pd.Series(dtype=float)), errors="coerce")
-        sample_count = int(max(raw_series.notna().sum(), signed_series.notna().sum(), correct_series.notna().sum(), 0))
+        if label == "60m":
+            approved_60m = signed_series.notna() | correct_series.notna()
+            raw_series = raw_series.where(approved_60m)
+            sample_count = int(max(signed_series.notna().sum(), correct_series.notna().sum(), 0))
+        else:
+            sample_count = int(max(raw_series.notna().sum(), signed_series.notna().sum(), correct_series.notna().sum(), 0))
 
+        confidence = outcome_confidence_fields(
+            correct_series,
+            signed_series,
+            sample_count=sample_count,
+        )
         rows.append(
             {
                 "horizon": label,
@@ -318,6 +352,7 @@ def _horizon_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 "avg_realized_return": _round_or_none(raw_series.mean(), 6),
                 "avg_signed_return_bps": _round_or_none(signed_series.mean(), 4),
                 "hit_rate": _round_or_none(correct_series.mean(), 4),
+                **confidence,
             }
         )
     return rows
@@ -344,7 +379,7 @@ def _score_bucket_performance(frame: pd.DataFrame, score_field: str = "composite
     if frame.empty or score_field not in frame.columns:
         return []
 
-    working = frame.copy()
+    working = apply_quality_label_view(frame)
     working[score_field] = pd.to_numeric(working[score_field], errors="coerce")
     working["correct_60m"] = pd.to_numeric(working.get("correct_60m", pd.Series(index=working.index)), errors="coerce")
     working["signed_return_60m_bps"] = pd.to_numeric(
@@ -363,6 +398,7 @@ def _score_bucket_performance(frame: pd.DataFrame, score_field: str = "composite
     for bucket, group in working.groupby("score_bucket", dropna=False, observed=False):
         if pd.isna(bucket):
             continue
+        confidence = outcome_confidence_fields(group["correct_60m"], group["signed_return_60m_bps"])
         rows.append(
             {
                 "score_bucket": str(bucket),
@@ -370,6 +406,7 @@ def _score_bucket_performance(frame: pd.DataFrame, score_field: str = "composite
                 "hit_rate_60m": _round_or_none(group["correct_60m"].mean(), 4),
                 "avg_signed_return_60m_bps": _round_or_none(group["signed_return_60m_bps"].mean(), 4),
                 "avg_composite_signal_score": _round_or_none(group[score_field].mean(), 2),
+                **confidence,
             }
         )
     return rows
@@ -548,7 +585,7 @@ def _premium_bucket_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
     if frame.empty or "entry_price" not in frame.columns:
         return []
 
-    working = frame.copy()
+    working = apply_quality_label_view(frame)
     working["entry_price"] = pd.to_numeric(working["entry_price"], errors="coerce")
     working["correct_60m"] = pd.to_numeric(working.get("correct_60m", pd.Series(index=working.index)), errors="coerce")
     working["signed_return_60m_bps"] = pd.to_numeric(working.get("signed_return_60m_bps", pd.Series(index=working.index)), errors="coerce")
@@ -564,6 +601,7 @@ def _premium_bucket_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
     for bucket, group in working.groupby("premium_bucket", dropna=False, observed=False):
         if pd.isna(bucket):
             continue
+        confidence = outcome_confidence_fields(group["correct_60m"], group["signed_return_60m_bps"])
         rows.append(
             {
                 "premium_bucket": str(bucket),
@@ -571,6 +609,7 @@ def _premium_bucket_performance(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 "avg_entry_price": _round_or_none(group["entry_price"].mean(), 2),
                 "hit_rate_60m": _round_or_none(group["correct_60m"].mean(), 4),
                 "avg_signed_return_60m_bps": _round_or_none(group["signed_return_60m_bps"].mean(), 4),
+                **confidence,
             }
         )
     return rows
@@ -585,6 +624,7 @@ def _information_coefficient(frame: pd.DataFrame) -> dict[str, Any]:
     result: dict[str, Any] = {}
     prob_col = "hybrid_move_probability"
     return_col = "signed_return_60m_bps"
+    frame = apply_quality_label_view(frame)
     if prob_col not in frame.columns or return_col not in frame.columns:
         return result
     working = frame[[prob_col, return_col]].copy()
@@ -596,6 +636,7 @@ def _information_coefficient(frame: pd.DataFrame) -> dict[str, Any]:
     ic = working[prob_col].corr(working[return_col], method="spearman")
     result["information_coefficient_60m"] = _round_or_none(ic, 4)
     result["ic_sample_count"] = int(len(working))
+    result.update(sample_guardrail(len(working)))
     return result
 
 
@@ -603,6 +644,7 @@ def _calibration_analysis(frame: pd.DataFrame) -> list[dict[str, Any]]:
     """Compare predicted move probability against realized hit rates per bucket."""
     prob_col = "hybrid_move_probability"
     correct_col = "correct_60m"
+    frame = apply_quality_label_view(frame)
     if prob_col not in frame.columns or correct_col not in frame.columns:
         return []
     working = frame[[prob_col, correct_col]].copy()
@@ -618,6 +660,7 @@ def _calibration_analysis(frame: pd.DataFrame) -> list[dict[str, Any]]:
     for bucket, group in working.groupby("prob_bucket", dropna=False, observed=False):
         if pd.isna(bucket) or group.empty:
             continue
+        confidence = outcome_confidence_fields(group[correct_col], None, sample_count=len(group))
         rows.append({
             "probability_bucket": str(bucket),
             "sample_count": int(len(group)),
@@ -626,6 +669,7 @@ def _calibration_analysis(frame: pd.DataFrame) -> list[dict[str, Any]]:
             "calibration_gap": _round_or_none(
                 float(group[prob_col].mean()) - float(group[correct_col].mean()), 4
             ),
+            **confidence,
         })
     return rows
 
@@ -633,6 +677,7 @@ def _calibration_analysis(frame: pd.DataFrame) -> list[dict[str, Any]]:
 def _expected_value_metrics(frame: pd.DataFrame) -> dict[str, Any]:
     """Compute win/loss ratio, average win, average loss, and expectancy."""
     return_col = "signed_return_60m_bps"
+    frame = apply_quality_label_view(frame)
     if return_col not in frame.columns:
         return {}
     returns = pd.to_numeric(frame[return_col], errors="coerce").dropna()
@@ -662,6 +707,7 @@ def _drawdown_analysis(frame: pd.DataFrame) -> dict[str, Any]:
     """Compute longest losing streak and cumulative return drawdown."""
     correct_col = "correct_60m"
     return_col = "signed_return_60m_bps"
+    frame = apply_quality_label_view(frame)
     result: dict[str, Any] = {}
     if correct_col not in frame.columns:
         return result
@@ -722,11 +768,18 @@ def build_signal_evaluation_summary(
     Notes:
         The output is designed to remain serializable so experiments, reports, and governance decisions can be reproduced later.
     """
-    enriched = _frame_with_timestamp(frame)
+    raw_enriched = _frame_with_timestamp(frame)
+    enriched = apply_quality_label_view(raw_enriched)
     score_statistics = {
-        field_name: _score_statistics(enriched, field_name)
+        field_name: _score_statistics(raw_enriched, field_name)
         for field_name in SCORE_FIELDS
     }
+    threshold_replay = build_threshold_replay_summary(raw_enriched, top_n=top_n)
+    threshold_governance = build_threshold_governance_report(
+        raw_enriched,
+        threshold_summary=threshold_replay,
+        dataset_path=dataset_path,
+    )
 
     return _sanitize_value(
         {
@@ -734,23 +787,26 @@ def build_signal_evaluation_summary(
         "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
         "production_pack_name": production_pack_name,
         "dataset_path": dataset_path,
-        "evaluation_period": _evaluation_period(enriched),
-        "total_signal_count": int(len(enriched)),
+        "evaluation_period": _evaluation_period(raw_enriched),
+        "total_signal_count": int(len(raw_enriched)),
         "signals_by_symbol": _counts_with_optional_hit_rate(enriched, "symbol", top_n=top_n),
         "signals_by_direction": _counts_with_optional_hit_rate(enriched, "direction", top_n=top_n),
-        "signal_frequency": _signal_frequency_summary(enriched),
-        "outcome_status_counts": _outcome_status_counts(enriched),
+        "signal_frequency": _signal_frequency_summary(raw_enriched),
+        "outcome_status_counts": _outcome_status_counts(raw_enriched),
+        "label_quality_summary": label_quality_summary(raw_enriched),
         "horizon_performance": _horizon_performance(enriched),
         "score_statistics": score_statistics,
         "score_bucket_performance": _score_bucket_performance(enriched),
         "regime_breakdown": _regime_breakdown(enriched, top_n=top_n),
-        "data_coverage_summary": _coverage_summary(enriched),
+        "data_coverage_summary": _coverage_summary(raw_enriched),
         "information_coefficient": _information_coefficient(enriched),
         "calibration_analysis": _calibration_analysis(enriched),
         "expected_value_metrics": _expected_value_metrics(enriched),
         "drawdown_analysis": _drawdown_analysis(enriched),
-        "premium_summary": _premium_summary(enriched),
+        "premium_summary": _premium_summary(raw_enriched),
         "premium_bucket_performance": _premium_bucket_performance(enriched),
+        "threshold_replay": threshold_replay,
+        "threshold_governance": threshold_governance,
         "research_tables": _research_tables(enriched),
         }
     )
@@ -786,34 +842,50 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
         f"- Total signal count: {summary.get('total_signal_count', 0)}",
         f"- Average signals per day: {signal_frequency.get('average_signals_per_day', 0.0)}",
         "",
+        "## Label Quality",
+        "",
+    ]
+
+    label_summary = summary.get("label_quality_summary", {})
+    lines.extend(
+        [
+            f"- Label source: {label_summary.get('label_source')}",
+            f"- Raw 60m labeled rows: {label_summary.get('raw_labeled_rows')}",
+            f"- Quality-approved 60m labeled rows: {label_summary.get('quality_labeled_rows')}",
+            f"- Excluded 60m labels: {label_summary.get('excluded_labeled_rows')}",
+            "",
+        ]
+    )
+
+    lines.extend([
         "## Signals By Symbol",
         "",
-        "| Symbol | Signal Count | 60m Hit Rate | Avg Composite Score |",
-        "| --- | ---: | ---: | ---: |",
-    ]
+        "| Symbol | Signal Count | 60m Hit Rate | Hit Rate 95% CI | Evidence | Avg Composite Score |",
+        "| --- | ---: | ---: | ---: | --- | ---: |",
+    ])
 
     for row in summary.get("signals_by_symbol", []):
         lines.append(
-            f"| {row.get('symbol')} | {row.get('signal_count')} | {row.get('hit_rate_60m')} | {row.get('avg_composite_signal_score')} |"
+            f"| {row.get('symbol')} | {row.get('signal_count')} | {row.get('hit_rate_60m')} | {_interval_text(row, 'hit_rate_ci_low', 'hit_rate_ci_high', percent=True)} | {row.get('sample_quality')} | {row.get('avg_composite_signal_score')} |"
         )
     if not summary.get("signals_by_symbol"):
-        lines.append("| (none) | 0 |  |  |")
+        lines.append("| (none) | 0 |  |  |  |  |")
 
     lines.extend(
         [
             "",
             "## Horizon Performance",
             "",
-            "| Horizon | Sample Count | Avg Realized Return | Avg Signed Return (bps) | Hit Rate |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Horizon | Sample Count | Avg Realized Return | Avg Signed Return (bps) | Return 95% CI (bps) | Hit Rate | Hit Rate 95% CI | Evidence |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for row in summary.get("horizon_performance", []):
         lines.append(
-            f"| {row.get('horizon')} | {row.get('sample_count')} | {row.get('avg_realized_return')} | {row.get('avg_signed_return_bps')} | {row.get('hit_rate')} |"
+            f"| {row.get('horizon')} | {row.get('sample_count')} | {row.get('avg_realized_return')} | {row.get('avg_signed_return_bps')} | {_interval_text(row, 'return_ci_low_bps', 'return_ci_high_bps')} | {row.get('hit_rate')} | {_interval_text(row, 'hit_rate_ci_low', 'hit_rate_ci_high', percent=True)} | {row.get('sample_quality')} |"
         )
     if not summary.get("horizon_performance"):
-        lines.append("| (none) | 0 |  |  |  |")
+        lines.append("| (none) | 0 |  |  |  |  |  |  |")
 
     lines.extend(
         [
@@ -834,16 +906,96 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
             "",
             "## Score Bucket Performance",
             "",
-            "| Score Bucket | Signal Count | 60m Hit Rate | Avg Signed Return 60m (bps) | Avg Composite Score |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Score Bucket | Signal Count | 60m Hit Rate | Hit Rate 95% CI | Avg Signed Return 60m (bps) | Evidence | Avg Composite Score |",
+            "| --- | ---: | ---: | ---: | ---: | --- | ---: |",
         ]
     )
     for row in summary.get("score_bucket_performance", []):
         lines.append(
-            f"| {row.get('score_bucket')} | {row.get('signal_count')} | {row.get('hit_rate_60m')} | {row.get('avg_signed_return_60m_bps')} | {row.get('avg_composite_signal_score')} |"
+            f"| {row.get('score_bucket')} | {row.get('signal_count')} | {row.get('hit_rate_60m')} | {_interval_text(row, 'hit_rate_ci_low', 'hit_rate_ci_high', percent=True)} | {row.get('avg_signed_return_60m_bps')} | {row.get('sample_quality')} | {row.get('avg_composite_signal_score')} |"
         )
     if not summary.get("score_bucket_performance"):
-        lines.append("| (none) | 0 |  |  |  |")
+        lines.append("| (none) | 0 |  |  |  |  |  |")
+
+    replay = summary.get("threshold_replay", {}) or {}
+    threshold_rows = replay.get("threshold_replay_candidates", []) or []
+    if threshold_rows:
+        lines.extend(
+            [
+                "",
+                "## Threshold Replay Diagnostics",
+                "",
+                "| Rank | Field | Threshold | Signals | Labels | Hit Rate | Avg Return 60m (bps) | Objective | Holdout Avg Return | Evidence | Stability |",
+                "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for row in threshold_rows[:10]:
+            lines.append(
+                f"| {row.get('candidate_rank')} | {row.get('threshold_field')} | {row.get('threshold_value')} | {row.get('signal_count')} | {row.get('label_count_60m')} | {row.get('hit_rate_60m')} | {row.get('avg_signed_return_60m_bps')} | {row.get('objective_score')} | {row.get('holdout_avg_signed_return_60m_bps')} | {row.get('sample_quality')} | {row.get('stability_status')} |"
+            )
+
+    regime_threshold_rows = replay.get("regime_threshold_replay_candidates", []) or []
+    if regime_threshold_rows:
+        lines.extend(
+            [
+                "",
+                "### Regime-Conditioned Threshold Replay",
+                "",
+                "| Rank | Regime | Value | Field | Threshold | Labels | Hit Rate | Avg Return 60m (bps) | Evidence | Stability |",
+                "| ---: | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+            ]
+        )
+        for row in regime_threshold_rows[:10]:
+            lines.append(
+                f"| {row.get('candidate_rank')} | {row.get('regime_field')} | {row.get('regime_value')} | {row.get('threshold_field')} | {row.get('threshold_value')} | {row.get('label_count_60m')} | {row.get('hit_rate_60m')} | {row.get('avg_signed_return_60m_bps')} | {row.get('sample_quality')} | {row.get('stability_status')} |"
+            )
+
+    walk_forward = replay.get("walk_forward_validation", {}) or {}
+    walk_summary = walk_forward.get("summary", {}) or {}
+    walk_rows = walk_forward.get("splits", []) or []
+    if walk_summary:
+        lines.extend(
+            [
+                "",
+                "### Walk-Forward Threshold Validation",
+                "",
+                f"- Robustness status: {walk_summary.get('robustness_status')}",
+                f"- Evaluated splits: {walk_summary.get('evaluated_split_count')} / {walk_summary.get('split_count')}",
+                f"- Positive holdout rate: {walk_summary.get('positive_holdout_rate')}",
+                f"- Avg holdout return 60m (bps): {walk_summary.get('avg_holdout_return_60m_bps')}",
+                f"- Worst holdout return 60m (bps): {walk_summary.get('worst_holdout_return_60m_bps')}",
+                "",
+            ]
+        )
+        if walk_rows:
+            lines.extend(
+                [
+                    "| Split | Selected Field | Threshold | Status | Train Labels | Holdout Labels | Holdout Hit Rate | Holdout Avg Return 60m (bps) |",
+                    "| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: |",
+                ]
+            )
+            for row in walk_rows[:10]:
+                lines.append(
+                    f"| {row.get('split_id')} | {row.get('threshold_field')} | {row.get('threshold_value')} | {row.get('split_status')} | {row.get('train_label_count_60m')} | {row.get('holdout_label_count_60m')} | {row.get('holdout_hit_rate_60m')} | {row.get('holdout_avg_signed_return_60m_bps')} |"
+                )
+
+    governance = summary.get("threshold_governance", {}) or {}
+    top_governance = governance.get("top_candidate_review", {}) or {}
+    if governance:
+        lines.extend(
+            [
+                "",
+                "### Threshold Governance",
+                "",
+                f"- Overall status: {governance.get('overall_status')}",
+                f"- Top candidate: {top_governance.get('candidate_key')}",
+                f"- Candidate status: {top_governance.get('governance_status')}",
+                f"- Config hint: {top_governance.get('config_hint')}",
+                f"- Next action: {top_governance.get('recommended_next_action')}",
+            ]
+        )
+        for reason in top_governance.get("reasons", []) or []:
+            lines.append(f"- Reason: {reason}")
 
     premium_summary = summary.get("premium_summary", {})
     if premium_summary:
@@ -869,13 +1021,13 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
                 "",
                 "## Premium Bucket Performance",
                 "",
-                "| Entry Premium Bucket | Signal Count | Avg Entry Price | 60m Hit Rate | Avg Signed Return 60m (bps) |",
-                "| --- | ---: | ---: | ---: | ---: |",
+                "| Entry Premium Bucket | Signal Count | Avg Entry Price | 60m Hit Rate | Hit Rate 95% CI | Avg Signed Return 60m (bps) | Evidence |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
             ]
         )
         for row in premium_buckets:
             lines.append(
-                f"| {row.get('premium_bucket')} | {row.get('signal_count')} | {row.get('avg_entry_price')} | {row.get('hit_rate_60m')} | {row.get('avg_signed_return_60m_bps')} |"
+                f"| {row.get('premium_bucket')} | {row.get('signal_count')} | {row.get('avg_entry_price')} | {row.get('hit_rate_60m')} | {_interval_text(row, 'hit_rate_ci_low', 'hit_rate_ci_high', percent=True)} | {row.get('avg_signed_return_60m_bps')} | {row.get('sample_quality')} |"
             )
 
     regime_breakdown = summary.get("regime_breakdown", {})
@@ -885,17 +1037,17 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
                 "",
                 f"## Regime Breakdown: {regime_name}",
                 "",
-                "| Regime | Signal Count | 60m Hit Rate | Avg Composite Score |",
-                "| --- | ---: | ---: | ---: |",
+                "| Regime | Signal Count | 60m Hit Rate | Hit Rate 95% CI | Evidence | Avg Composite Score |",
+                "| --- | ---: | ---: | ---: | --- | ---: |",
             ]
         )
         if rows:
             for row in rows:
                 lines.append(
-                    f"| {row.get(regime_name)} | {row.get('signal_count')} | {row.get('hit_rate_60m')} | {row.get('avg_composite_signal_score')} |"
+                    f"| {row.get(regime_name)} | {row.get('signal_count')} | {row.get('hit_rate_60m')} | {_interval_text(row, 'hit_rate_ci_low', 'hit_rate_ci_high', percent=True)} | {row.get('sample_quality')} | {row.get('avg_composite_signal_score')} |"
                 )
         else:
-            lines.append("| (none) | 0 |  |  |")
+            lines.append("| (none) | 0 |  |  |  |  |")
 
     # --- Information Coefficient ---
     ic_data = summary.get("information_coefficient", {})
@@ -915,12 +1067,12 @@ def render_signal_evaluation_markdown(summary: dict[str, Any]) -> str:
             "",
             "## Calibration Analysis",
             "",
-            "| Probability Bucket | Samples | Predicted Avg P | Realized Hit Rate | Calibration Gap |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Probability Bucket | Samples | Predicted Avg P | Realized Hit Rate | Hit Rate 95% CI | Calibration Gap | Evidence |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
         ])
         for row in calibration:
             lines.append(
-                f"| {row.get('probability_bucket')} | {row.get('sample_count')} | {row.get('predicted_avg_probability')} | {row.get('realized_hit_rate')} | {row.get('calibration_gap')} |"
+                f"| {row.get('probability_bucket')} | {row.get('sample_count')} | {row.get('predicted_avg_probability')} | {row.get('realized_hit_rate')} | {_interval_text(row, 'hit_rate_ci_low', 'hit_rate_ci_high', percent=True)} | {row.get('calibration_gap')} | {row.get('sample_quality')} |"
             )
 
     # --- Expected Value Metrics ---
@@ -980,6 +1132,10 @@ def _write_table_csvs(summary: dict[str, Any], base_dir: Path) -> dict[str, str]
         "data_coverage_summary": summary.get("data_coverage_summary", []),
         "calibration_analysis": summary.get("calibration_analysis", []),
         "premium_bucket_performance": summary.get("premium_bucket_performance", []),
+        "threshold_replay_candidates": summary.get("threshold_replay", {}).get("threshold_replay_candidates", []),
+        "regime_threshold_replay_candidates": summary.get("threshold_replay", {}).get("regime_threshold_replay_candidates", []),
+        "threshold_walk_forward_splits": summary.get("threshold_replay", {}).get("walk_forward_validation", {}).get("splits", []),
+        "threshold_governance_candidates": summary.get("threshold_governance", {}).get("candidate_reviews", []),
     }
     for name, rows in table_mappings.items():
         csv_path = base_dir / f"{name}.csv"
@@ -1044,6 +1200,13 @@ def write_signal_evaluation_report(
     json_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     markdown_path.write_text(render_signal_evaluation_markdown(summary), encoding="utf-8")
     csv_paths = _write_table_csvs(summary, csv_dir)
+    manifest_path = write_report_reproducibility_manifest(
+        report_path=markdown_path,
+        dataset_path=dataset_path,
+        frame=frame,
+        report_kind="signal_evaluation_report",
+        mode="summary",
+    )
 
     return {
         "report_name": report_stem,
@@ -1051,5 +1214,6 @@ def write_signal_evaluation_report(
         "summary": summary,
         "json_path": str(json_path),
         "markdown_path": str(markdown_path),
+        "manifest_path": str(manifest_path),
         "csv_paths": csv_paths,
     }

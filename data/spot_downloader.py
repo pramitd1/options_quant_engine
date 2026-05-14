@@ -83,6 +83,8 @@ def _fetch_zerodha_quote_snapshot(symbol: str, data_router) -> Optional[dict]:
                 "timestamp": pd.Timestamp.now(tz=IST_TIMEZONE).isoformat(),
                 "lookback_avg_range_pct": None,
                 "spot_source": "zerodha_quote",
+                "option_source_requested": "ZERODHA",
+                "spot_option_source_consistency": "SOURCE_NATIVE_SPOT",
             }
             snapshot["validation"] = validate_spot_snapshot(snapshot)
             return snapshot
@@ -186,6 +188,49 @@ def _to_ist_timestamp(index_value):
             pass
 
     return ts
+
+
+def _coerce_snapshot_timestamp_to_ist(value):
+    """Return (timestamp, was_naive) for snapshot freshness checks."""
+    ts = pd.Timestamp(value)
+    if pd.isna(ts):
+        raise ValueError("missing timestamp")
+    was_naive = ts.tzinfo is None
+    if was_naive:
+        ts = ts.tz_localize(IST_TIMEZONE)
+    else:
+        ts = ts.tz_convert(IST_TIMEZONE)
+    return ts, was_naive
+
+
+def _select_prev_close_from_daily(daily_hist: pd.DataFrame, latest_ts) -> Optional[float]:
+    """Select the latest completed daily close before the intraday snapshot date."""
+    if daily_hist is None or daily_hist.empty or "Close" not in daily_hist.columns:
+        return None
+
+    try:
+        latest_date = _to_ist_timestamp(latest_ts).date()
+    except Exception:
+        latest_date = pd.Timestamp(latest_ts).date()
+
+    rows = []
+    for idx, close in daily_hist["Close"].items():
+        close_value = _safe_float(close, None)
+        if close_value is None:
+            continue
+        try:
+            session_date = _to_ist_timestamp(idx).date()
+        except Exception:
+            continue
+        rows.append((session_date, close_value))
+
+    if not rows:
+        return None
+
+    prior_rows = [item for item in rows if item[0] < latest_date]
+    if prior_rows:
+        return prior_rows[-1][1]
+    return None
 
 
 
@@ -378,6 +423,12 @@ def get_spot_snapshot(
                         "timestamp": quote_fallback["timestamp"],
                         "lookback_avg_range_pct": lookback_avg_range_pct,
                         "spot_source": "quote_fallback",
+                        "option_source_requested": normalized_source or None,
+                        "spot_option_source_consistency": (
+                            "SOURCE_NATIVE_SPOT"
+                            if normalized_source in {"", "YFINANCE", "YAHOO"}
+                            else "MIXED_SPOT_OPTION_SOURCE"
+                        ),
                     }
                     snapshot["validation"] = validate_spot_snapshot(snapshot)
                     return snapshot
@@ -426,10 +477,7 @@ def get_spot_snapshot(
 
     prev_close = None
     if daily is not None and not daily.empty and "Close" in daily.columns:
-        if len(daily) >= 2:
-            prev_close = _safe_float(daily.iloc[-2]["Close"])
-        elif len(daily) == 1:
-            prev_close = _safe_float(daily.iloc[-1]["Close"])
+        prev_close = _select_prev_close_from_daily(daily, latest_ts)
 
     lookback_avg_range_pct = _compute_lookback_avg_range_pct(daily)
 
@@ -443,6 +491,13 @@ def get_spot_snapshot(
         "prev_close": round(prev_close, 4) if prev_close is not None else None,
         "timestamp": latest_ts.isoformat(),
         "lookback_avg_range_pct": lookback_avg_range_pct,
+        "spot_source": "yfinance_intraday",
+        "option_source_requested": normalized_source or None,
+        "spot_option_source_consistency": (
+            "SOURCE_NATIVE_SPOT"
+            if normalized_source in {"", "YFINANCE", "YAHOO"}
+            else "MIXED_SPOT_OPTION_SOURCE"
+        ),
     }
 
     snapshot["validation"] = validate_spot_snapshot(snapshot)
@@ -494,15 +549,25 @@ def validate_spot_snapshot(snapshot: dict, replay_mode: bool = False) -> dict:
 
     if ts_raw:
         try:
-            ts = pd.Timestamp(ts_raw)
+            ts, was_naive = _coerce_snapshot_timestamp_to_ist(ts_raw)
             now_ts = pd.Timestamp.now(tz=IST_TIMEZONE)
             age_minutes = round((now_ts - ts).total_seconds() / 60.0, 2)
+
+            if was_naive:
+                warnings.append("timestamp_assumed_ist")
+                if not replay_mode:
+                    issues.append("naive_timestamp")
+                    live_trading_valid = False
 
             market_open = now_ts.replace(hour=9, minute=15, second=0, microsecond=0)
             market_close = now_ts.replace(hour=15, minute=30, second=0, microsecond=0)
             in_market_hours = market_open <= now_ts <= market_close
 
             stale_limit = 20 if in_market_hours else 180
+            future_skew_limit = 2.0
+            if age_minutes < -future_skew_limit:
+                live_trading_valid = False
+                issues.append(f"future_spot_snapshot_{abs(age_minutes)}m")
             is_stale = age_minutes > stale_limit
 
             if is_stale:
@@ -513,10 +578,12 @@ def validate_spot_snapshot(snapshot: dict, replay_mode: bool = False) -> dict:
                     issues.append(f"stale_spot_snapshot_{age_minutes}m")
         except Exception:
             warnings.append("timestamp_parse_failed")
+            issues.append("timestamp_parse_failed")
+            live_trading_valid = False
     else:
         warnings.append("missing_timestamp")
-        if replay_mode:
-            live_trading_valid = False
+        issues.append("missing_timestamp")
+        live_trading_valid = False
 
     replay_analysis_valid = len([issue for issue in issues if not str(issue).startswith("stale_spot_snapshot_")]) == 0
     is_valid = replay_analysis_valid if replay_mode else len(issues) == 0

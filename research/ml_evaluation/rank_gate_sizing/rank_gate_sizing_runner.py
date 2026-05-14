@@ -48,6 +48,7 @@ from research.decision_policy.policy_config import (
     SESSION_RETURN_COL,
 )
 from research.decision_policy.policy_engine import apply_policies
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +152,12 @@ def _prepare_dataset() -> pd.DataFrame:
     """Load dataset, ensure ML columns, apply existing policies for comparison."""
     df = _load_dataset()
     df = _ensure_ml_columns(df)
+    quality_summary = label_quality_summary(df)
 
     # Apply existing policies (dual_threshold, rank_filter_30pct, etc.)
     df = apply_policies(df)
+    df = apply_quality_label_view(df)
+    df.attrs["label_quality_summary"] = quality_summary
 
     # Parse year
     if "signal_timestamp" in df.columns:
@@ -707,6 +711,7 @@ def run_rank_gate_sizing_evaluation() -> dict[str, Any]:
     # 1. Load & prepare
     print("\n[1/7] Loading dataset …")
     df = _prepare_dataset()
+    quality_summary = df.attrs.get("label_quality_summary", label_quality_summary(df))
     print(f"  Dataset: {len(df):,} signals, {len(df.columns)} columns")
 
     # 2. Apply rank-gate + sizing
@@ -794,6 +799,7 @@ def run_rank_gate_sizing_evaluation() -> dict[str, Any]:
     results = {
         "evaluation_date": datetime.now().isoformat(),
         "dataset_size": len(df),
+        "label_quality_summary": quality_summary,
         "rank_gate_percentiles": RANK_GATE_PERCENTILES,
         "sizing_tiers": [{"lo": lo, "hi": hi, "mult": mult, "label": label}
                          for lo, hi, mult, label in SIZING_TIERS],

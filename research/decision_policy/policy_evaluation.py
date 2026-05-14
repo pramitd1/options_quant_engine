@@ -47,6 +47,7 @@ from research.decision_policy.policy_config import (
     SIZING_TIERS,
 )
 from research.decision_policy.policy_engine import apply_policies
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
 
 logger = logging.getLogger(__name__)
 
@@ -101,23 +102,25 @@ def run_decision_policy_evaluation() -> dict[str, Any]:
 
     # 2. Apply policies
     annotated = apply_policies(df)
+    evaluation_frame = apply_quality_label_view(annotated)
 
     # 3. Per-policy metrics
-    policy_metrics = _compute_all_policy_metrics(annotated)
+    policy_metrics = _compute_all_policy_metrics(evaluation_frame)
 
     # 4. Regime analysis
-    regime_analysis = _compute_regime_analysis(annotated)
+    regime_analysis = _compute_regime_analysis(evaluation_frame)
 
     # 5. Yearly stability
-    yearly = _compute_yearly_stability(annotated)
+    yearly = _compute_yearly_stability(evaluation_frame)
 
     # 6. Cross-methodology comparison
-    comparison = _build_cross_methodology_comparison(annotated, policy_metrics)
+    comparison = _build_cross_methodology_comparison(evaluation_frame, policy_metrics)
 
     # 7. Master report
     report: dict[str, Any] = {
         "evaluation_date": datetime.now().isoformat(),
         "dataset_size": len(df),
+        "label_quality_summary": label_quality_summary(df),
         "policy_metrics": policy_metrics,
         "regime_analysis": regime_analysis,
         "yearly_stability": yearly,

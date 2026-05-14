@@ -26,6 +26,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from research.signal_evaluation.label_quality import apply_quality_label_view, label_quality_summary
+
 logger = logging.getLogger(__name__)
 
 BACKTEST_PARQUET = (
@@ -197,8 +199,9 @@ def run_engine_evaluation() -> dict:
 
     Returns summary dict and writes JSON report.
     """
-    df = _load_dataset()
-    logger.info("Loaded %d rows", len(df))
+    raw_df = _load_dataset()
+    logger.info("Loaded %d rows", len(raw_df))
+    df = apply_quality_label_view(raw_df)
 
     # Identify rows with valid outcomes and predictions
     prob_cols = ["hybrid_move_probability", "rule_move_probability", "ml_move_probability"]
@@ -276,6 +279,7 @@ def run_engine_evaluation() -> dict:
         "evaluation_date": datetime.now().isoformat(),
         "dataset_rows": int(len(df)),
         "rows_with_outcomes": int(len(valid)),
+        "label_quality_summary": label_quality_summary(raw_df),
         "predictors": results,
         "yearly_stability": yearly,
     }

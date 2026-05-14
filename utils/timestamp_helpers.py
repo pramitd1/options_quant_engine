@@ -9,6 +9,42 @@ from __future__ import annotations
 import pandas as pd
 
 
+def coerce_timestamp_series(values, *, utc: bool | None = None) -> pd.Series:
+    """Parse timestamp-like values with pandas' mixed-format parser.
+
+    Signal datasets have historically mixed ISO strings, timezone offsets, and
+    space-separated timestamps in the same column.  Plain ``pd.to_datetime`` can
+    infer one format from the first row and silently coerce later valid rows to
+    ``NaT``; this helper keeps report/evaluation timestamp handling consistent.
+    """
+    index = getattr(values, "index", None)
+    kwargs = {"errors": "coerce", "format": "mixed"}
+    if utc is not None:
+        kwargs["utc"] = utc
+
+    try:
+        parsed = pd.to_datetime(values, **kwargs)
+    except (TypeError, ValueError):
+        fallback_kwargs = {"errors": "coerce", "format": "mixed", "utc": True if utc is None else utc}
+        try:
+            parsed = pd.to_datetime(values, **fallback_kwargs)
+        except (TypeError, ValueError):
+            fallback_kwargs.pop("format", None)
+            try:
+                parsed = pd.to_datetime(values, **fallback_kwargs)
+            except (TypeError, ValueError):
+                parsed = pd.to_datetime(values, errors="coerce", format="mixed", utc=True)
+
+    if isinstance(parsed, pd.Series):
+        result = parsed
+    else:
+        result = pd.Series(parsed, index=index)
+
+    if not hasattr(result, "dt"):
+        result = pd.Series(pd.to_datetime(values, errors="coerce", format="mixed", utc=True), index=index)
+    return result
+
+
 def coerce_timestamp(value, *, tz: str | None = None, fallback=None):
     """Parse *value* into a timezone-aware ``pd.Timestamp``.
 

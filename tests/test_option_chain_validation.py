@@ -369,6 +369,67 @@ class OptionChainValidationTests(unittest.TestCase):
             })
         return pd.DataFrame(rows)
 
+    def _assert_matches_validation_schema(self, result):
+        reference = validate_option_chain(self._make_full_chain(), spot=22500)
+        self.assertEqual(set(result.keys()), set(reference.keys()))
+        self.assertEqual(set(result["provider_health"].keys()), set(reference["provider_health"].keys()))
+        self.assertIn("feature_reliability_weights", result)
+        self.assertIn("market_data_readiness_score", result)
+        self.assertIn("market_data_readiness_tier", result)
+        self.assertIn("tradable_data", result)
+
+    def test_unusable_option_chain_returns_full_validation_schema(self):
+        cases = [
+            (None, "option_chain_none"),
+            (pd.DataFrame(), "option_chain_empty"),
+            (["bad row"], "option_chain_invalid_type:list"),
+        ]
+
+        for chain, expected_issue in cases:
+            with self.subTest(expected_issue=expected_issue):
+                result = validate_option_chain(chain, spot=22500)
+
+                self._assert_matches_validation_schema(result)
+                self.assertFalse(result["is_valid"])
+                self.assertFalse(result["analytics_usable"])
+                self.assertFalse(result["execution_suggestion_usable"])
+                self.assertFalse(result["is_stale"])
+                self.assertIn(expected_issue, result["issues"])
+                self.assertEqual(result["provider_health"]["summary_status"], "WEAK")
+                self.assertEqual(result["provider_health"]["trade_blocking_status"], "BLOCK")
+                self.assertIn(expected_issue, result["provider_health"]["trade_blocking_reasons"])
+                self.assertEqual(result["market_data_readiness_score"], 0.0)
+                self.assertEqual(result["market_data_readiness_tier"], "FRAGILE")
+                self.assertEqual(
+                    result["provider_health"]["market_data_readiness_score"],
+                    result["market_data_readiness_score"],
+                )
+
+    def test_malformed_non_empty_chain_keeps_full_validation_schema(self):
+        cases = [
+            pd.DataFrame({"unexpected": [1, 2, 3]}),
+            pd.DataFrame(
+                {
+                    "strikePrice": [None, None, None],
+                    "OPTION_TYP": [None, None, None],
+                    "lastPrice": [None, None, None],
+                    "bidPrice": [None, None, None],
+                    "askPrice": [None, None, None],
+                }
+            ),
+        ]
+
+        for chain in cases:
+            with self.subTest(columns=list(chain.columns)):
+                result = validate_option_chain(chain, spot=22500)
+
+                self._assert_matches_validation_schema(result)
+                self.assertFalse(result["is_valid"])
+                self.assertEqual(result["provider_health"]["summary_status"], "WEAK")
+                self.assertEqual(result["provider_health"]["trade_blocking_status"], "BLOCK")
+                self.assertIsNone(result["selected_expiry"])
+                self.assertIn(result["market_data_readiness_tier"], {"FRAGILE", "LOW"})
+
     def test_atm_iv_health_good_when_both_legs_present_and_in_range(self):
         """Full chain with IV=18.5/19.0 (percent form) → ATM both legs present,
         normalises to ~0.185/0.190, within 4%–150% → GOOD."""

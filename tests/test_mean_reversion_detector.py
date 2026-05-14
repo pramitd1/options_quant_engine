@@ -39,6 +39,24 @@ def test_get_mean_reversion_features_for_trade_uses_historical_close_price_axis(
     assert 0.0 <= features["mean_reversion_strength"] <= 100.0
 
 
+def test_get_mean_reversion_features_for_trade_does_not_fetch_live_history_when_disallowed(monkeypatch):
+    import analytics.mean_reversion_detector as mrd
+
+    def _raise_if_called(*args, **kwargs):
+        raise AssertionError("live history fetch should not be called")
+
+    monkeypatch.setattr(mrd, "get_recent_spot_history", _raise_if_called)
+
+    features = mrd.get_mean_reversion_features_for_trade(
+        "NIFTY",
+        100.5,
+        allow_live_history=False,
+    )
+
+    assert features["mean_reversion_signal"] == "INSUFFICIENT_DATA"
+    assert features["mean_reversion_reason"] == "mean_reversion_history_not_supplied_for_historical_mode"
+
+
 def test_compute_mean_reversion_features_handles_insufficient_history():
     features = compute_mean_reversion_features([])
     assert features["mean_reversion_signal"] == "INSUFFICIENT_DATA"
