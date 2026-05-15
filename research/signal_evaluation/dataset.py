@@ -52,6 +52,7 @@ SIGNAL_DATASET_COLUMNS = [
     "market_data_provenance_warnings",
     "market_data_provenance_issues",
     "mode",
+    "parameter_pack_name",
     "symbol",
     "ticker",
     "selected_expiry",

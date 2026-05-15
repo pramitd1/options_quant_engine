@@ -69,7 +69,11 @@ DEFAULT_POST_PROMOTION_POLICY: dict[str, Any] = {
     "watch_true_positive_lost_count": 1,
     "max_true_positive_lost_count": 2,
     "max_true_positive_loss_rate": 0.20,
+    "watch_true_positive_lost_increase_count": 1,
+    "max_true_positive_lost_increase_count": 2,
+    "max_true_positive_loss_rate_increase": 0.05,
     "min_false_positive_removal_rate": 0.40,
+    "min_avoided_suppressed_return_bps": 0.0,
     "min_segment_labels": 10,
     "min_segment_retained_avg_return_bps": 0.0,
     "min_segment_hit_rate": 0.45,
@@ -263,6 +267,8 @@ def _suppression_summary(retained: pd.DataFrame, suppressed: pd.DataFrame, *, el
     suppressed_ret = pd.to_numeric(suppressed.get("signed_return_60m_bps", pd.Series(dtype=float)), errors="coerce").dropna()
     false_positive_removed = int((suppressed_hit < 0.5).sum())
     true_positive_lost = int((suppressed_hit >= 0.5).sum())
+    negative_return_removed = int((suppressed_ret <= 0).sum())
+    positive_return_lost = int((suppressed_ret > 0).sum())
     suppressed_label_count = int(suppressed_hit.count())
     return {
         "eligible_signal_count": int(eligible_count),
@@ -276,12 +282,15 @@ def _suppression_summary(retained: pd.DataFrame, suppressed: pd.DataFrame, *, el
         "true_positive_lost_count": true_positive_lost,
         "false_positive_retained_count": int((retained_hit < 0.5).sum()),
         "true_positive_retained_count": int((retained_hit >= 0.5).sum()),
+        "negative_return_removed_count": negative_return_removed,
+        "positive_return_lost_count": positive_return_lost,
         "false_positive_removal_rate": _round_or_none(false_positive_removed / max(suppressed_label_count, 1), 4)
         if suppressed_label_count
         else None,
         "true_positive_loss_rate": _round_or_none(true_positive_lost / max(suppressed_label_count, 1), 4)
         if suppressed_label_count
         else None,
+        "avoided_suppressed_return_bps": _round_or_none(-suppressed_ret.sum(), 4) if not suppressed_ret.empty else None,
         "avg_suppressed_return_60m_bps": _round_or_none(suppressed_ret.mean(), 4) if not suppressed_ret.empty else None,
     }
 
@@ -334,21 +343,43 @@ def _segment_rows(
             )
             summary = _suppression_summary(retained, suppressed, eligible_count=eligible_count)
             retained_labels = _safe_int(retained_metrics.get("label_count_60m"))
-            if retained_labels < int(policy["min_segment_labels"]) and _safe_int(summary.get("suppressed_label_count_60m")) < int(policy["min_segment_labels"]):
+            suppressed_labels = _safe_int(summary.get("suppressed_label_count_60m"))
+            retained_avg_return = _safe_float(retained_metrics.get("avg_signed_return_60m_bps"))
+            retained_hit_rate = _safe_float(retained_metrics.get("hit_rate_60m"))
+            false_positive_removal_rate = _safe_float(summary.get("false_positive_removal_rate"))
+            true_positive_lost = _safe_int(summary.get("true_positive_lost_count"))
+            suppressed_avg_return = _safe_float(summary.get("avg_suppressed_return_60m_bps"))
+            retained_return_bad = (
+                retained_avg_return is not None
+                and retained_avg_return < float(policy["min_segment_retained_avg_return_bps"])
+            )
+            retained_hit_bad = (
+                retained_hit_rate is not None
+                and retained_hit_rate < float(policy["min_segment_hit_rate"])
+            )
+            weak_false_positive_filter = (
+                suppressed_labels >= int(policy["min_segment_labels"])
+                and false_positive_removal_rate is not None
+                and false_positive_removal_rate < float(policy["min_false_positive_removal_rate"])
+            )
+            harmful_segment_suppression = (
+                true_positive_lost > int(policy["max_segment_true_positive_lost_count"])
+                and suppressed_avg_return is not None
+                and suppressed_avg_return > 0
+                and (retained_avg_return is None or retained_avg_return < float(policy["min_segment_retained_avg_return_bps"]))
+            )
+            if retained_labels < int(policy["min_segment_labels"]) and suppressed_labels < int(policy["min_segment_labels"]):
                 segment_status = "INSUFFICIENT_SEGMENT_DATA"
-            elif (
-                _safe_int(summary.get("true_positive_lost_count")) > int(policy["max_segment_true_positive_lost_count"])
-                or (
-                    _safe_float(retained_metrics.get("avg_signed_return_60m_bps")) is not None
-                    and float(retained_metrics["avg_signed_return_60m_bps"]) < float(policy["min_segment_retained_avg_return_bps"])
+            elif retained_labels < int(policy["min_segment_labels"]):
+                segment_status = (
+                    "WATCH"
+                    if weak_false_positive_filter
+                    or (suppressed_avg_return is not None and suppressed_avg_return > 0)
+                    else "INSUFFICIENT_SEGMENT_DATA"
                 )
-                or (
-                    _safe_float(retained_metrics.get("hit_rate_60m")) is not None
-                    and float(retained_metrics["hit_rate_60m"]) < float(policy["min_segment_hit_rate"])
-                )
-            ):
+            elif retained_return_bad or (retained_hit_bad and (retained_avg_return is None or retained_return_bad)):
                 segment_status = "DETERIORATING"
-            elif _safe_int(summary.get("true_positive_lost_count")) > 0:
+            elif weak_false_positive_filter or harmful_segment_suppression:
                 segment_status = "WATCH"
             else:
                 segment_status = "PASS"
@@ -415,9 +446,11 @@ def _skip_report(
             "post_approval_retained_metrics": {},
             "post_approval_suppressed_metrics": {},
             "post_approval_retained_vs_baseline_delta": {},
+            "guardrail_summary": {},
             "shadow_expectation": {},
             "drift_from_shadow_expectation": {},
             "segment_monitoring": [],
+            "segment_summary": {},
         }
     )
 
@@ -523,6 +556,21 @@ def build_threshold_post_promotion_monitor_report(
             shadow_impact,
             "false_positive_removal_rate",
         ),
+        "true_positive_loss_rate_delta_vs_shadow": _metric_delta(
+            impact,
+            shadow_impact,
+            "true_positive_loss_rate",
+        ),
+        "avoided_suppressed_return_delta_bps_vs_shadow": _metric_delta(
+            impact,
+            shadow_impact,
+            "avoided_suppressed_return_bps",
+        ),
+        "avg_suppressed_return_delta_bps_vs_shadow": _metric_delta(
+            impact,
+            shadow_impact,
+            "avg_suppressed_return_60m_bps",
+        ),
     }
     segment_rows = _segment_rows(
         post_frame,
@@ -550,7 +598,29 @@ def build_threshold_post_promotion_monitor_report(
     hit_rate_drop = _safe_float(drift.get("retained_hit_rate_delta_vs_shadow"))
     true_positive_lost = _safe_int(impact.get("true_positive_lost_count"))
     true_positive_loss_rate = _safe_float(impact.get("true_positive_loss_rate"))
+    true_positive_lost_delta = _safe_int(drift.get("true_positive_lost_delta_vs_shadow"))
+    true_positive_loss_rate_delta = _safe_float(drift.get("true_positive_loss_rate_delta_vs_shadow"))
     false_positive_removal_rate = _safe_float(impact.get("false_positive_removal_rate"))
+    avoided_return = _safe_float(impact.get("avoided_suppressed_return_bps"))
+    avg_suppressed_return = _safe_float(impact.get("avg_suppressed_return_60m_bps"))
+    true_positive_loss_is_harmful = (
+        (avoided_return is None or avoided_return < float(rules["min_avoided_suppressed_return_bps"]))
+        or (avg_suppressed_return is not None and avg_suppressed_return > 0)
+    )
+    true_positive_loss_deteriorated = true_positive_loss_is_harmful and (
+        true_positive_lost_delta > int(rules["max_true_positive_lost_increase_count"])
+        or (
+            true_positive_loss_rate_delta is not None
+            and true_positive_loss_rate_delta > float(rules["max_true_positive_loss_rate_increase"])
+        )
+    )
+    true_positive_loss_watch = true_positive_loss_is_harmful and (
+        true_positive_lost_delta >= int(rules["watch_true_positive_lost_increase_count"])
+        or (
+            true_positive_loss_rate_delta is not None
+            and true_positive_loss_rate_delta > 0
+        )
+    )
 
     if retained_labels < int(rules["min_post_approval_labels"]) or post_days < int(rules["min_post_approval_signal_days"]):
         status = POST_PROMOTION_INSUFFICIENT_DATA
@@ -558,8 +628,7 @@ def build_threshold_post_promotion_monitor_report(
             f"Post-approval evidence is still small: retained labels {retained_labels}, signal days {post_days}."
         )
     elif (
-        true_positive_lost > int(rules["max_true_positive_lost_count"])
-        or (true_positive_loss_rate is not None and true_positive_loss_rate > float(rules["max_true_positive_loss_rate"]))
+        true_positive_loss_deteriorated
         or (avg_return_drop is not None and avg_return_drop < -float(rules["max_retained_avg_return_drop_bps"]))
         or (hit_rate_drop is not None and hit_rate_drop < -float(rules["max_hit_rate_drop"]))
         or deteriorating_segments > int(rules["max_deteriorating_segment_count"])
@@ -567,11 +636,10 @@ def build_threshold_post_promotion_monitor_report(
         status = POST_PROMOTION_DETERIORATING
         reasons.append("Post-approval evidence breached deterioration guardrails versus the promotion package.")
     elif (
-        true_positive_lost >= int(rules["watch_true_positive_lost_count"])
+        true_positive_loss_watch
         or (avg_return_drop is not None and avg_return_drop < -float(rules["watch_retained_avg_return_drop_bps"]))
         or (hit_rate_drop is not None and hit_rate_drop < -float(rules["watch_hit_rate_drop"]))
         or (suppressed_labels >= int(rules["min_suppressed_labels"]) and false_positive_removal_rate is not None and false_positive_removal_rate < float(rules["min_false_positive_removal_rate"]))
-        or watch_segments > int(rules["max_watch_segment_count"])
     ):
         status = POST_PROMOTION_WATCH
         reasons.append("Post-approval evidence is usable but weaker than the original shadow evidence.")
@@ -579,6 +647,22 @@ def build_threshold_post_promotion_monitor_report(
         status = POST_PROMOTION_HEALTHY
         reasons.append("Post-approval evidence remains consistent with the approved shadow promotion package.")
 
+    guardrails = {
+        "retained_label_count_60m": retained_labels,
+        "suppressed_label_count_60m": suppressed_labels,
+        "true_positive_lost_count": true_positive_lost,
+        "true_positive_lost_delta_vs_shadow": true_positive_lost_delta,
+        "true_positive_loss_rate": true_positive_loss_rate,
+        "true_positive_loss_rate_delta_vs_shadow": true_positive_loss_rate_delta,
+        "false_positive_removal_rate": false_positive_removal_rate,
+        "avoided_suppressed_return_bps": avoided_return,
+        "avg_suppressed_return_60m_bps": avg_suppressed_return,
+        "true_positive_loss_interpretation": "economic_opportunity_cost"
+        if not true_positive_loss_is_harmful
+        else "harmful_suppression",
+        "deteriorating_segment_count": deteriorating_segments,
+        "watch_segment_count": watch_segments,
+    }
     report = {
         "report_type": "threshold_post_promotion_monitor",
         "generated_at": _utc_now(),
@@ -603,6 +687,7 @@ def build_threshold_post_promotion_monitor_report(
         "post_approval_retained_metrics": retained_metrics,
         "post_approval_suppressed_metrics": suppressed_metrics,
         "post_approval_retained_vs_baseline_delta": retained_vs_baseline,
+        "guardrail_summary": guardrails,
         "shadow_expectation": {
             "impact_summary": shadow_impact,
             "retained_metrics": shadow_retained,
@@ -627,6 +712,7 @@ def render_threshold_post_promotion_monitor_markdown(report: dict[str, Any]) -> 
     retained = report.get("post_approval_retained_metrics", {}) or {}
     shadow = (report.get("shadow_expectation", {}) or {}).get("retained_metrics", {}) or {}
     drift = report.get("drift_from_shadow_expectation", {}) or {}
+    guardrails = report.get("guardrail_summary", {}) or {}
     segment_summary = report.get("segment_summary", {}) or {}
     lines = [
         "# Threshold Post-Promotion Monitor",
@@ -666,6 +752,18 @@ def render_threshold_post_promotion_monitor_markdown(report: dict[str, Any]) -> 
             f"| Retained avg return (bps) | {shadow.get('avg_signed_return_60m_bps')} | {retained.get('avg_signed_return_60m_bps')} | {drift.get('retained_avg_return_delta_bps_vs_shadow')} |",
             f"| False positives removed | {(report.get('shadow_expectation', {}) or {}).get('impact_summary', {}).get('false_positive_removed_count')} | {impact.get('false_positive_removed_count')} | {drift.get('false_positive_removed_delta_vs_shadow')} |",
             f"| True positives lost | {(report.get('shadow_expectation', {}) or {}).get('impact_summary', {}).get('true_positive_lost_count')} | {impact.get('true_positive_lost_count')} | {drift.get('true_positive_lost_delta_vs_shadow')} |",
+            f"| True-positive loss rate | {(report.get('shadow_expectation', {}) or {}).get('impact_summary', {}).get('true_positive_loss_rate')} | {impact.get('true_positive_loss_rate')} | {drift.get('true_positive_loss_rate_delta_vs_shadow')} |",
+            f"| Avoided suppressed return (bps) | {(report.get('shadow_expectation', {}) or {}).get('impact_summary', {}).get('avoided_suppressed_return_bps')} | {impact.get('avoided_suppressed_return_bps')} | {drift.get('avoided_suppressed_return_delta_bps_vs_shadow')} |",
+            "",
+            "## Guardrails",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| True-positive interpretation | {guardrails.get('true_positive_loss_interpretation')} |",
+            f"| False-positive removal rate | {guardrails.get('false_positive_removal_rate')} |",
+            f"| Avg suppressed return (bps) | {guardrails.get('avg_suppressed_return_60m_bps')} |",
+            f"| Deteriorating segments | {guardrails.get('deteriorating_segment_count')} |",
+            f"| Watch segments | {guardrails.get('watch_segment_count')} |",
             "",
             "## Segment Summary",
             "",

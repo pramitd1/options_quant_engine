@@ -20,7 +20,10 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 import pandas as pd
 
-from research.signal_evaluation.threshold_replay import build_threshold_replay_summary
+from research.signal_evaluation.threshold_replay import (
+    build_threshold_replay_summary,
+    run_fixed_threshold_walk_forward_validation,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,11 +49,13 @@ REVIEW_ACTIONS = {
 
 DEFAULT_GOVERNANCE_POLICY: dict[str, Any] = {
     "min_candidate_labels": 30,
+    "min_candidate_signal_dates": 3,
     "min_walk_forward_splits": 3,
     "min_positive_holdout_rate": 0.60,
     "min_avg_holdout_return_bps": 0.0,
     "max_worst_holdout_return_bps": -30.0,
     "max_drawdown_bps": -150.0,
+    "adaptive_walk_forward_split_count": 4,
     "top_n_candidates": 10,
 }
 
@@ -177,6 +182,7 @@ def classify_threshold_candidate(
     candidate = candidate or {}
     walk_forward_summary = walk_forward_summary or {}
     label_count = _safe_int(candidate.get("label_count_60m"))
+    signal_dates = _safe_int(candidate.get("distinct_signal_dates"))
     objective = _safe_float(candidate.get("objective_score"))
     sample_quality = str(candidate.get("sample_quality") or "NO_EVIDENCE")
     stability = str(candidate.get("stability_status") or "UNKNOWN")
@@ -192,6 +198,11 @@ def classify_threshold_candidate(
         status = REJECT_INSUFFICIENT_EVIDENCE
         reasons.append(
             f"Candidate labels {label_count} below minimum {int(rules['min_candidate_labels'])} or objective unavailable."
+        )
+    elif signal_dates < int(rules["min_candidate_signal_dates"]):
+        status = REJECT_INSUFFICIENT_EVIDENCE
+        reasons.append(
+            f"Candidate appears on only {signal_dates} signal date(s); minimum is {int(rules['min_candidate_signal_dates'])}."
         )
     elif stability == "HOLDOUT_DECAY":
         status = REJECT_UNSTABLE
@@ -250,9 +261,35 @@ def classify_threshold_candidate(
         "threshold_value": threshold_value,
         "config_hint": CONFIG_HINTS.get(str(threshold_field), "research_only.unmapped_threshold"),
         "candidate": candidate,
+        "candidate_walk_forward_summary": walk_forward_summary,
         "requires_manual_review": status in {PROMOTE_TO_REVIEW, WATCHLIST},
         "runtime_config_changed": False,
     }
+
+
+def _candidate_walk_forward_summary(
+    frame: pd.DataFrame | None,
+    candidate: dict[str, Any],
+    *,
+    policy: dict[str, Any],
+    fallback_summary: dict[str, Any],
+) -> dict[str, Any]:
+    if frame is None or frame.empty:
+        return fallback_summary
+    threshold_field = candidate.get("threshold_field")
+    if not threshold_field:
+        return fallback_summary
+    validation = run_fixed_threshold_walk_forward_validation(
+        frame,
+        threshold_field=str(threshold_field),
+        threshold_value=candidate.get("threshold_value"),
+        min_train_labels=int(policy["min_candidate_labels"]),
+        min_holdout_labels=max(10, int(int(policy["min_candidate_labels"]) / 3)),
+        adaptive_split_count=int(policy["adaptive_walk_forward_split_count"]),
+    )
+    summary = validation.get("summary", {}) or {}
+    summary["validation_type"] = "fixed_candidate_threshold"
+    return summary
 
 
 def build_threshold_governance_report(
@@ -268,10 +305,21 @@ def build_threshold_governance_report(
     candidates = list(summary.get("threshold_replay_candidates", []) or [])
     top_n = int(rules["top_n_candidates"])
     walk_forward_summary = (summary.get("walk_forward_validation", {}) or {}).get("summary", {}) or {}
-    reviews = [
-        classify_threshold_candidate(candidate, walk_forward_summary=walk_forward_summary, policy=rules)
-        for candidate in candidates[:top_n]
-    ]
+    reviews = []
+    for candidate in candidates[:top_n]:
+        candidate_walk_forward = _candidate_walk_forward_summary(
+            frame,
+            candidate,
+            policy=rules,
+            fallback_summary=walk_forward_summary,
+        )
+        reviews.append(
+            classify_threshold_candidate(
+                candidate,
+                walk_forward_summary=candidate_walk_forward,
+                policy=rules,
+            )
+        )
 
     if any(row["governance_status"] == PROMOTE_TO_REVIEW for row in reviews):
         overall_status = PROMOTE_TO_REVIEW
@@ -305,6 +353,7 @@ def render_threshold_governance_markdown(report: dict[str, Any]) -> str:
     """Render threshold governance as Markdown."""
     top = report.get("top_candidate_review", {}) or {}
     walk = report.get("walk_forward_summary", {}) or {}
+    candidate_walk = top.get("candidate_walk_forward_summary", {}) or {}
     lines = [
         "# Threshold Governance Review",
         "",
@@ -331,23 +380,38 @@ def render_threshold_governance_markdown(report: dict[str, Any]) -> str:
             "",
             "## Walk-Forward Summary",
             "",
+            "### Selection Walk-Forward",
+            "",
             f"- Robustness status: {walk.get('robustness_status')}",
+            f"- Split strategy: {walk.get('split_strategy')}",
             f"- Evaluated splits: {walk.get('evaluated_split_count')} / {walk.get('split_count')}",
             f"- Positive holdout rate: {walk.get('positive_holdout_rate')}",
             f"- Avg holdout return 60m (bps): {walk.get('avg_holdout_return_60m_bps')}",
             f"- Worst holdout return 60m (bps): {walk.get('worst_holdout_return_60m_bps')}",
             "",
+            "### Top Candidate Fixed-Threshold Walk-Forward",
+            "",
+            f"- Robustness status: {candidate_walk.get('robustness_status')}",
+            f"- Split strategy: {candidate_walk.get('split_strategy')}",
+            f"- Evaluated splits: {candidate_walk.get('evaluated_split_count')} / {candidate_walk.get('split_count')}",
+            f"- Positive holdout rate: {candidate_walk.get('positive_holdout_rate')}",
+            f"- Avg holdout return 60m (bps): {candidate_walk.get('avg_holdout_return_60m_bps')}",
+            f"- Worst holdout return 60m (bps): {candidate_walk.get('worst_holdout_return_60m_bps')}",
+            "",
             "## Candidate Review Queue",
             "",
-            "| Candidate | Status | Labels | Objective | Config Hint | Next Action |",
-            "| --- | --- | ---: | ---: | --- | --- |",
+            "| Candidate | Status | Labels | Dates | WF Splits | Objective | Config Hint | Next Action |",
+            "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
         ]
     )
     for row in report.get("candidate_reviews", []) or []:
         candidate = row.get("candidate", {}) or {}
+        candidate_wf = row.get("candidate_walk_forward_summary", {}) or {}
         lines.append(
             f"| {row.get('candidate_key')} | {row.get('governance_status')} | "
-            f"{candidate.get('label_count_60m')} | {candidate.get('objective_score')} | "
+            f"{candidate.get('label_count_60m')} | {candidate.get('distinct_signal_dates')} | "
+            f"{candidate_wf.get('evaluated_split_count')} / {candidate_wf.get('split_count')} | "
+            f"{candidate.get('objective_score')} | "
             f"{row.get('config_hint')} | {row.get('recommended_next_action')} |"
         )
 

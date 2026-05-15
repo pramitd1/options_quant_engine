@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     dataset_path = args.dataset or _default_dataset_path()
-    frame = pd.read_csv(dataset_path)
+    frame = pd.read_csv(dataset_path, low_memory=False)
     artifact = write_threshold_governance_report(
         frame,
         dataset_path=str(dataset_path),

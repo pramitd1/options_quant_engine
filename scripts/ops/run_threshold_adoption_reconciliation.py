@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research.signal_evaluation.threshold_adoption_reconciliation import (  # noqa: E402
+    ADOPTED_MANUALLY,
     DEFAULT_POST_PROMOTION_MONITOR_REPORT_PATH,
     DEFAULT_PROMOTION_REVIEW_LEDGER_PATH,
     DEFAULT_PROMOTION_REVIEW_REPORT_PATH,
@@ -41,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_THRESHOLD_ADOPTION_RECONCILIATION_DIR)
     parser.add_argument("--report-name", default=None)
     parser.add_argument("--candidate-key", default=None)
+    parser.add_argument(
+        "--require-adopted",
+        action="store_true",
+        help="Exit with status 2 unless the approved threshold resolves as ADOPTED_MANUALLY.",
+    )
     return parser
 
 
@@ -64,7 +70,12 @@ def main() -> int:
         report_name=args.report_name,
         write_latest=True,
     )
-    print(json.dumps({key: value for key, value in artifact.items() if key != "report"}, indent=2, sort_keys=True))
+    payload = {key: value for key, value in artifact.items() if key != "report"}
+    payload["adoption_status"] = artifact["report"].get("adoption_status")
+    payload["runtime_config_changed"] = artifact["report"].get("runtime_config_changed")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if args.require_adopted and artifact["report"].get("adoption_status") != ADOPTED_MANUALLY:
+        return 2
     return 0
 
 

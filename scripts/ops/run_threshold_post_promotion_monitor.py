@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     dataset_path = args.dataset or _default_dataset_path()
-    frame = pd.read_csv(dataset_path)
+    frame = pd.read_csv(dataset_path, low_memory=False)
     promotion_package = (
         json.loads(args.promotion_package.read_text(encoding="utf-8"))
         if args.promotion_package.exists()

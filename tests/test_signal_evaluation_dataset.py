@@ -19,6 +19,7 @@ from research.signal_evaluation.evaluator import (
     save_signal_evaluation,
     update_signal_dataset_outcomes,
 )
+from research.signal_evaluation.market_data import _stitch_saved_spot_snapshots
 from research.signal_evaluation.policy import (
     CAPTURE_POLICY_ACTIONABLE,
     CAPTURE_POLICY_ALL,
@@ -258,6 +259,30 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(len(str(row_a["regime_fingerprint_id"])), 16)
         self.assertEqual(row_a["signal_calibration_bucket"], "80_100")
 
+    def test_build_row_disambiguates_parameter_pack_traceability(self):
+        baseline_result = self._sample_result()
+        candidate_result = self._sample_result()
+        baseline_result["trade"] = dict(baseline_result["trade"])
+        candidate_result["trade"] = dict(candidate_result["trade"])
+        baseline_result["trade"]["parameter_pack_name"] = "baseline_v1"
+        candidate_result["trade"]["parameter_pack_name"] = "candidate_v1"
+
+        baseline_row = build_signal_evaluation_row(baseline_result)
+        candidate_row = build_signal_evaluation_row(candidate_result)
+
+        self.assertNotEqual(baseline_row["signal_id"], candidate_row["signal_id"])
+        self.assertEqual(baseline_row["parameter_pack_name"], "baseline_v1")
+        self.assertEqual(candidate_row["parameter_pack_name"], "candidate_v1")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset_path = Path(tmp_dir) / "signals_dataset.csv"
+            save_signal_evaluation(baseline_result, dataset_path=dataset_path)
+            save_signal_evaluation(candidate_result, dataset_path=dataset_path)
+
+            frame = load_signals_dataset(dataset_path)
+            self.assertEqual(len(frame), 2)
+            self.assertSetEqual(set(frame["parameter_pack_name"]), {"baseline_v1", "candidate_v1"})
+
     def test_regime_fingerprint_is_deterministic(self):
         trade = self._sample_result()["trade"]
         provider_health = self._sample_result()["option_chain_validation"]["provider_health"]
@@ -493,6 +518,27 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertFalse(enriched["calibration_label_available"])
         self.assertIn(enriched["label_quality_status"], {"PENDING", "PARTIAL"})
         self.assertIn("primary_horizon_unavailable", enriched["label_quality_reasons"])
+
+    def test_saved_spot_snapshot_stitcher_reads_standard_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_dir = root / "spot_snapshots"
+            snapshot_dir.mkdir(parents=True)
+            path = snapshot_dir / "NIFTY_spot_snapshot_2026-05-15T12-20-00+05-30.json"
+            path.write_text(
+                '{"timestamp":"2026-05-15T12:20:00+05:30","spot":23727.8}',
+                encoding="utf-8",
+            )
+
+            frame = _stitch_saved_spot_snapshots(
+                "NIFTY",
+                start_ts=pd.Timestamp("2026-05-15T11:00:00+05:30"),
+                end_ts=pd.Timestamp("2026-05-15T13:00:00+05:30"),
+                snapshot_dir=root,
+            )
+
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(float(frame.iloc[0]["spot"]), 23727.8)
 
     def test_save_signal_evaluation_upserts_by_signal_id(self):
         result = self._sample_result()

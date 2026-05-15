@@ -32,7 +32,17 @@ COLUMN_ALIASES = {
     "bidPrice": ["BID_PRICE", "best_bid_price", "bestBidPrice", "bid_price", "bid"],
     "askPrice": ["ASK_PRICE", "best_ask_price", "bestAskPrice", "ask_price", "ask"],
     "openInterest": ["OPEN_INT"],
+    "totalTradedVolume": ["VOLUME", "volume", "total_traded_volume", "tradedVolume"],
     "impliedVolatility": ["IV"],
+    "quoteTimestamp": [
+        "timestamp",
+        "quote_timestamp",
+        "lastUpdateTime",
+        "last_update_time",
+        "lastUpdatedTime",
+        "snapshot_timestamp",
+        "fetch_timestamp",
+    ],
 }
 
 
@@ -403,6 +413,291 @@ def _assess_iv_staleness(iv_series: pd.Series) -> dict:
     return {"iv_staleness_health": health, "iv_stale_ratio": stale_ratio}
 
 
+def _parse_timestamp(value) -> pd.Timestamp | None:
+    if value is None:
+        return None
+    try:
+        timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    except Exception:
+        return None
+    if pd.isna(timestamp):
+        return None
+    return timestamp
+
+
+def _timestamp_series(values: pd.Series) -> pd.Series:
+    if values is None or values.empty:
+        return pd.Series(dtype="datetime64[ns, UTC]")
+    return pd.to_datetime(values, errors="coerce", utc=True)
+
+
+def _assess_quote_freshness(
+    option_chain: pd.DataFrame,
+    *,
+    as_of=None,
+    max_quote_age_seconds: float = 900.0,
+    max_future_skew_seconds: float = 120.0,
+) -> dict:
+    absent = {
+        "quote_freshness_health": "N/A",
+        "quote_timestamp_column": None,
+        "latest_quote_timestamp": None,
+        "oldest_quote_timestamp": None,
+        "latest_quote_age_seconds": None,
+        "stale_quote_row_ratio": None,
+        "future_quote_row_count": 0,
+        "quote_timestamp_missing_ratio": None,
+        "quote_freshness_is_stale": False,
+    }
+    column = _resolve_column_name(option_chain, "quoteTimestamp")
+    if column is None:
+        return absent
+
+    timestamps = _timestamp_series(option_chain[column])
+    valid = timestamps.dropna()
+    missing_ratio = round(float(timestamps.isna().sum()) / max(len(timestamps), 1), 4)
+    if valid.empty:
+        return {
+            **absent,
+            "quote_freshness_health": "WEAK",
+            "quote_timestamp_column": column,
+            "quote_timestamp_missing_ratio": missing_ratio,
+            "quote_freshness_is_stale": True,
+        }
+
+    as_of_ts = _parse_timestamp(as_of)
+    latest = valid.max()
+    oldest = valid.min()
+    if as_of_ts is None:
+        return {
+            **absent,
+            "quote_freshness_health": "N/A",
+            "quote_timestamp_column": column,
+            "latest_quote_timestamp": latest.isoformat(),
+            "oldest_quote_timestamp": oldest.isoformat(),
+            "quote_timestamp_missing_ratio": missing_ratio,
+        }
+
+    age_seconds = (as_of_ts - timestamps).dt.total_seconds()
+    stale_mask = age_seconds > float(max_quote_age_seconds)
+    future_mask = age_seconds < -float(max_future_skew_seconds)
+    stale_ratio = round(float(stale_mask.fillna(False).sum()) / max(len(timestamps), 1), 4)
+    future_count = int(future_mask.fillna(False).sum())
+    latest_age = max(float((as_of_ts - latest).total_seconds()), 0.0)
+
+    if future_count > 0 or latest_age > float(max_quote_age_seconds) * 2.0 or stale_ratio > 0.35:
+        health = "WEAK"
+    elif latest_age > float(max_quote_age_seconds) or stale_ratio > 0.10 or missing_ratio > 0.25:
+        health = "CAUTION"
+    else:
+        health = "GOOD"
+
+    return {
+        "quote_freshness_health": health,
+        "quote_timestamp_column": column,
+        "latest_quote_timestamp": latest.isoformat(),
+        "oldest_quote_timestamp": oldest.isoformat(),
+        "latest_quote_age_seconds": round(latest_age, 1),
+        "stale_quote_row_ratio": stale_ratio,
+        "future_quote_row_count": future_count,
+        "quote_timestamp_missing_ratio": missing_ratio,
+        "quote_freshness_is_stale": health == "WEAK",
+    }
+
+
+def _assess_quote_spread(
+    bid_price_series: pd.Series,
+    ask_price_series: pd.Series,
+    *,
+    core_mask: pd.Series,
+    has_two_sided_quote_columns: bool,
+) -> dict:
+    absent = {
+        "quote_spread_health": "N/A",
+        "spread_checked_rows": 0,
+        "crossed_quote_rows": 0,
+        "crossed_quote_ratio": None,
+        "wide_spread_ratio": None,
+        "extreme_spread_ratio": None,
+        "core_wide_spread_ratio": None,
+        "core_extreme_spread_ratio": None,
+        "median_spread_pct": None,
+        "p95_spread_pct": None,
+        "spread_bucket_counts": {},
+    }
+    if not has_two_sided_quote_columns or bid_price_series.empty or ask_price_series.empty:
+        return absent
+
+    bid = pd.to_numeric(bid_price_series, errors="coerce")
+    ask = pd.to_numeric(ask_price_series, errors="coerce")
+    two_sided = bid.gt(0) & ask.gt(0)
+    checked_rows = int(two_sided.sum())
+    if checked_rows <= 0:
+        return absent
+
+    crossed_mask = two_sided & bid.gt(ask)
+    ordered_bid = pd.concat([bid, ask], axis=1).min(axis=1)
+    ordered_ask = pd.concat([bid, ask], axis=1).max(axis=1)
+    mid = (ordered_bid + ordered_ask) / 2.0
+    spread_pct = ((ordered_ask - ordered_bid) / mid.replace(0.0, pd.NA)).where(two_sided)
+    valid_spread = pd.to_numeric(spread_pct, errors="coerce").dropna()
+    if valid_spread.empty:
+        return {**absent, "spread_checked_rows": checked_rows}
+
+    wide_mask = spread_pct.gt(0.15).fillna(False) & two_sided
+    extreme_mask = spread_pct.gt(0.35).fillna(False) & two_sided
+    core = core_mask if isinstance(core_mask, pd.Series) else pd.Series(False, index=bid.index)
+    core_two_sided_count = int((two_sided & core).sum())
+    core_wide_ratio = (
+        round(float((wide_mask & core).sum()) / max(core_two_sided_count, 1), 4)
+        if core_two_sided_count > 0
+        else None
+    )
+    core_extreme_ratio = (
+        round(float((extreme_mask & core).sum()) / max(core_two_sided_count, 1), 4)
+        if core_two_sided_count > 0
+        else None
+    )
+    crossed_rows = int(crossed_mask.sum())
+    crossed_ratio = round(crossed_rows / max(checked_rows, 1), 4)
+    wide_ratio = round(int(wide_mask.sum()) / max(checked_rows, 1), 4)
+    extreme_ratio = round(int(extreme_mask.sum()) / max(checked_rows, 1), 4)
+
+    if (
+        crossed_ratio > 0.05
+        or (core_extreme_ratio is not None and core_extreme_ratio > 0.20)
+        or (core_wide_ratio is not None and core_wide_ratio > 0.45)
+    ):
+        health = "WEAK"
+    elif (
+        crossed_rows > 0
+        or wide_ratio > 0.25
+        or extreme_ratio > 0.10
+        or (core_wide_ratio is not None and core_wide_ratio > 0.25)
+    ):
+        health = "CAUTION"
+    else:
+        health = "GOOD"
+
+    buckets = {
+        "tight": int(valid_spread.le(0.03).sum()),
+        "normal": int((valid_spread.gt(0.03) & valid_spread.le(0.08)).sum()),
+        "wide": int((valid_spread.gt(0.08) & valid_spread.le(0.15)).sum()),
+        "extreme": int(valid_spread.gt(0.15).sum()),
+    }
+    return {
+        "quote_spread_health": health,
+        "spread_checked_rows": checked_rows,
+        "crossed_quote_rows": crossed_rows,
+        "crossed_quote_ratio": crossed_ratio,
+        "wide_spread_ratio": wide_ratio,
+        "extreme_spread_ratio": extreme_ratio,
+        "core_wide_spread_ratio": core_wide_ratio,
+        "core_extreme_spread_ratio": core_extreme_ratio,
+        "median_spread_pct": round(float(valid_spread.median()), 6),
+        "p95_spread_pct": round(float(valid_spread.quantile(0.95)), 6),
+        "spread_bucket_counts": buckets,
+    }
+
+
+def _assess_liquidity_coverage(
+    option_chain: pd.DataFrame,
+    *,
+    core_mask: pd.Series,
+) -> dict:
+    volume = pd.to_numeric(_series_or_empty(option_chain, "totalTradedVolume"), errors="coerce")
+    oi = pd.to_numeric(_series_or_empty(option_chain, "openInterest"), errors="coerce")
+    has_volume = not volume.empty
+    has_oi = not oi.empty
+    absent = {
+        "liquidity_coverage_health": "N/A",
+        "liquidity_coverage_mode": "UNAVAILABLE",
+        "volume_present_ratio": None,
+        "open_interest_present_ratio": None,
+        "core_volume_present_ratio": None,
+        "core_open_interest_present_ratio": None,
+    }
+    if not has_volume and not has_oi:
+        return absent
+
+    row_count = max(len(option_chain), 1)
+    core = core_mask if isinstance(core_mask, pd.Series) else pd.Series(False, index=option_chain.index)
+    core_count = max(int(core.sum()), 1)
+    volume_positive = volume.gt(0) if has_volume else pd.Series(False, index=option_chain.index)
+    oi_positive = oi.gt(0) if has_oi else pd.Series(False, index=option_chain.index)
+    volume_ratio = round(float(volume_positive.sum()) / row_count, 4) if has_volume else None
+    oi_ratio = round(float(oi_positive.sum()) / row_count, 4) if has_oi else None
+    core_volume_ratio = round(float((volume_positive & core).sum()) / core_count, 4) if has_volume else None
+    core_oi_ratio = round(float((oi_positive & core).sum()) / core_count, 4) if has_oi else None
+
+    best_core_ratio = max(
+        value
+        for value in [
+            core_volume_ratio if core_volume_ratio is not None else 0.0,
+            core_oi_ratio if core_oi_ratio is not None else 0.0,
+        ]
+    )
+    if best_core_ratio >= 0.70:
+        health = "GOOD"
+    elif best_core_ratio >= 0.35:
+        health = "CAUTION"
+    else:
+        health = "WEAK"
+
+    if has_volume and has_oi:
+        mode = "VOLUME_AND_OPEN_INTEREST"
+    elif has_oi:
+        mode = "OPEN_INTEREST_ONLY"
+    else:
+        mode = "VOLUME_ONLY"
+
+    return {
+        "liquidity_coverage_health": health,
+        "liquidity_coverage_mode": mode,
+        "volume_present_ratio": volume_ratio,
+        "open_interest_present_ratio": oi_ratio,
+        "core_volume_present_ratio": core_volume_ratio,
+        "core_open_interest_present_ratio": core_oi_ratio,
+    }
+
+
+def _assess_expiry_quality(selected_expiry: str | None, *, as_of=None) -> dict:
+    result = {
+        "expiry_health": "N/A",
+        "selected_expiry_dte_days": None,
+        "selected_expiry_is_expired": False,
+        "selected_expiry_is_same_day": False,
+    }
+    if not selected_expiry:
+        return result
+    as_of_ts = _parse_timestamp(as_of)
+    if as_of_ts is None:
+        return result
+    expiry_ts = _parse_timestamp(selected_expiry)
+    if expiry_ts is None:
+        return {**result, "expiry_health": "CAUTION"}
+
+    # Treat dates without time as end-of-day UTC for a conservative static check.
+    if expiry_ts.hour == 0 and expiry_ts.minute == 0 and expiry_ts.second == 0:
+        expiry_ts = expiry_ts + pd.Timedelta(hours=23, minutes=59, seconds=59)
+    dte_days = (expiry_ts - as_of_ts).total_seconds() / 86400.0
+    dte_rounded = round(float(dte_days), 4)
+    expired = dte_days < 0
+    same_day = 0 <= dte_days < 1.0
+    if expired:
+        health = "WEAK"
+    elif same_day or dte_days > 60.0:
+        health = "CAUTION"
+    else:
+        health = "GOOD"
+    return {
+        "expiry_health": health,
+        "selected_expiry_dte_days": dte_rounded,
+        "selected_expiry_is_expired": bool(expired),
+        "selected_expiry_is_same_day": bool(same_day),
+    }
+
+
 def _as_bool(value, default=False):
     if isinstance(value, bool):
         return value
@@ -457,18 +752,26 @@ def _compute_market_data_readiness(provider_health: dict, *, critical_failures: 
         "iv_staleness": _score_health_label(provider_health.get("iv_staleness_health"), na_score=0.70),
         "duplicate": _score_health_label(provider_health.get("duplicate_health"), na_score=0.80),
         "quote_integrity": _score_health_label(provider_health.get("core_quote_integrity_health"), na_score=0.72),
+        "quote_freshness": _score_health_label(provider_health.get("quote_freshness_health"), na_score=0.72),
+        "quote_spread": _score_health_label(provider_health.get("quote_spread_health"), na_score=0.72),
+        "liquidity_coverage": _score_health_label(provider_health.get("liquidity_coverage_health"), na_score=0.68),
+        "expiry": _score_health_label(provider_health.get("expiry_health"), na_score=0.72),
     }
     weights = {
-        "row": 0.08,
-        "pricing": 0.14,
-        "core_marketability": 0.18,
-        "core_pairing": 0.14,
-        "core_iv": 0.14,
-        "atm_iv": 0.12,
-        "iv_parity": 0.08,
-        "iv_staleness": 0.06,
+        "row": 0.06,
+        "pricing": 0.12,
+        "core_marketability": 0.16,
+        "core_pairing": 0.12,
+        "core_iv": 0.12,
+        "atm_iv": 0.10,
+        "iv_parity": 0.07,
+        "iv_staleness": 0.05,
         "duplicate": 0.03,
         "quote_integrity": 0.03,
+        "quote_freshness": 0.05,
+        "quote_spread": 0.05,
+        "liquidity_coverage": 0.03,
+        "expiry": 0.01,
     }
 
     weighted = sum(components[key] * weights[key] for key in weights)
@@ -483,7 +786,15 @@ def _compute_market_data_readiness(provider_health: dict, *, critical_failures: 
         for item in critical_failures
         if str(item).strip()
     }
-    if severe_failure_set.intersection({"atm_iv_weak", "core_iv_weak", "core_marketability_weak"}):
+    if severe_failure_set.intersection(
+        {
+            "atm_iv_weak",
+            "core_iv_weak",
+            "core_marketability_weak",
+            "quote_freshness_weak",
+            "selected_expiry_expired",
+        }
+    ):
         score = min(score, 64.0)
     if len(severe_failure_set) >= 2:
         score = min(score, 49.0)
@@ -563,6 +874,10 @@ def _build_unusable_option_chain_validation(
             "iv_staleness": 0.0,
             "duplicate": 100.0,
             "quote_integrity": 0.0,
+            "quote_freshness": 0.0,
+            "quote_spread": 0.0,
+            "liquidity_coverage": 0.0,
+            "expiry": 0.0,
         },
     }
     provider_health = {
@@ -600,6 +915,36 @@ def _build_unusable_option_chain_validation(
         "iv_parity_checked_pairs": 0,
         "iv_staleness_health": "WEAK",
         "iv_stale_ratio": None,
+        "quote_freshness_health": "N/A",
+        "quote_timestamp_column": None,
+        "latest_quote_timestamp": None,
+        "oldest_quote_timestamp": None,
+        "latest_quote_age_seconds": None,
+        "stale_quote_row_ratio": None,
+        "future_quote_row_count": 0,
+        "quote_timestamp_missing_ratio": None,
+        "quote_freshness_is_stale": False,
+        "quote_spread_health": "N/A",
+        "spread_checked_rows": 0,
+        "crossed_quote_rows": 0,
+        "crossed_quote_ratio": None,
+        "wide_spread_ratio": None,
+        "extreme_spread_ratio": None,
+        "core_wide_spread_ratio": None,
+        "core_extreme_spread_ratio": None,
+        "median_spread_pct": None,
+        "p95_spread_pct": None,
+        "spread_bucket_counts": {},
+        "liquidity_coverage_health": "N/A",
+        "liquidity_coverage_mode": "UNAVAILABLE",
+        "volume_present_ratio": None,
+        "open_interest_present_ratio": None,
+        "core_volume_present_ratio": None,
+        "core_open_interest_present_ratio": None,
+        "expiry_health": "N/A",
+        "selected_expiry_dte_days": None,
+        "selected_expiry_is_expired": False,
+        "selected_expiry_is_same_day": False,
         "trade_blocking_status": "BLOCK",
         "trade_blocking_reasons": critical_failures,
         "non_critical_weak_components": [],
@@ -647,7 +992,14 @@ def _build_unusable_option_chain_validation(
     return validation_payload
 
 
-def validate_option_chain(option_chain, spot=None, india_vix_level=None):
+def validate_option_chain(
+    option_chain,
+    spot=None,
+    india_vix_level=None,
+    *,
+    as_of=None,
+    max_quote_age_seconds=None,
+):
     """
     Purpose:
         Process validate option chain for downstream use.
@@ -659,6 +1011,11 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         india_vix_level: Optional — used to cross-validate ATM IV against the
               current India VIX level (accepts both decimal 0.135 and percent
               13.5 inputs).
+        as_of: Optional timestamp used to assess option quote freshness and
+              selected-expiry DTE. When omitted, timestamp-bearing chains still
+              report latest quote time but are not marked stale.
+        max_quote_age_seconds: Optional quote-age threshold for freshness
+              warnings. Defaults to the configured parameter-pack value.
     
     Context:
         Public function within the data layer. It exposes a reusable step in this module's workflow.
@@ -953,6 +1310,26 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         iv_series, strike_series, option_type_series, core_mask
     )
     iv_staleness_assessment = _assess_iv_staleness(iv_series)
+    quote_freshness_assessment = _assess_quote_freshness(
+        option_chain,
+        as_of=as_of,
+        max_quote_age_seconds=float(
+            max_quote_age_seconds
+            if max_quote_age_seconds is not None
+            else get_parameter_value(
+                "option_chain_validation.provider_health.max_quote_age_seconds",
+                900.0,
+            )
+        ),
+    )
+    quote_spread_assessment = _assess_quote_spread(
+        bid_price_series,
+        ask_price_series,
+        core_mask=core_mask,
+        has_two_sided_quote_columns=has_two_sided_quote_columns,
+    )
+    liquidity_coverage_assessment = _assess_liquidity_coverage(option_chain, core_mask=core_mask)
+    expiry_assessment = _assess_expiry_quality(selected_expiry, as_of=as_of)
 
     if iv_parity_assessment["iv_parity_health"] == "WEAK":
         warnings.append(
@@ -962,6 +1339,31 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         warnings.append(
             f"iv_staleness_detected:{iv_staleness_assessment['iv_stale_ratio']:.2f}"
         )
+    if quote_freshness_assessment["quote_freshness_health"] == "WEAK":
+        warnings.append(
+            "stale_option_quote_snapshot:"
+            f"{quote_freshness_assessment.get('latest_quote_age_seconds')}s"
+        )
+    elif quote_freshness_assessment["quote_freshness_health"] == "CAUTION":
+        warnings.append(
+            "aging_option_quote_snapshot:"
+            f"{quote_freshness_assessment.get('latest_quote_age_seconds')}s"
+        )
+    if quote_freshness_assessment.get("future_quote_row_count", 0):
+        warnings.append(f"future_quote_timestamp_rows:{quote_freshness_assessment['future_quote_row_count']}")
+    if quote_spread_assessment.get("crossed_quote_rows", 0):
+        warnings.append(f"crossed_quote_rows:{quote_spread_assessment['crossed_quote_rows']}")
+    if quote_spread_assessment["quote_spread_health"] in ("CAUTION", "WEAK"):
+        warnings.append(f"wide_quote_spread_ratio:{quote_spread_assessment.get('wide_spread_ratio')}")
+    if liquidity_coverage_assessment["liquidity_coverage_health"] == "WEAK":
+        warnings.append(
+            "weak_liquidity_coverage:"
+            f"{liquidity_coverage_assessment.get('liquidity_coverage_mode')}"
+        )
+    if expiry_assessment["expiry_health"] == "WEAK":
+        warnings.append(f"selected_expiry_already_expired:{selected_expiry}")
+    elif expiry_assessment.get("selected_expiry_is_same_day"):
+        warnings.append(f"same_day_expiry_selected:{selected_expiry}")
 
     provider_health.update(
         {
@@ -988,6 +1390,11 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
             # IV staleness (static/copy-pasted feed detection)
             "iv_staleness_health": iv_staleness_assessment["iv_staleness_health"],
             "iv_stale_ratio": iv_staleness_assessment["iv_stale_ratio"],
+            # Timestamp/freshness, quote-spread, liquidity, and expiry quality
+            **quote_freshness_assessment,
+            **quote_spread_assessment,
+            **liquidity_coverage_assessment,
+            **expiry_assessment,
         }
     )
 
@@ -1014,6 +1421,12 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         # unless strict standalone blocking is explicitly enabled.
         if quote_integrity_standalone_block or core_marketability_health == "WEAK":
             critical_failures.append("core_quote_integrity_weak")
+    if quote_freshness_assessment["quote_freshness_health"] == "WEAK":
+        critical_failures.append("quote_freshness_weak")
+    if quote_spread_assessment["quote_spread_health"] == "WEAK":
+        critical_failures.append("core_quote_spread_weak")
+    if expiry_assessment["expiry_health"] == "WEAK":
+        critical_failures.append("selected_expiry_expired")
 
     provider_health["trade_blocking_status"] = "BLOCK" if critical_failures else "PASS"
     provider_health["trade_blocking_reasons"] = critical_failures
@@ -1036,6 +1449,9 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
         _summary_core_keys.append("atm_iv_health")
     if has_two_sided_quote_columns:
         _summary_core_keys.append("core_quote_integrity_health")
+    for _optional_key in ("quote_freshness_health", "quote_spread_health", "expiry_health"):
+        if provider_health.get(_optional_key) != "N/A":
+            _summary_core_keys.append(_optional_key)
     _summary_core_values = [provider_health.get(k) for k in _summary_core_keys]
 
     _non_critical_weak_keys = []
@@ -1080,7 +1496,7 @@ def validate_option_chain(option_chain, spot=None, india_vix_level=None):
 
     validation_payload = {
         "is_valid": len(issues) == 0,
-        "is_stale": False,
+        "is_stale": bool(quote_freshness_assessment.get("quote_freshness_is_stale")),
         "analytics_usable": analytics_usable,
         "execution_suggestion_usable": execution_suggestion_usable,
         "issues": issues,

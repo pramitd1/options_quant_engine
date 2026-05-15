@@ -174,7 +174,7 @@ def run_threshold_shadow_mode(
     }
 
     try:
-        frame = pd.read_csv(ds_path)
+        frame = pd.read_csv(ds_path, low_memory=False)
         governance_artifact = write_threshold_governance_report(
             frame,
             dataset_path=str(ds_path),

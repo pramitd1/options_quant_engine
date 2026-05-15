@@ -106,6 +106,8 @@ def test_shadow_review_skips_when_shadow_simulation_is_not_ready():
 def test_shadow_review_rejects_true_positive_loss():
     shadow = _ready_shadow_report()
     shadow["impact_summary"]["true_positive_lost_count"] = 2
+    shadow["impact_summary"]["avg_suppressed_return_60m_bps"] = 6.0
+    shadow["impact_summary"]["avoided_suppressed_return_bps"] = -120.0
 
     report = build_threshold_shadow_review_report(shadow)
 
@@ -124,8 +126,9 @@ def test_shadow_review_rejects_regime_degradation():
             "suppressed_signal_count": 15,
             "false_positive_removed_count": 8,
             "true_positive_lost_count": 1,
-            "hit_rate_delta": 0.0,
-            "avg_return_delta_bps": 2.0,
+            "hit_rate_delta": -0.2,
+            "avg_return_delta_bps": -8.0,
+            "suppressed_avg_return_60m_bps": 4.0,
         }
     ]
 

@@ -313,6 +313,7 @@ def build_signal_id(
     direction,
     strike,
     option_type,
+    parameter_pack_name=None,
 ) -> str:
     """
     Purpose:
@@ -330,6 +331,8 @@ def build_signal_id(
         direction (Any): Signal direction label, typically `CALL` or `PUT`.
         strike (Any): Strike price associated with the signaled contract.
         option_type (Any): Option side associated with the contract, typically `CE` or `PE`.
+        parameter_pack_name (Any): Optional parameter-pack name that produced
+            the signal.
     
     Returns:
         str: Stable short hash used as the primary identifier in the signal-evaluation dataset.
@@ -347,6 +350,9 @@ def build_signal_id(
         str(option_type or "").upper().strip(),
         str(strike or "").strip(),
     ]
+    pack_token = str(parameter_pack_name or "").strip()
+    if pack_token:
+        parts.append(f"pack={pack_token}")
     raw_key = "|".join(parts)
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:24]
 
@@ -480,6 +486,12 @@ def build_signal_evaluation_row(
             if inferred_selected_expiry in (None, ""):
                 inferred_selected_expiry = top_candidate.get("selected_expiry") or top_candidate.get("expiry")
 
+    parameter_pack_name = (
+        trade.get("parameter_pack_name")
+        or result.get("parameter_pack_name")
+        or result.get("authoritative_parameter_pack")
+    )
+
     signal_id = build_signal_id(
         signal_timestamp=signal_timestamp,
         source=result.get("source"),
@@ -489,6 +501,7 @@ def build_signal_evaluation_row(
         direction=trade.get("direction"),
         strike=inferred_strike,
         option_type=inferred_option_type,
+        parameter_pack_name=parameter_pack_name,
     )
 
     provider_health_obj = trade.get("provider_health")
@@ -599,6 +612,7 @@ def build_signal_evaluation_row(
             or market_data_provenance.get("issues")
         ),
         "mode": str(result.get("mode") or "").upper().strip(),
+        "parameter_pack_name": parameter_pack_name,
         "symbol": normalize_underlying_symbol(result.get("symbol")),
         "ticker": spot_summary.get("ticker") or result.get("spot_snapshot", {}).get("ticker"),
         "selected_expiry": inferred_selected_expiry,

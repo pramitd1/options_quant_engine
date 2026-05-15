@@ -32,6 +32,12 @@ from research.signal_evaluation import (
     resolve_research_as_of,
     update_signal_dataset_outcomes,
 )
+from data.spot_history import load_spot_history
+
+
+def _local_spot_history_fetch(symbol: str, *, start_ts, end_ts, interval: str = "5m"):
+    _ = interval
+    return load_spot_history(symbol, start_ts=start_ts, end_ts=end_ts)
 
 
 def parse_args():
@@ -64,6 +70,15 @@ def parse_args():
         default=None,
         help="Optional timestamp cutoff for outcome enrichment, e.g. 2026-03-14T15:25:00+05:30",
     )
+    parser.add_argument(
+        "--spot-source",
+        choices=["default_provider", "local_spot_history"],
+        default="default_provider",
+        help=(
+            "Realized-spot source for outcome enrichment. Use local_spot_history "
+            "to avoid network/provider calls and rely only on the local spot store."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -86,10 +101,13 @@ def main():
     """
     args = parse_args()
     resolved_as_of = resolve_research_as_of(args.as_of)
-    frame = update_signal_dataset_outcomes(
-        dataset_path=args.dataset_path,
-        as_of=resolved_as_of,
-    )
+    kwargs = {
+        "dataset_path": args.dataset_path,
+        "as_of": resolved_as_of,
+    }
+    if args.spot_source == "local_spot_history":
+        kwargs["fetch_spot_history_fn"] = _local_spot_history_fetch
+    frame = update_signal_dataset_outcomes(**kwargs)
 
     pending = int((frame.get("outcome_status") == "PENDING").sum()) if not frame.empty else 0
     partial = int((frame.get("outcome_status") == "PARTIAL").sum()) if not frame.empty else 0
@@ -97,6 +115,7 @@ def main():
 
     print(f"dataset_path: {args.dataset_path}")
     print(f"as_of: {resolved_as_of.isoformat()}")
+    print(f"spot_source: {args.spot_source}")
     print(f"rows: {len(frame)}")
     print(f"pending: {pending}")
     print(f"partial: {partial}")

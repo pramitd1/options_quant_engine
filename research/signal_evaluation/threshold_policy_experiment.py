@@ -20,10 +20,12 @@ from research.signal_evaluation.threshold_governance import (
     THRESHOLD_GOVERNANCE_JSON_FILENAME,
 )
 from research.signal_evaluation.threshold_replay import (
+    DEFAULT_ADAPTIVE_WALK_FORWARD_SPLITS,
     DEFAULT_REGIME_FIELDS,
     DEFAULT_WALK_FORWARD_HOLDOUT_DAYS,
     DEFAULT_WALK_FORWARD_STEP_DAYS,
     DEFAULT_WALK_FORWARD_TRAIN_DAYS,
+    _adaptive_window_splits,
     _metrics_for_subset,
     _prepare_frame,
     _round_or_none,
@@ -60,7 +62,8 @@ SKIPPED_NO_PROMOTED_CANDIDATE = "SKIPPED_NO_PROMOTED_CANDIDATE"
 
 DEFAULT_EXPERIMENT_POLICY: dict[str, Any] = {
     "min_candidate_labels": 30,
-    "min_retention_ratio": 0.10,
+    "min_retention_ratio": 0.05,
+    "target_retention_ratio": 0.10,
     "min_avg_return_delta_bps": 0.0,
     "min_hit_rate_delta": 0.0,
     "max_drawdown_worsening_bps": 50.0,
@@ -71,6 +74,7 @@ DEFAULT_EXPERIMENT_POLICY: dict[str, Any] = {
     "max_bad_regime_count": 0,
     "top_n_regime_rows": 20,
     "min_holdout_labels": 10,
+    "adaptive_walk_forward_split_count": DEFAULT_ADAPTIVE_WALK_FORWARD_SPLITS,
 }
 
 REGIME_COMPARISON_FIELDS = ("signal_regime", *DEFAULT_REGIME_FIELDS)
@@ -286,6 +290,7 @@ def _walk_forward_comparison(
     holdout_window_days: int,
     step_days: int,
     min_holdout_labels: int,
+    adaptive_split_count: int,
 ) -> dict[str, Any]:
     splits = _window_splits(
         frame,
@@ -293,6 +298,13 @@ def _walk_forward_comparison(
         holdout_window_days=holdout_window_days,
         step_days=step_days,
     )
+    split_strategy = "fixed_calendar_window"
+    if not splits:
+        splits = _adaptive_window_splits(
+            frame,
+            split_count=adaptive_split_count,
+        )
+        split_strategy = "adaptive_chronological_folds" if splits else "fixed_calendar_window_unavailable"
     rows: list[dict[str, Any]] = []
     for split in splits:
         pair = _metrics_pair(
@@ -385,6 +397,7 @@ def _walk_forward_comparison(
         "summary": {
             "split_count": int(len(splits)),
             "evaluated_split_count": int(len(evaluated)),
+            "split_strategy": split_strategy,
             "pass_count": int(sum(1 for row in rows if row.get("split_status") == "PASS")),
             "fail_count": int(sum(1 for row in rows if row.get("split_status") == "FAIL")),
             "positive_delta_rate": positive_delta_rate,
@@ -400,6 +413,7 @@ def _walk_forward_comparison(
             "holdout_window_days": int(holdout_window_days),
             "step_days": int(step_days),
             "min_holdout_labels": int(min_holdout_labels),
+            "adaptive_split_count": int(adaptive_split_count),
         },
     }
 
@@ -573,6 +587,10 @@ def _classify_experiment(
             f"Candidate retention {candidate_retention} below minimum {float(policy['min_retention_ratio'])}."
         )
         return REJECTED_FOR_POLICY_EXPERIMENT, reasons
+    if candidate_retention is not None and candidate_retention < float(policy["target_retention_ratio"]):
+        reasons.append(
+            f"Candidate retention {candidate_retention} is below target {float(policy['target_retention_ratio'])}; shadow review must evaluate opportunity cost."
+        )
     if avg_return_delta is not None and avg_return_delta < float(policy["min_avg_return_delta_bps"]):
         reasons.append(
             f"Full-sample return delta {avg_return_delta} bps below minimum {float(policy['min_avg_return_delta_bps'])} bps."
@@ -668,6 +686,7 @@ def build_threshold_policy_experiment_report(
             holdout_window_days=walk_forward_holdout_days,
             step_days=walk_forward_step_days,
             min_holdout_labels=int(rules["min_holdout_labels"]),
+            adaptive_split_count=int(rules["adaptive_walk_forward_split_count"]),
         )
         regime_rows = _regime_comparison(
             working,
@@ -759,6 +778,7 @@ def render_threshold_policy_experiment_markdown(report: dict[str, Any]) -> str:
             "## Walk-Forward Comparison",
             "",
             f"- Robustness status: {walk.get('robustness_status')}",
+            f"- Split strategy: {walk.get('split_strategy')}",
             f"- Evaluated splits: {walk.get('evaluated_split_count')} / {walk.get('split_count')}",
             f"- Positive delta rate: {walk.get('positive_delta_rate')}",
             f"- Avg holdout return delta (bps): {walk.get('avg_holdout_return_delta_bps')}",

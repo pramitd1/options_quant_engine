@@ -584,6 +584,81 @@ class OptionChainValidationTests(unittest.TestCase):
         self.assertEqual(result["provider_health"]["summary_status"], "WEAK")
         self.assertEqual(result["provider_health"]["atm_iv_health"], "WEAK")
 
+    def test_stale_quote_timestamp_sets_stale_status_without_source_override(self):
+        df = self._make_full_chain(spot=22500)
+        df["quoteTimestamp"] = "2026-05-15T03:30:00+00:00"
+
+        result = validate_option_chain(
+            df,
+            spot=22500,
+            as_of="2026-05-15T04:00:00+00:00",
+            max_quote_age_seconds=300,
+        )
+        ph = result["provider_health"]
+
+        self.assertTrue(result["is_stale"])
+        self.assertEqual(ph["quote_freshness_health"], "WEAK")
+        self.assertEqual(ph["trade_blocking_status"], "BLOCK")
+        self.assertIn("quote_freshness_weak", ph["trade_blocking_reasons"])
+        self.assertIn("stale_option_quote_snapshot:1800.0s", result["warnings"])
+        self.assertTrue(result["is_valid"])
+
+    def test_fresh_quote_timestamp_keeps_chain_non_stale(self):
+        df = self._make_full_chain(spot=22500)
+        df["quoteTimestamp"] = "2026-05-15T03:58:30+00:00"
+
+        result = validate_option_chain(
+            df,
+            spot=22500,
+            as_of="2026-05-15T04:00:00+00:00",
+            max_quote_age_seconds=300,
+        )
+
+        self.assertFalse(result["is_stale"])
+        self.assertEqual(result["provider_health"]["quote_freshness_health"], "GOOD")
+        self.assertNotIn("quote_freshness_weak", result["provider_health"]["trade_blocking_reasons"])
+
+    def test_crossed_and_wide_core_spreads_are_warning_and_blocking_quality(self):
+        df = self._make_full_chain(spot=22500)
+        core_mask = df["strikePrice"].between(22350, 22650)
+        df.loc[core_mask, "bidPrice"] = 130.0
+        df.loc[core_mask, "askPrice"] = 80.0
+
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["quote_spread_health"], "WEAK")
+        self.assertGreater(ph["crossed_quote_rows"], 0)
+        self.assertIn("crossed_quote_rows", " ".join(result["warnings"]))
+        self.assertIn("core_quote_spread_weak", ph["trade_blocking_reasons"])
+        self.assertLess(result["market_data_readiness_score"], 85.0)
+
+    def test_liquidity_coverage_warns_when_explicit_oi_and_volume_are_empty(self):
+        df = self._make_full_chain(spot=22500)
+        df["openInterest"] = 0
+        df["totalTradedVolume"] = 0
+
+        result = validate_option_chain(df, spot=22500)
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["liquidity_coverage_health"], "WEAK")
+        self.assertEqual(ph["liquidity_coverage_mode"], "VOLUME_AND_OPEN_INTEREST")
+        self.assertIn("weak_liquidity_coverage:VOLUME_AND_OPEN_INTEREST", result["warnings"])
+        self.assertTrue(result["is_valid"])
+
+    def test_expired_selected_expiry_blocks_data_quality_when_as_of_supplied(self):
+        df = self._make_full_chain(spot=22500)
+        df["EXPIRY_DT"] = "2026-05-14"
+
+        result = validate_option_chain(df, spot=22500, as_of="2026-05-15T04:00:00+00:00")
+        ph = result["provider_health"]
+
+        self.assertEqual(ph["expiry_health"], "WEAK")
+        self.assertTrue(ph["selected_expiry_is_expired"])
+        self.assertEqual(ph["trade_blocking_status"], "BLOCK")
+        self.assertIn("selected_expiry_expired", ph["trade_blocking_reasons"])
+        self.assertIn("selected_expiry_already_expired:2026-05-14", result["warnings"])
+
 
 if __name__ == "__main__":
     unittest.main()

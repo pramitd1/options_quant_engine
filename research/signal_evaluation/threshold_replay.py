@@ -34,6 +34,7 @@ DEFAULT_REGIME_FIELDS = (
 DEFAULT_WALK_FORWARD_TRAIN_DAYS = 60
 DEFAULT_WALK_FORWARD_HOLDOUT_DAYS = 20
 DEFAULT_WALK_FORWARD_STEP_DAYS = 20
+DEFAULT_ADAPTIVE_WALK_FORWARD_SPLITS = 4
 
 
 def _round_or_none(value: Any, digits: int = 4) -> float | None:
@@ -180,6 +181,16 @@ def _candidate_row(
     else:
         selected = frame.loc[pd.to_numeric(frame[threshold_field], errors="coerce") >= float(threshold_value)].copy()
 
+    if "signal_timestamp" in selected.columns:
+        selected_ts = coerce_timestamp_series(selected["signal_timestamp"]).dropna()
+        distinct_signal_dates = int(selected_ts.dt.date.nunique()) if not selected_ts.empty else 0
+        first_signal_timestamp = selected_ts.min().isoformat() if not selected_ts.empty else None
+        last_signal_timestamp = selected_ts.max().isoformat() if not selected_ts.empty else None
+    else:
+        distinct_signal_dates = 0
+        first_signal_timestamp = None
+        last_signal_timestamp = None
+
     train, holdout = _split_frame(selected, train_fraction)
     full_metrics = _metrics_for_subset(
         selected,
@@ -202,6 +213,9 @@ def _candidate_row(
     row = {
         "threshold_field": threshold_field,
         "threshold_value": threshold_value,
+        "distinct_signal_dates": distinct_signal_dates,
+        "first_signal_timestamp": first_signal_timestamp,
+        "last_signal_timestamp": last_signal_timestamp,
         **full_metrics,
         "train_label_count_60m": train_metrics["label_count_60m"],
         "train_hit_rate_60m": train_metrics["hit_rate_60m"],
@@ -270,6 +284,52 @@ def _window_splits(
     return splits
 
 
+def _adaptive_window_splits(
+    frame: pd.DataFrame,
+    *,
+    split_count: int,
+) -> list[dict[str, Any]]:
+    """Build expanding chronological folds when fixed calendar windows cannot fit."""
+    if frame.empty or "signal_timestamp" not in frame.columns:
+        return []
+    day_key = coerce_timestamp_series(frame["signal_timestamp"]).dt.normalize()
+    unique_days = sorted(day_key.dropna().unique())
+    if len(unique_days) < 3:
+        return []
+
+    folds = min(max(int(split_count), 1), len(unique_days) - 1)
+    splits: list[dict[str, Any]] = []
+    seen_windows: set[tuple[int, int]] = set()
+    total_days = len(unique_days)
+    for idx in range(1, folds + 1):
+        holdout_start_idx = int(total_days * idx / (folds + 1))
+        holdout_end_idx = int(total_days * (idx + 1) / (folds + 1))
+        holdout_start_idx = min(max(holdout_start_idx, 1), total_days - 1)
+        holdout_end_idx = min(max(holdout_end_idx, holdout_start_idx + 1), total_days)
+        window_key = (holdout_start_idx, holdout_end_idx)
+        if window_key in seen_windows:
+            continue
+        seen_windows.add(window_key)
+        train_day_values = unique_days[:holdout_start_idx]
+        holdout_day_values = unique_days[holdout_start_idx:holdout_end_idx]
+        if not train_day_values or not holdout_day_values:
+            continue
+        train_mask = day_key.isin(train_day_values).fillna(False)
+        holdout_mask = day_key.isin(holdout_day_values).fillna(False)
+        splits.append(
+            {
+                "split_id": len(splits) + 1,
+                "train": frame.loc[train_mask].copy(),
+                "holdout": frame.loc[holdout_mask].copy(),
+                "train_start": min(train_day_values).isoformat(),
+                "train_end": max(train_day_values).isoformat(),
+                "holdout_start": min(holdout_day_values).isoformat(),
+                "holdout_end": max(holdout_day_values).isoformat(),
+            }
+        )
+    return splits
+
+
 def _walk_forward_split_status(
     train_candidate: dict[str, Any],
     holdout_metrics: dict[str, Any],
@@ -291,11 +351,17 @@ def _walk_forward_split_status(
     return "MIXED"
 
 
-def _walk_forward_summary(rows: list[dict[str, Any]], *, available_split_count: int) -> dict[str, Any]:
+def _walk_forward_summary(
+    rows: list[dict[str, Any]],
+    *,
+    available_split_count: int,
+    split_strategy: str,
+) -> dict[str, Any]:
     if available_split_count <= 0:
         return {
             "split_count": 0,
             "evaluated_split_count": 0,
+            "split_strategy": split_strategy,
             "robustness_status": "INSUFFICIENT_HISTORY",
             "positive_holdout_rate": None,
             "avg_holdout_return_60m_bps": None,
@@ -342,6 +408,7 @@ def _walk_forward_summary(rows: list[dict[str, Any]], *, available_split_count: 
     return {
         "split_count": int(available_split_count),
         "evaluated_split_count": int(len(evaluated)),
+        "split_strategy": split_strategy,
         "pass_count": int(sum(1 for row in rows if row.get("split_status") == "PASS")),
         "fail_count": int(sum(1 for row in rows if row.get("split_status") == "FAIL")),
         "positive_holdout_rate": positive_rate,
@@ -478,6 +545,8 @@ def run_walk_forward_threshold_validation(
     min_holdout_labels: int = 10,
     strong_label_sample: int = 100,
     top_n_splits: int | None = 20,
+    enable_adaptive_splits: bool = True,
+    adaptive_split_count: int = DEFAULT_ADAPTIVE_WALK_FORWARD_SPLITS,
 ) -> dict[str, Any]:
     """Select thresholds on rolling train windows and score the next holdout window."""
     working = _prepare_frame(frame)
@@ -487,6 +556,13 @@ def run_walk_forward_threshold_validation(
         holdout_window_days=holdout_window_days,
         step_days=step_days,
     )
+    split_strategy = "fixed_calendar_window"
+    if not splits and enable_adaptive_splits:
+        splits = _adaptive_window_splits(
+            working,
+            split_count=adaptive_split_count,
+        )
+        split_strategy = "adaptive_chronological_folds" if splits else "fixed_calendar_window_unavailable"
     rows: list[dict[str, Any]] = []
     for split in splits:
         train = split["train"]
@@ -560,7 +636,11 @@ def run_walk_forward_threshold_validation(
             }
         )
 
-    summary = _walk_forward_summary(rows, available_split_count=len(splits))
+    summary = _walk_forward_summary(
+        rows,
+        available_split_count=len(splits),
+        split_strategy=split_strategy,
+    )
     visible_rows = rows[: int(top_n_splits)] if top_n_splits is not None else rows
     return {
         "summary": summary,
@@ -572,6 +652,122 @@ def run_walk_forward_threshold_validation(
             "min_train_labels": int(min_train_labels),
             "min_holdout_labels": int(min_holdout_labels),
             "strong_label_sample": int(strong_label_sample),
+            "enable_adaptive_splits": bool(enable_adaptive_splits),
+            "adaptive_split_count": int(adaptive_split_count),
+        },
+    }
+
+
+def run_fixed_threshold_walk_forward_validation(
+    frame: pd.DataFrame,
+    *,
+    threshold_field: str,
+    threshold_value: float | None,
+    train_window_days: int = DEFAULT_WALK_FORWARD_TRAIN_DAYS,
+    holdout_window_days: int = DEFAULT_WALK_FORWARD_HOLDOUT_DAYS,
+    step_days: int = DEFAULT_WALK_FORWARD_STEP_DAYS,
+    min_train_labels: int = 30,
+    min_holdout_labels: int = 10,
+    strong_label_sample: int = 100,
+    top_n_splits: int | None = 20,
+    enable_adaptive_splits: bool = True,
+    adaptive_split_count: int = DEFAULT_ADAPTIVE_WALK_FORWARD_SPLITS,
+) -> dict[str, Any]:
+    """Validate one fixed threshold across chronological train/holdout folds."""
+    working = _prepare_frame(frame)
+    splits = _window_splits(
+        working,
+        train_window_days=train_window_days,
+        holdout_window_days=holdout_window_days,
+        step_days=step_days,
+    )
+    split_strategy = "fixed_calendar_window"
+    if not splits and enable_adaptive_splits:
+        splits = _adaptive_window_splits(
+            working,
+            split_count=adaptive_split_count,
+        )
+        split_strategy = "adaptive_chronological_folds" if splits else "fixed_calendar_window_unavailable"
+
+    rows: list[dict[str, Any]] = []
+    for split in splits:
+        train_selected, train_eligible_count = _select_threshold_subset(
+            split["train"],
+            threshold_field=threshold_field,
+            threshold_value=threshold_value,
+        )
+        holdout_selected, holdout_eligible_count = _select_threshold_subset(
+            split["holdout"],
+            threshold_field=threshold_field,
+            threshold_value=threshold_value,
+        )
+        train_metrics = _metrics_for_subset(
+            train_selected,
+            eligible_count=max(train_eligible_count, 1),
+            min_label_sample=min_train_labels,
+            strong_label_sample=strong_label_sample,
+        )
+        holdout_metrics = _metrics_for_subset(
+            holdout_selected,
+            eligible_count=max(holdout_eligible_count, 1),
+            min_label_sample=min_holdout_labels,
+            strong_label_sample=max(strong_label_sample, min_holdout_labels + 1),
+        )
+        if int(train_metrics.get("label_count_60m") or 0) < int(min_train_labels):
+            split_status = "INSUFFICIENT_TRAIN"
+        else:
+            split_status = _walk_forward_split_status(
+                {"objective_score": train_metrics.get("objective_score")},
+                holdout_metrics,
+                min_holdout_labels=min_holdout_labels,
+            )
+        rows.append(
+            {
+                "split_id": split["split_id"],
+                "train_start": split["train_start"],
+                "train_end": split["train_end"],
+                "holdout_start": split["holdout_start"],
+                "holdout_end": split["holdout_end"],
+                "split_status": split_status,
+                "threshold_field": threshold_field,
+                "threshold_value": threshold_value,
+                "train_signal_count": int(train_metrics.get("signal_count") or 0),
+                "train_label_count_60m": int(train_metrics.get("label_count_60m") or 0),
+                "train_hit_rate_60m": train_metrics.get("hit_rate_60m"),
+                "train_avg_signed_return_60m_bps": train_metrics.get("avg_signed_return_60m_bps"),
+                "train_objective_score": train_metrics.get("objective_score"),
+                "train_retention_ratio": train_metrics.get("retention_ratio"),
+                "holdout_signal_count": int(holdout_metrics.get("signal_count") or 0),
+                "holdout_label_count_60m": int(holdout_metrics.get("label_count_60m") or 0),
+                "holdout_hit_rate_60m": holdout_metrics.get("hit_rate_60m"),
+                "holdout_avg_signed_return_60m_bps": holdout_metrics.get("avg_signed_return_60m_bps"),
+                "holdout_return_ci_low_bps": holdout_metrics.get("return_ci_low_bps"),
+                "holdout_return_ci_high_bps": holdout_metrics.get("return_ci_high_bps"),
+                "holdout_sample_quality": holdout_metrics.get("sample_quality"),
+                "holdout_retention_ratio": holdout_metrics.get("retention_ratio"),
+            }
+        )
+
+    summary = _walk_forward_summary(
+        rows,
+        available_split_count=len(splits),
+        split_strategy=split_strategy,
+    )
+    visible_rows = rows[: int(top_n_splits)] if top_n_splits is not None else rows
+    return {
+        "summary": summary,
+        "splits": visible_rows,
+        "config": {
+            "train_window_days": int(train_window_days),
+            "holdout_window_days": int(holdout_window_days),
+            "step_days": int(step_days),
+            "min_train_labels": int(min_train_labels),
+            "min_holdout_labels": int(min_holdout_labels),
+            "strong_label_sample": int(strong_label_sample),
+            "enable_adaptive_splits": bool(enable_adaptive_splits),
+            "adaptive_split_count": int(adaptive_split_count),
+            "threshold_field": threshold_field,
+            "threshold_value": threshold_value,
         },
     }
 
@@ -588,6 +784,7 @@ def build_threshold_replay_summary(
     walk_forward_step_days: int = DEFAULT_WALK_FORWARD_STEP_DAYS,
     walk_forward_min_train_labels: int = 30,
     walk_forward_min_holdout_labels: int = 10,
+    adaptive_walk_forward_split_count: int = DEFAULT_ADAPTIVE_WALK_FORWARD_SPLITS,
 ) -> dict[str, Any]:
     """Build JSON-friendly threshold replay diagnostics."""
     candidates = run_threshold_replay(
@@ -613,6 +810,7 @@ def build_threshold_replay_summary(
         min_holdout_labels=walk_forward_min_holdout_labels,
         strong_label_sample=strong_label_sample,
         top_n_splits=top_n,
+        adaptive_split_count=adaptive_walk_forward_split_count,
     )
     return {
         "threshold_replay_candidates": candidates.to_dict(orient="records"),

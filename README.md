@@ -190,6 +190,234 @@ python scripts/signal_evaluation_report.py
 python scripts/daily_research_report.py
 ```
 
+### Signal-Quality Model Audit
+
+```bash
+python scripts/ops/run_signal_quality_model_audit.py
+```
+
+This research-only audit measures probability calibration, regime-conditioned
+calibration bias, feature stability, and EV/risk-adjusted ranking strength from
+the signal-evaluation dataset. It writes JSON, Markdown, and CSV diagnostics
+under `research/signal_evaluation/reports/signal_quality_model_audit/` and does
+not run the engine, change data sources, alter parameter packs, or place
+trades.
+
+### Probability Calibration Experiment
+
+```bash
+python scripts/ops/run_probability_calibration_experiment.py
+```
+
+This research-only experiment compares raw probabilities against fitted
+calibration mappings on a chronological train/holdout split using
+quality-approved labels. It writes review artifacts under
+`research/signal_evaluation/reports/probability_calibration_experiment/` and
+does not apply the selected mapping to runtime config or parameter packs.
+
+### Segmented Probability Calibration Experiment
+
+```bash
+python scripts/ops/run_segmented_probability_calibration_experiment.py
+```
+
+This research-only experiment searches for calibration candidates inside
+regime slices and recent training windows. It emits guarded review artifacts
+under
+`research/signal_evaluation/reports/segmented_probability_calibration_experiment/`
+and keeps runtime probabilities unchanged unless a future human-controlled
+promotion workflow explicitly adopts a vetted bundle.
+
+### Segmented Probability Forward Shadow
+
+```bash
+python scripts/ops/run_segmented_probability_forward_shadow.py
+```
+
+This research-only validator applies the latest segmented calibration candidate
+bundle to labeled rows with explicit routing policies such as
+`candidate_priority`, `regime_first`, and `recency_first`. It compares raw
+versus shadow-calibrated probabilities, writes review artifacts under
+`research/signal_evaluation/reports/segmented_probability_forward_shadow/`,
+and leaves runtime probabilities, data sources, parameter packs, and execution
+behavior unchanged.
+
+### Segmented Probability EV Shadow Evaluation
+
+```bash
+python scripts/ops/run_segmented_probability_ev_shadow_evaluation.py
+```
+
+This research-only evaluator scores the same segmented calibration routes by
+realized trading usefulness: top-bucket hit rate, signed return,
+MAE/MFE-adjusted return, spread/liquidity quality, option-chain quality, and
+regime-conditioned payoff. It writes JSON, Markdown, and CSV artifacts under
+`research/signal_evaluation/reports/segmented_probability_ev_shadow_evaluation/`
+without changing runtime probabilities, data sources, parameter packs, or
+execution behavior.
+
+### Segmented Probability EV Rejection Attribution
+
+```bash
+python scripts/ops/run_segmented_probability_ev_rejection_attribution.py
+```
+
+When EV shadow evaluation rejects a segmented-probability candidate, this
+research-only attribution pass explains the failure by comparing the raw top
+bucket against the shadow-calibrated top bucket, highlighting damaging
+candidate routes, shadow-only promoted rows, regime pockets, and policy-level
+alternatives. It writes JSON, Markdown, and CSV artifacts under
+`research/signal_evaluation/reports/segmented_probability_ev_rejection_attribution/`
+and leaves runtime probabilities, data sources, parameter packs, and execution
+behavior unchanged.
+
+### Segmented Probability Guarded EV Experiment
+
+```bash
+python scripts/ops/run_segmented_probability_guarded_ev_experiment.py
+```
+
+After EV rejection attribution identifies damaging routes or top-bucket
+selection damage, this research-only experiment tests guarded alternatives:
+quarantining EV-negative candidate routes, enforcing raw-rank preservation, and
+combining both. It compares each variant against the raw top bucket and the
+current rejected shadow ranking, then writes advisory JSON, Markdown, and CSV
+artifacts under
+`research/signal_evaluation/reports/segmented_probability_guarded_ev_experiment/`.
+It never edits the candidate bundle, runtime config, parameter packs, data
+sources, or execution behavior.
+
+### Segmented Probability Guarded Candidate Bundle
+
+```bash
+python scripts/ops/run_segmented_probability_guarded_candidate_bundle.py
+```
+
+When the guarded EV experiment passes, this research-only generator writes a
+new candidate bundle that removes EV-negative candidate routes and records the
+raw-rank preservation policy as governance metadata. The bundle remains
+approval-gated and requires guard-aware forward shadow, guard-aware EV shadow,
+EV rejection attribution, and readiness checks before any manual review. It
+writes artifacts under
+`research/signal_evaluation/reports/segmented_probability_guarded_candidate_bundle/`
+and never edits runtime config, parameter packs, data sources, or execution
+behavior.
+
+### Segmented Probability Guard-Aware Shadow Validation
+
+```bash
+python scripts/ops/run_segmented_probability_guarded_shadow_validation.py
+```
+
+This research-only validator consumes the guarded candidate bundle and applies
+its raw-rank preservation policy during shadow evaluation. It reports both
+calibration behavior and EV/risk top-bucket behavior using guarded ranking
+probabilities, writes JSON, Markdown, and CSV artifacts under
+`research/signal_evaluation/reports/segmented_probability_guarded_shadow_validation/`,
+and leaves runtime probabilities, data sources, parameter packs, and execution
+behavior unchanged.
+
+### Segmented Probability Forward Shadow Accumulator
+
+```bash
+python scripts/ops/run_segmented_probability_forward_shadow_accumulator.py
+```
+
+This research-only accumulator runs the forward-shadow validator in auto mode,
+appends the latest replay/true-forward state to an audit history, and refreshes
+a dashboard showing whether enough post-candidate labels have arrived for true
+forward validation. It automatically keeps using holdout replay until the
+configured forward-label sample threshold is met, then switches to true
+post-candidate rows without changing runtime behavior.
+
+### Segmented Probability Forward Shadow Readiness Gate
+
+```bash
+python scripts/ops/run_segmented_probability_forward_shadow_readiness.py
+```
+
+This research-only gate reads the latest forward-shadow, accumulation,
+candidate-staleness, EV/risk shadow, and guard-aware shadow validation
+artifacts. When guard-aware validation is present, it uses that guarded
+EV/ranking evidence as the primary payoff gate and keeps the legacy EV shadow
+artifact as fallback context. It blocks manual calibration review unless true
+post-candidate validation has enough labels, the recommended routing policy is
+stable, route regressions are absent, schemas are valid, candidate staleness is
+`ACTIVE_REVIEW`, the bundle is not expired or superseded, no material
+forward-label population shift is detected, guard-aware top-bucket payoff and
+hit rate do not regress, quarantined routes have zero top-bucket exposure, the
+guarded bundle remains research-only and approval-gated, and all side-effect
+flags remain false. `--allow-holdout-replay-guarded-validation` can be used for
+explicit research review of guarded holdout replay evidence, but it is not a
+runtime adoption approval.
+
+### Segmented Probability Shadow Soak
+
+```bash
+python scripts/ops/run_segmented_probability_shadow_soak.py
+```
+
+This is the one-line daily research loop for the guarded segmented-probability
+candidate. It first refreshes pending realized outcomes using the local spot
+history store by default, then appends forward-shadow accumulation history,
+refreshes candidate staleness, refreshes legacy EV shadow context, reruns
+guard-aware validation, reruns the readiness gate, and writes a compact
+soak-status report under
+`research/signal_evaluation/reports/segmented_probability_shadow_soak/`.
+The command tracks true-forward sample progress, no-new-label days, guarded
+EV/ranking deltas, quarantined-route exposure, original and guarded staleness
+state, readiness status, outcome-refresh progress, post-guarded true-forward label accumulation,
+and bundle hash immutability. It also appends a guarded soak history CSV so
+operators can see whether quality-approved labels after the guarded bundle are
+actually increasing across sessions. It never edits runtime config, parameter
+packs, data sources, candidate bundles, or execution behavior. Use
+`--outcome-refresh-source skip` to inspect the existing dataset without
+refreshing labels, or `--outcome-refresh-source default_provider` when an
+external research backfill provider is explicitly desired.
+
+### Segmented Probability Guarded Candidate Staleness
+
+```bash
+python scripts/ops/run_segmented_probability_guarded_candidate_staleness.py
+```
+
+This research-only governance check evaluates the guarded candidate bundle
+separately from the original source candidate. It marks the guarded bundle as
+`GUARDED_ACCUMULATING_FORWARD_LABELS`, `GUARDED_ACTIVE_REVIEW`,
+`GUARDED_STALE_WATCH`, `GUARDED_EXPIRED`, `GUARDED_SUPERSEDED`, or
+`GUARDED_BLOCKED` using guarded-bundle age, post-guarded data, post-guarded
+label shift, guarded routing-policy stability from the soak history, and newer
+guarded-bundle detection. It never changes runtime config, parameter packs,
+data sources, candidate bundles, or execution behavior.
+
+### Monday Readiness Preflight
+
+```bash
+python scripts/ops/run_monday_readiness_preflight.py
+```
+
+This read-only preflight summarizes the selected option data source, latest
+dataset state, guarded-bundle staleness, shadow-soak blockers, and the exact
+next commands to run once market data starts flowing. It does not fetch
+providers, refresh outcomes, change data sources, alter parameter packs, write
+candidate artifacts, or execute trades. Pass `--option-chain path/to/snapshot.csv
+--spot 22500 --as-of 2026-05-18T09:20:00+05:30` to validate a saved
+option-chain snapshot without contacting a live provider.
+
+### Segmented Probability Candidate Staleness
+
+```bash
+python scripts/ops/run_segmented_probability_candidate_staleness.py
+```
+
+This research-only governance check marks a candidate bundle as
+`ACTIVE_REVIEW`, `STALE_WATCH`, `EXPIRED`, or `SUPERSEDED` using candidate age,
+new post-candidate data, forward-label population shift, routing-policy
+stability, and newer bundle detection. It writes JSON/Markdown artifacts under
+`research/signal_evaluation/reports/segmented_probability_candidate_staleness/`
+and never changes runtime config, parameter packs, data sources, or execution
+behavior.
+
 ### Daily Readiness Dashboard
 
 ```bash
@@ -1272,6 +1500,69 @@ The reconciliation report can classify the adoption state as approved-but-not-ad
 adopted manually, mismatched, manually rolled back, or unknown. It
 only reports consistency between the ledger, promotion package, active
 parameter-pack policy, and post-promotion monitor.
+
+To produce the exact parameter-pack patch needed for manual adoption, run the
+advisory adoption helper:
+
+```bash
+python scripts/ops/run_threshold_adoption_helper.py
+```
+
+The helper writes a reviewable adoption plan and diff, but it does not edit a
+parameter pack unless `--apply` is supplied explicitly. A typical controlled
+manual adoption sequence is:
+
+```bash
+python scripts/ops/run_threshold_adoption_helper.py --target-parameter-pack config/parameter_packs/candidate_v1.json
+python scripts/ops/run_threshold_adoption_replay_gate.py --require-ready
+python scripts/ops/run_threshold_adoption_helper.py --target-parameter-pack config/parameter_packs/candidate_v1.json --apply
+python scripts/ops/run_threshold_adoption_reconciliation.py --parameter-pack config/parameter_packs/candidate_v1.json --require-adopted
+OQE_PARAMETER_PACK=candidate_v1 python scripts/ops/run_threshold_adoption_reconciliation.py --require-adopted
+python scripts/ops/run_threshold_runtime_activation_marker.py --candidate-pack candidate_v1 --threshold-value 85
+python scripts/ops/run_threshold_signal_rollout_monitor.py --fail-on-blocked
+python scripts/ops/run_threshold_adoption_history.py
+OQE_PARAMETER_PACK=candidate_v1 python scripts/ops/run_threshold_post_activation_verification.py
+```
+
+The replay gate applies the proposed override in a temporary runtime context
+and checks that only the intended selection-policy key changes, selected signal
+sets move in the expected stricter/looser direction, output columns stay stable,
+and data-source/provenance fields are preserved. The first reconciliation
+validation checks the patched parameter-pack file; the second checks the active
+runtime policy after the operator deliberately selects that pack. The runtime
+activation marker records the human-controlled start of candidate-pack signal
+generation so earlier baseline rows do not pollute the candidate rollout
+window. After that marker exists, LIVE signal capture under a different
+parameter pack is skipped and flagged rather than persisted to the research
+dataset; the guard does not switch packs, edit config, or place trades. The
+rollout monitor then emits a daily signal-only status such as
+`CANDIDATE_SIGNAL_ROLLOUT_HEALTHY`, `CANDIDATE_SIGNAL_ROLLOUT_WATCH`, or
+`CANDIDATE_SIGNAL_ROLLOUT_BLOCKED`, confirming candidate-pack traceability,
+resolved threshold value, baseline-versus-candidate selection, provenance
+preservation, outcome-label readiness, and absence of order/execution
+side-effect fields. The adoption-history command appends that latest state to
+`research/signal_evaluation/reports/threshold_adoption_history/threshold_adoption_history.csv`
+and refreshes a compact dashboard showing whether the approved threshold is
+unadopted, active in candidate-pack signal generation, mixed, mismatched, or
+rolled back. The post-activation verifier runs the strict rollout monitor,
+appends adoption history, confirms the active runtime pack matches the
+activation marker, and exits non-zero unless candidate-pack traceability,
+threshold consistency, label readiness, and execution side-effect checks are
+all clean. These critical JSON artifacts are checked against lightweight
+schema contracts before they are written, so missing fields or type drift fail
+fast instead of silently breaking downstream gates. None of these commands
+places trades or changes execution behavior.
+
+Before recording a real `APPROVED` ledger decision, the full approval path can
+be rehearsed against real artifacts with a sandbox ledger:
+
+```bash
+python scripts/ops/run_threshold_promotion_dry_run.py
+```
+
+The dry-run creates a sandbox APPROVED decision, runs post-promotion monitoring,
+and runs adoption reconciliation without touching the real promotion ledger or
+runtime parameter packs.
 
 ## Tuning Workflow
 

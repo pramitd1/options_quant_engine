@@ -694,6 +694,7 @@ def _prepare_snapshot_context(
         filtered_option_chain,
         spot=spot_context.get("spot"),
         india_vix_level=_vix_for_validation,
+        as_of=spot_timestamp,
     )
     market_data_provenance = _build_market_data_provenance(
         mode=mode,

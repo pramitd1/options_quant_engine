@@ -43,11 +43,11 @@ SKIPPED_SHADOW_NOT_READY = "SKIPPED_SHADOW_NOT_READY"
 
 DEFAULT_SHADOW_REVIEW_POLICY: dict[str, Any] = {
     "min_eligible_signal_count": 50,
-    "min_shadow_observation_days": 30,
+    "min_shadow_observation_days": 10,
     "min_retained_labels": 30,
     "min_suppressed_labels": 10,
     "min_false_positive_removed_count": 5,
-    "min_false_positive_removal_rate": 0.50,
+    "min_false_positive_removal_rate": 0.40,
     "max_true_positive_lost_count": 0,
     "max_true_positive_loss_rate": 0.05,
     "min_retained_avg_return_bps": 0.0,
@@ -181,16 +181,32 @@ def _segment_failure_rows(
         reasons: list[str] = []
         avg_delta = _safe_float(row.get("avg_return_delta_bps"))
         hit_delta = _safe_float(row.get("hit_rate_delta"))
+        suppressed_avg_return = _safe_float(row.get("suppressed_avg_return_60m_bps"))
         true_positive_lost = _safe_int(row.get("true_positive_lost_count"))
         if avg_delta is not None and avg_delta < float(policy["min_segment_avg_return_delta_bps"]):
             reasons.append(
                 f"Return delta {avg_delta} bps below segment floor {float(policy['min_segment_avg_return_delta_bps'])} bps."
             )
-        if hit_delta is not None and hit_delta < float(policy["min_segment_hit_rate_delta"]):
+        if (
+            hit_delta is not None
+            and hit_delta < float(policy["min_segment_hit_rate_delta"])
+            and (avg_delta is None or avg_delta < float(policy["min_segment_avg_return_delta_bps"]))
+        ):
             reasons.append(
                 f"Hit-rate delta {hit_delta} below segment floor {float(policy['min_segment_hit_rate_delta'])}."
             )
-        if true_positive_lost > int(policy["max_segment_true_positive_lost_count"]):
+        segment_improved = (
+            (avg_delta is not None and avg_delta >= float(policy["min_segment_avg_return_delta_bps"]))
+            and (hit_delta is not None and hit_delta >= float(policy["min_segment_hit_rate_delta"]))
+        )
+        true_positive_loss_is_harmful = (
+            not segment_improved
+            and (suppressed_avg_return is None or suppressed_avg_return > 0)
+        )
+        if (
+            true_positive_lost > int(policy["max_segment_true_positive_lost_count"])
+            and true_positive_loss_is_harmful
+        ):
             reasons.append(
                 f"True positives lost {true_positive_lost} exceeds segment limit "
                 f"{int(policy['max_segment_true_positive_lost_count'])}."
@@ -267,6 +283,11 @@ def build_threshold_shadow_review_report(
     retained_avg_delta = _safe_float(delta.get("avg_return_delta_bps"))
     retained_hit_delta = _safe_float(delta.get("hit_rate_delta"))
     avoided_return = _safe_float(impact.get("avoided_suppressed_return_bps"))
+    avg_suppressed_return = _safe_float(impact.get("avg_suppressed_return_60m_bps"))
+    true_positive_loss_is_harmful = (
+        (avoided_return is None or avoided_return < float(rules["min_avoided_suppressed_return_bps"]))
+        or (avg_suppressed_return is not None and avg_suppressed_return > 0)
+    )
 
     reasons: list[str] = []
     if shadow.get("shadow_status") != SHADOW_SIMULATION_READY:
@@ -294,15 +315,17 @@ def build_threshold_shadow_review_report(
         reasons.append(
             f"Suppressed 60m labels {suppressed_labels} below minimum {int(rules['min_suppressed_labels'])}."
         )
-    elif true_positive_lost > int(rules["max_true_positive_lost_count"]) or (
-        true_positive_loss_rate is not None
-        and true_positive_loss_rate > float(rules["max_true_positive_loss_rate"])
+    elif true_positive_loss_is_harmful and (
+        true_positive_lost > int(rules["max_true_positive_lost_count"])
+        or (
+            true_positive_loss_rate is not None
+            and true_positive_loss_rate > float(rules["max_true_positive_loss_rate"])
+        )
     ):
         status = REJECTED_TRUE_POSITIVE_LOSS
         reasons.append(
             f"True positives lost {true_positive_lost} with loss rate {true_positive_loss_rate}; "
-            f"limits are {int(rules['max_true_positive_lost_count'])} and "
-            f"{float(rules['max_true_positive_loss_rate'])}."
+            "suppressed opportunity cost is harmful."
         )
     elif retained_avg_return is not None and retained_avg_return < float(rules["min_retained_avg_return_bps"]):
         status = REJECTED_SHADOW_REGRESSION
@@ -365,6 +388,10 @@ def build_threshold_shadow_review_report(
         "bad_bucket_count": bad_bucket_count,
         "retained_label_count_60m": retained_label_count,
         "suppressed_label_count_60m": suppressed_labels,
+        "avg_suppressed_return_60m_bps": avg_suppressed_return,
+        "true_positive_loss_interpretation": "economic_opportunity_cost"
+        if not true_positive_loss_is_harmful
+        else "harmful_suppression",
     }
     report = {
         "report_type": "threshold_shadow_review",

@@ -276,7 +276,14 @@ def _stitch_saved_spot_snapshots(
 
     prefix = symbol.upper()
     rows: list[dict] = []
-    for path in sorted(snap_dir.glob(f"{prefix}_spot_snapshot_*.json")):
+    search_dirs = [snap_dir]
+    for child in (snap_dir / "spot_snapshots", snap_dir / "replay_fixtures" / "spot_snapshots"):
+        if child.exists():
+            search_dirs.append(child)
+    paths: list[Path] = []
+    for directory in search_dirs:
+        paths.extend(sorted(directory.glob(f"{prefix}_spot_snapshot_*.json")))
+    for path in sorted(set(paths)):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -293,4 +300,3 @@ def _stitch_saved_spot_snapshots(
     df = pd.DataFrame(rows)
     df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     return df[["timestamp", "spot"]]
-

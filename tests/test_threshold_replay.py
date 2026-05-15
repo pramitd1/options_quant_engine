@@ -101,3 +101,23 @@ def test_walk_forward_validation_selects_on_train_and_scores_holdout():
     first = validation["splits"][0]
     assert first["threshold_field"] in {"composite_signal_score", "ALL_SIGNALS"}
     assert first["holdout_label_count_60m"] >= 0
+
+
+def test_walk_forward_validation_uses_adaptive_folds_when_calendar_history_is_short():
+    frame = _replay_frame().head(45)
+    validation = run_walk_forward_threshold_validation(
+        frame,
+        threshold_grid={"composite_signal_score": [50.0, 70.0, 80.0]},
+        train_window_days=60,
+        holdout_window_days=20,
+        step_days=20,
+        min_train_labels=5,
+        min_holdout_labels=3,
+        strong_label_sample=10,
+        adaptive_split_count=3,
+    )
+
+    summary = validation["summary"]
+    assert summary["split_strategy"] == "adaptive_chronological_folds"
+    assert summary["split_count"] >= 1
+    assert summary["evaluated_split_count"] >= 1

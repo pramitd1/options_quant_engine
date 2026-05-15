@@ -56,6 +56,40 @@ def _experiment_frame(days: int = 120, *, candidate_good: bool = True) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+def _low_retention_experiment_frame(days: int = 120, rows_per_day: int = 12) -> pd.DataFrame:
+    rows = []
+    base = pd.Timestamp("2026-01-01 09:20:00+05:30")
+    for day_idx in range(days):
+        for row_idx in range(rows_per_day):
+            idx = day_idx * rows_per_day + row_idx
+            high_score = row_idx == 0
+            rows.append(
+                {
+                    "signal_id": f"low-retention-{idx}",
+                    "signal_timestamp": (base + pd.Timedelta(days=day_idx, minutes=row_idx)).isoformat(),
+                    "symbol": "NIFTY",
+                    "direction": "CALL" if idx % 2 == 0 else "PUT",
+                    "trade_status": "TRADE",
+                    "signal_regime": "EXPANSION_BIAS" if high_score else "CONFLICTED",
+                    "macro_regime": "RISK_ON",
+                    "gamma_regime": "SHORT_GAMMA_ZONE",
+                    "volatility_regime": "NORMAL",
+                    "global_risk_state": "CALM",
+                    "composite_signal_score": 85.0 if high_score else 52.0,
+                    "tradeability_score": 80.0 if high_score else 45.0,
+                    "move_probability": 0.72 if high_score else 0.48,
+                    "ml_confidence_score": 0.74 if high_score else 0.42,
+                    "correct_60m": 1.0 if high_score else 0.0,
+                    "signed_return_60m_bps": 24.0 if high_score else -8.0,
+                    "calibration_label": 1.0 if high_score else 0.0,
+                    "calibration_label_available": True,
+                    "primary_outcome_return_bps": 24.0 if high_score else -8.0,
+                    "label_quality_status": "CLEAN",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def test_policy_experiment_approves_governed_candidate_for_research_sandbox():
     frame = _experiment_frame()
     governance = build_threshold_governance_report(frame, dataset_path="unit.csv")
@@ -76,6 +110,25 @@ def test_policy_experiment_approves_governed_candidate_for_research_sandbox():
     assert report["full_sample_comparison"]["delta"]["hit_rate_delta"] > 0
     assert report["walk_forward_comparison"]["summary"]["robustness_status"] == "ROBUST"
     assert report["quality_bucket_comparison"]
+
+
+def test_policy_experiment_treats_low_but_useful_retention_as_shadow_review_issue():
+    candidate_review = {
+        "candidate_key": "composite_signal_score>=85.0",
+        "governance_status": PROMOTE_TO_REVIEW,
+        "threshold_field": "composite_signal_score",
+        "threshold_value": 85.0,
+        "config_hint": "evaluation_thresholds.selection.composite_signal_score_floor",
+    }
+
+    report = build_threshold_policy_experiment_report(
+        _low_retention_experiment_frame(),
+        candidate_review=candidate_review,
+    )
+
+    assert report["experiment_status"] == APPROVED_FOR_POLICY_EXPERIMENT
+    assert report["full_sample_comparison"]["candidate"]["retention_ratio"] < 0.10
+    assert any("below target" in reason for reason in report["experiment_reasons"])
 
 
 def test_candidate_policy_pack_is_advisory_and_maps_config_hint():
