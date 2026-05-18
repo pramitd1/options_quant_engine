@@ -90,6 +90,9 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "strike": 22000,
                 "entry_price": 110.5,
                 "selected_option_last_price": 110.5,
+                "selected_option_bid_price": 110.0,
+                "selected_option_ask_price": 111.0,
+                "selected_option_mid_price": 110.5,
                 "selected_option_volume": 138212815,
                 "selected_option_open_interest": 8704150,
                 "selected_option_iv": 55.79,
@@ -107,7 +110,40 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "selected_option_score": 27.81,
                 "target": 143.65,
                 "stop_loss": 93.93,
+                "underlying_profit_booking_level": 22072.0,
+                "underlying_profit_booking_lower": 22060.0,
+                "underlying_profit_booking_upper": 22086.0,
+                "underlying_stop_loss_level": 21965.0,
+                "underlying_stop_loss_lower": 21952.0,
+                "underlying_stop_loss_upper": 21978.0,
+                "underlying_exit_plan_confidence": "HIGH",
+                "underlying_exit_plan_basis": "DELTA_PROJECTED_OPTION_EXIT+MARKET_STRUCTURE+EXPECTED_MOVE_CAPPED",
+                "underlying_exit_plan_reasons": ["profit_zone_blended_with_nearby_market_structure"],
+                "underlying_exit_plan": {
+                    "direction": "CALL",
+                    "spot": 22000.0,
+                    "profit_booking": {"level": 22072.0, "lower": 22060.0, "upper": 22086.0},
+                    "stop_loss": {"level": 21965.0, "lower": 21952.0, "upper": 21978.0},
+                    "confidence": "HIGH",
+                },
                 "trade_strength": 81,
+                "runtime_composite_score": 86,
+                "runtime_composite_observation_tier": "OVERRIDE_85_PLUS",
+                "runtime_composite_observation_threshold": 80,
+                "runtime_composite_soft_override_threshold": 85,
+                "runtime_composite_soft_override_applied": True,
+                "runtime_composite_soft_override_mode": "HIGH_RUNTIME_COMPOSITE_SOFT_BLOCK",
+                "runtime_composite_soft_override_blockers": ["GLOBAL_RISK_WATCHLIST"],
+                "runtime_composite_soft_override_reason": "GLOBAL_RISK_WATCHLIST:runtime_composite_score 86 >= 85",
+                "runtime_composite_soft_override_constraints": ["size_cap:0.65", "max_hold_minutes:35", "no_overnight"],
+                "runtime_composite_soft_override_original_status": "WATCHLIST",
+                "runtime_composite_soft_override_original_reason_code": "GLOBAL_RISK_WATCHLIST",
+                "runtime_composite_soft_override_original_message": "Trade downgraded to watchlist due to global risk reduction",
+                "runtime_composite_soft_override_diagnostics": {
+                    "GLOBAL_RISK_WATCHLIST": {"eligible": True, "runtime_composite_score": 86}
+                },
+                "effective_min_trade_strength_threshold": 62,
+                "effective_min_composite_score_threshold": 58,
                 "signal_quality": "STRONG",
                 "signal_regime": "EXPANSION_BIAS",
                 "execution_regime": "ACTIVE",
@@ -134,6 +170,10 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "dealer_pressure_adjustment_score": 3,
                 "expected_move_points": 165.4,
                 "expected_move_pct": 0.7518,
+                "open_interest_pcr": 1.42,
+                "volume_pcr": 1.18,
+                "volume_pcr_atm": 1.25,
+                "volume_pcr_regime": "PUT_DOMINANT",
                 "target_reachability_score": 78,
                 "premium_efficiency_score": 74,
                 "strike_efficiency_score": 78,
@@ -167,6 +207,74 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "hybrid_move_probability": 0.72,
                 "ml_move_probability": 0.68,
                 "large_move_probability": 0.72,
+                "historical_context": {
+                    "version": "historical_context_v1",
+                    "decision_mode": "LIVE_APPLIED",
+                    "prior_artifact_version": "historical_prior_artifact_v1",
+                    "prior_artifact_source_run_id": "20260518_113042",
+                    "apply_to_live_decision": True,
+                    "volatility_context": {
+                        "bucket": "HIGH",
+                        "expected_range_bps": 262.25,
+                        "expected_abs_move_bps": 156.72,
+                        "range_multiplier": 1.826,
+                    },
+                    "global_directional_prior": {
+                        "prior_direction": "PUT",
+                        "prior_score": -2.75,
+                        "evidence": [
+                            {"feature": "sp500_change_24h", "direction": "PUT"},
+                            {"feature": "us_vix_change_24h", "direction": "PUT"},
+                        ],
+                    },
+                    "pcr_context": {
+                        "state": "HIGH_PCR",
+                        "value": 1.42,
+                        "basis": "OPEN_INTEREST",
+                        "interpretation": "support_or_pinning_context_not_automatic_bearish_signal",
+                    },
+                    "interaction_context": {
+                        "matched_count": 2,
+                        "bucket_state": {
+                            "expiry_bucket": "2-3d",
+                            "pcr_oi_bucket": "high",
+                            "pcr_basis": "OPEN_INTEREST",
+                            "india_vix_bucket": "high",
+                            "trend_20d_bucket": "selloff",
+                            "weekday": "Monday",
+                        },
+                        "score_adjustment": 3,
+                        "probability_adjustment": 0.02,
+                        "reasons": ["expiry_x_pcr_aligned_call", "high_range_weekday_vix_interaction"],
+                    },
+                    "max_pain_context": {
+                        "state": "NEAR_MAX_PAIN",
+                        "interpretation": "pinning_or_friction_context_only",
+                    },
+                    "wall_context": {
+                        "state": "NEAR_RESISTANCE_WALL",
+                        "interpretation": "walls_are_friction_and_breakout_context_not_hard_reversal_levels",
+                    },
+                    "live_modifiers": {
+                        "applied": True,
+                        "score_adjustment": -6,
+                        "probability_adjustment": -0.025,
+                        "trade_strength_threshold_adjustment": 4,
+                        "composite_threshold_adjustment": 2,
+                        "size_multiplier": 0.75,
+                        "direction_override": None,
+                        "reasons": ["historical_global_prior_conflict"],
+                    },
+                    "score_adjustment_preview": -8,
+                    "probability_adjustment_preview": -0.0413,
+                    "score_adjustment": -6,
+                    "probability_adjustment": -0.025,
+                    "trade_strength_threshold_adjustment": 4,
+                    "composite_threshold_adjustment": 2,
+                    "size_multiplier": 0.75,
+                    "direction_override": None,
+                    "primary_notes": ["vol_bucket=HIGH", "global_prior=PUT:-2.75"],
+                },
                 "signal_confidence_score": 68.5,
                 "signal_confidence_level": "MODERATE",
                 "signal_confidence_calibration_status": "CAUTION",
@@ -188,9 +296,19 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(row_a["signal_id"], row_b["signal_id"])
         self.assertEqual(row_a["symbol"], "NIFTY")
         self.assertEqual(row_a["selected_option_last_price"], 110.5)
+        self.assertEqual(row_a["selected_option_bid_price"], 110.0)
+        self.assertEqual(row_a["selected_option_ask_price"], 111.0)
+        self.assertEqual(row_a["selected_option_mid_price"], 110.5)
         self.assertEqual(row_a["option_entry_premium"], 110.5)
         self.assertEqual(row_a["option_target_premium"], 143.65)
         self.assertEqual(row_a["option_stop_loss_premium"], 93.93)
+        self.assertEqual(row_a["underlying_profit_booking_level"], 22072.0)
+        self.assertEqual(row_a["underlying_profit_booking_lower"], 22060.0)
+        self.assertEqual(row_a["underlying_profit_booking_upper"], 22086.0)
+        self.assertEqual(row_a["underlying_stop_loss_level"], 21965.0)
+        self.assertEqual(row_a["underlying_exit_plan_confidence"], "HIGH")
+        self.assertEqual(row_a["underlying_exit_plan_reasons"], "profit_zone_blended_with_nearby_market_structure")
+        self.assertIn('"profit_booking"', row_a["underlying_exit_plan_json"])
         self.assertAlmostEqual(row_a["option_premium_pct_of_spot"], 0.5023, places=4)
         self.assertEqual(row_a["selected_option_delta"], 0.4735)
         self.assertEqual(row_a["selected_option_gamma"], 0.0124)
@@ -210,6 +328,15 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(row_a["option_chain_validation_status"], "GOOD")
         self.assertEqual(row_a["option_chain_is_valid"], True)
         self.assertEqual(row_a["option_chain_warning_count"], 1)
+        self.assertEqual(row_a["runtime_composite_score"], 86)
+        self.assertEqual(row_a["runtime_composite_observation_tier"], "OVERRIDE_85_PLUS")
+        self.assertEqual(row_a["runtime_composite_soft_override_applied"], True)
+        self.assertEqual(row_a["runtime_composite_soft_override_mode"], "HIGH_RUNTIME_COMPOSITE_SOFT_BLOCK")
+        self.assertEqual(row_a["runtime_composite_soft_override_blockers"], "GLOBAL_RISK_WATCHLIST")
+        self.assertEqual(row_a["runtime_composite_soft_override_constraints"], "size_cap:0.65|max_hold_minutes:35|no_overnight")
+        self.assertEqual(row_a["runtime_composite_soft_override_original_status"], "WATCHLIST")
+        self.assertIn('"runtime_composite_score": 86', row_a["runtime_composite_soft_override_diagnostics"])
+        self.assertEqual(row_a["effective_min_composite_score_threshold"], 58)
         self.assertEqual(row_a["analytics_usable"], True)
         self.assertEqual(row_a["execution_suggestion_usable"], False)
         self.assertEqual(row_a["tradable_data_status"], "ANALYTICS_ONLY")
@@ -242,6 +369,15 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(row_a["dealer_pressure_adjustment_score"], 3)
         self.assertEqual(row_a["expected_move_points"], 165.4)
         self.assertEqual(row_a["expected_move_pct"], 0.7518)
+        self.assertEqual(row_a["open_interest_pcr"], 1.42)
+        self.assertEqual(row_a["volume_pcr"], 1.18)
+        self.assertEqual(row_a["volume_pcr_atm"], 1.25)
+        self.assertEqual(row_a["volume_pcr_regime"], "PUT_DOMINANT")
+        self.assertEqual(row_a["pcr_value"], 1.42)
+        self.assertEqual(row_a["pcr_basis"], "OPEN_INTEREST")
+        self.assertEqual(row_a["pcr_bucket"], "HIGH_PCR")
+        self.assertEqual(row_a["pcr_data_source"], "LIVE_PAYLOAD")
+        self.assertIsNone(row_a["pcr_snapshot_age_seconds"])
         self.assertEqual(row_a["target_reachability_score"], 78)
         self.assertEqual(row_a["premium_efficiency_score"], 74)
         self.assertEqual(row_a["strike_efficiency_score"], 78)
@@ -255,6 +391,31 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(row_a["commodity_risk_score"], 0.53)
         self.assertEqual(row_a["volatility_shock_score"], 0.7)
         self.assertEqual(row_a["volatility_explosion_probability"], 0.45)
+        self.assertEqual(row_a["historical_context_version"], "historical_context_v1")
+        self.assertEqual(row_a["historical_context_mode"], "LIVE_APPLIED")
+        self.assertEqual(row_a["historical_prior_artifact_version"], "historical_prior_artifact_v1")
+        self.assertEqual(row_a["historical_prior_artifact_source_run_id"], "20260518_113042")
+        self.assertEqual(row_a["historical_context_applied"], True)
+        self.assertEqual(row_a["historical_volatility_bucket"], "HIGH")
+        self.assertEqual(row_a["historical_expected_range_bps"], 262.25)
+        self.assertEqual(row_a["historical_global_prior_direction"], "PUT")
+        self.assertEqual(row_a["historical_global_prior_score"], -2.75)
+        self.assertEqual(row_a["historical_global_prior_evidence"], "sp500_change_24h:PUT|us_vix_change_24h:PUT")
+        self.assertEqual(row_a["historical_pcr_state"], "HIGH_PCR")
+        self.assertEqual(row_a["historical_context_score_adjustment_preview"], -8)
+        self.assertEqual(row_a["historical_context_score_adjustment"], -6)
+        self.assertEqual(row_a["historical_context_probability_adjustment"], -0.025)
+        self.assertEqual(row_a["historical_context_trade_strength_threshold_adjustment"], 4)
+        self.assertEqual(row_a["historical_context_size_multiplier"], 0.75)
+        self.assertEqual(row_a["historical_context_reasons"], "historical_global_prior_conflict")
+        self.assertEqual(row_a["historical_interaction_count"], 2)
+        self.assertEqual(row_a["historical_interaction_score_adjustment"], 3)
+        self.assertEqual(row_a["historical_interaction_probability_adjustment"], 0.02)
+        self.assertEqual(
+            row_a["historical_interaction_reasons"],
+            "expiry_x_pcr_aligned_call|high_range_weekday_vix_interaction",
+        )
+        self.assertIn('"pcr_basis": "OPEN_INTEREST"', row_a["historical_interaction_bucket_state"])
         self.assertTrue(str(row_a["regime_fingerprint"]).startswith("signal_regime="))
         self.assertEqual(len(str(row_a["regime_fingerprint_id"])), 16)
         self.assertEqual(row_a["signal_calibration_bucket"], "80_100")
@@ -317,12 +478,28 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("dealer_pressure_adjustment_score", frame.columns)
             self.assertIn("expected_move_points", frame.columns)
             self.assertIn("expected_move_pct", frame.columns)
+            self.assertIn("open_interest_pcr", frame.columns)
+            self.assertIn("volume_pcr", frame.columns)
+            self.assertIn("volume_pcr_atm", frame.columns)
+            self.assertIn("volume_pcr_regime", frame.columns)
+            self.assertIn("pcr_value", frame.columns)
+            self.assertIn("pcr_basis", frame.columns)
+            self.assertIn("pcr_bucket", frame.columns)
+            self.assertIn("pcr_data_source", frame.columns)
+            self.assertIn("pcr_snapshot_age_seconds", frame.columns)
             self.assertIn("target_reachability_score", frame.columns)
             self.assertIn("premium_efficiency_score", frame.columns)
             self.assertIn("option_entry_premium", frame.columns)
             self.assertIn("option_target_premium", frame.columns)
             self.assertIn("option_stop_loss_premium", frame.columns)
             self.assertIn("option_premium_pct_of_spot", frame.columns)
+            self.assertIn("selected_option_bid_price", frame.columns)
+            self.assertIn("selected_option_ask_price", frame.columns)
+            self.assertIn("selected_option_mid_price", frame.columns)
+            self.assertIn("option_premium_path_status", frame.columns)
+            self.assertIn("option_premium_60m", frame.columns)
+            self.assertIn("option_premium_return_60m_bps", frame.columns)
+            self.assertIn("option_premium_pnl_per_lot_60m", frame.columns)
             self.assertIn("selected_option_delta", frame.columns)
             self.assertIn("selected_option_iv", frame.columns)
             self.assertIn("market_gamma_exposure", frame.columns)
@@ -339,6 +516,19 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("commodity_risk_score", frame.columns)
             self.assertIn("volatility_shock_score", frame.columns)
             self.assertIn("volatility_explosion_probability", frame.columns)
+            self.assertIn("historical_context_version", frame.columns)
+            self.assertIn("historical_prior_artifact_version", frame.columns)
+            self.assertIn("historical_prior_artifact_source_run_id", frame.columns)
+            self.assertIn("historical_volatility_bucket", frame.columns)
+            self.assertIn("historical_global_prior_direction", frame.columns)
+            self.assertIn("historical_context_score_adjustment_preview", frame.columns)
+            self.assertIn("historical_context_score_adjustment", frame.columns)
+            self.assertIn("historical_context_probability_adjustment", frame.columns)
+            self.assertIn("historical_context_size_multiplier", frame.columns)
+            self.assertIn("historical_interaction_count", frame.columns)
+            self.assertIn("historical_interaction_score_adjustment", frame.columns)
+            self.assertIn("historical_interaction_probability_adjustment", frame.columns)
+            self.assertIn("historical_interaction_bucket_state", frame.columns)
             self.assertIn("market_data_provenance_status", frame.columns)
             self.assertIn("option_chain_validation_status", frame.columns)
             self.assertIn("signal_confidence_calibration_status", frame.columns)

@@ -124,7 +124,7 @@ def test_render_market_summary_levels_table_shows_snapshot_proxy_note_only_when_
         proxy_output = buffer.getvalue()
 
     assert "+200*" in proxy_output
-    assert "Zerodha snapshot OI delta proxy" in proxy_output
+    assert "snapshot OI delta proxy" in proxy_output
 
     with StringIO() as buffer, redirect_stdout(buffer):
         _render_market_summary_levels_table(
@@ -138,10 +138,42 @@ def test_render_market_summary_levels_table_shows_snapshot_proxy_note_only_when_
 
     assert "+45" in native_output
     assert "+45*" not in native_output
-    assert "Zerodha snapshot OI delta proxy" not in native_output
+    assert "snapshot OI delta proxy" not in native_output
     assert "inference confidence decomposes 1m/3m/5m premium baselines" in native_output
     assert "PROXY_ONLY" in native_output
     assert "1m:0 3m:0 5m:0" in native_output
+
+
+def test_render_market_summary_levels_table_shows_live_and_day_oi_change() -> None:
+    proxy_rows = [
+        (
+            22950.0,
+            1200.0,
+            200.0,
+            "BUY_BUILDUP",
+            True,
+            0.77,
+            "PREMIUM_WEAK_AGREE",
+            "1m:0 3m:0 5m:+",
+            {"native_oi_change": 450.0},
+        )
+    ]
+
+    with StringIO() as buffer, redirect_stdout(buffer):
+        _render_market_summary_levels_table(
+            spot=22906.75,
+            resistances=[],
+            supports=[],
+            call_oi=proxy_rows,
+            put_oi=[],
+        )
+        output = buffer.getvalue()
+
+    assert "live_chg" in output
+    assert "day_chg" in output
+    assert "+200*" in output
+    assert "+450" in output
+    assert "day_chg is provider-native changeinOI" in output
 
 
 def test_resolve_top_oi_levels_prefers_premium_delta_over_underlying_proxy() -> None:
@@ -181,6 +213,46 @@ def test_resolve_top_oi_levels_prefers_premium_delta_over_underlying_proxy() -> 
     assert put_rows[0][3] == "SHORT_COVERING"
     assert call_rows[0][6] == "PREMIUM_WEAK_CONFLICT"
     assert put_rows[0][6] == "PREMIUM_WEAK_CONFLICT"
+
+
+def test_resolve_top_oi_levels_derives_snapshot_oi_change_for_icici() -> None:
+    current_chain = pd.DataFrame(
+        {
+            "strikePrice": [22950],
+            "OPTION_TYP": ["CE"],
+            "openInterest": [1200],
+            "changeinOI": [999],
+            "lastPrice": [90.0],
+            "EXPIRY_DT": ["19-May-2026"],
+            "source": ["ICICI"],
+        }
+    )
+    previous_chain = pd.DataFrame(
+        {
+            "strikePrice": [22950],
+            "OPTION_TYP": ["CE"],
+            "openInterest": [1100],
+            "lastPrice": [110.0],
+            "EXPIRY_DT": ["19-May-2026"],
+            "source": ["ICICI"],
+        }
+    )
+    trade = {
+        "selected_expiry": "19-May-2026",
+        "spot": 22950.0,
+        "prev_close": 22300.0,
+        "previous_chain_frame": previous_chain,
+        "premium_baseline_chain_frame": previous_chain,
+    }
+
+    call_rows, _ = _resolve_top_oi_levels(trade, current_chain, top_n=1)
+
+    assert call_rows[0][2] == 100.0
+    assert call_rows[0][4] is True
+    assert call_rows[0][3] == "WRITE_BUILDUP"
+    assert call_rows[0][6] == "PREMIUM_WEAK_CONFLICT"
+    assert call_rows[0][8]["native_oi_change"] == 999.0
+    assert call_rows[0][8]["display_oi_change"] == 100.0
 
 
 def test_resolve_top_oi_levels_prefers_rolling_baseline_over_previous_snapshot() -> None:

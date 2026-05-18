@@ -47,6 +47,7 @@ from research.signal_evaluation.market_data import (
     resolve_research_as_of,
 )
 from utils.numerics import safe_float as _safe_float  # noqa: F401
+from utils.pcr import select_canonical_pcr
 from utils.regime_normalization import normalize_iv_decimal
 
 
@@ -491,6 +492,8 @@ def build_signal_evaluation_row(
         or result.get("parameter_pack_name")
         or result.get("authoritative_parameter_pack")
     )
+    activation_guard = result.get("runtime_activation_capture_guard")
+    activation_guard = activation_guard if isinstance(activation_guard, dict) else {}
 
     signal_id = build_signal_id(
         signal_timestamp=signal_timestamp,
@@ -556,6 +559,94 @@ def build_signal_evaluation_row(
                 return value
         return None
 
+    historical_context = trade.get("historical_context") if isinstance(trade.get("historical_context"), dict) else {}
+    historical_vol_context = (
+        historical_context.get("volatility_context")
+        if isinstance(historical_context.get("volatility_context"), dict)
+        else {}
+    )
+    historical_prior_context = (
+        historical_context.get("global_directional_prior")
+        if isinstance(historical_context.get("global_directional_prior"), dict)
+        else {}
+    )
+    historical_pcr_context = (
+        historical_context.get("pcr_context")
+        if isinstance(historical_context.get("pcr_context"), dict)
+        else {}
+    )
+    historical_max_pain_context = (
+        historical_context.get("max_pain_context")
+        if isinstance(historical_context.get("max_pain_context"), dict)
+        else {}
+    )
+    historical_wall_context = (
+        historical_context.get("wall_context")
+        if isinstance(historical_context.get("wall_context"), dict)
+        else {}
+    )
+    historical_interaction_context = (
+        historical_context.get("interaction_context")
+        if isinstance(historical_context.get("interaction_context"), dict)
+        else {}
+    )
+    statistical_market_context = (
+        historical_context.get("statistical_market_context")
+        if isinstance(historical_context.get("statistical_market_context"), dict)
+        else {}
+    )
+    statistical_macro_context = (
+        statistical_market_context.get("macro_context")
+        if isinstance(statistical_market_context.get("macro_context"), dict)
+        else {}
+    )
+    historical_prior_evidence = []
+    for item in historical_prior_context.get("evidence") or []:
+        if isinstance(item, dict):
+            feature = item.get("feature")
+            direction_value = item.get("direction")
+            if feature and direction_value:
+                historical_prior_evidence.append(f"{feature}:{direction_value}")
+
+    pcr_context_value = historical_pcr_context.get("value")
+    pcr_context_basis = historical_pcr_context.get("basis")
+    raw_trade_pcr_present = any(
+        _first_present(trade.get(field)) is not None
+        for field in ("open_interest_pcr", "oi_pcr", "volume_pcr_atm", "volume_pcr", "pcr_value")
+    )
+    historical_pcr_present = any(
+        _first_present(historical_pcr_context.get(field)) is not None
+        for field in ("value", "open_interest_value", "volume_atm_value", "volume_value")
+    )
+    canonical_pcr = select_canonical_pcr(
+        open_interest_pcr=_first_present(
+            trade.get("open_interest_pcr"),
+            trade.get("oi_pcr"),
+            historical_pcr_context.get("open_interest_value"),
+            pcr_context_value if str(pcr_context_basis or "").upper().strip() == "OPEN_INTEREST" else None,
+        ),
+        volume_pcr_atm=_first_present(
+            trade.get("volume_pcr_atm"),
+            historical_pcr_context.get("volume_atm_value"),
+            pcr_context_value if str(pcr_context_basis or "").upper().strip() == "VOLUME_ATM" else None,
+        ),
+        volume_pcr=_first_present(
+            trade.get("volume_pcr"),
+            historical_pcr_context.get("volume_value"),
+            pcr_context_value if str(pcr_context_basis or "").upper().strip() == "VOLUME" else None,
+        ),
+        pcr_value=_first_present(trade.get("pcr_value"), pcr_context_value),
+        pcr_basis=_first_present(trade.get("pcr_basis"), pcr_context_basis),
+    )
+    if canonical_pcr.get("pcr_value") is None:
+        pcr_data_source = "UNAVAILABLE"
+    elif raw_trade_pcr_present:
+        pcr_data_source = "LIVE_PAYLOAD"
+    elif historical_pcr_present:
+        pcr_data_source = "HISTORICAL_CONTEXT"
+    else:
+        pcr_data_source = "UNKNOWN"
+
     option_validation_status = trade.get("option_chain_validation_status")
     if option_validation_status in (None, "") and option_chain_validation:
         provider_status = str(provider_health.get("summary_status") or "").upper().strip()
@@ -613,6 +704,16 @@ def build_signal_evaluation_row(
         ),
         "mode": str(result.get("mode") or "").upper().strip(),
         "parameter_pack_name": parameter_pack_name,
+        "signal_capture_guarded": result.get("signal_capture_guarded"),
+        "signal_capture_guard_reason": result.get("signal_capture_guard_reason"),
+        "runtime_activation_guard_active": activation_guard.get("guard_active"),
+        "runtime_activation_capture_allowed": activation_guard.get("capture_allowed"),
+        "runtime_activation_guard_status": activation_guard.get("status"),
+        "runtime_activation_expected_parameter_pack": activation_guard.get("expected_parameter_pack"),
+        "runtime_activation_observed_parameter_pack": activation_guard.get("observed_parameter_pack"),
+        "runtime_activation_activated_at": activation_guard.get("activated_at"),
+        "runtime_activation_signal_timestamp": activation_guard.get("signal_timestamp"),
+        "runtime_activation_marker_generated_at": activation_guard.get("marker_generated_at"),
         "symbol": normalize_underlying_symbol(result.get("symbol")),
         "ticker": spot_summary.get("ticker") or result.get("spot_snapshot", {}).get("ticker"),
         "selected_expiry": inferred_selected_expiry,
@@ -623,10 +724,27 @@ def build_signal_evaluation_row(
         "option_entry_premium": entry_price,
         "option_target_premium": target_price,
         "option_stop_loss_premium": stop_loss_price,
+        "underlying_profit_booking_level": trade.get("underlying_profit_booking_level"),
+        "underlying_profit_booking_lower": trade.get("underlying_profit_booking_lower"),
+        "underlying_profit_booking_upper": trade.get("underlying_profit_booking_upper"),
+        "underlying_stop_loss_level": trade.get("underlying_stop_loss_level"),
+        "underlying_stop_loss_lower": trade.get("underlying_stop_loss_lower"),
+        "underlying_stop_loss_upper": trade.get("underlying_stop_loss_upper"),
+        "underlying_exit_plan_confidence": trade.get("underlying_exit_plan_confidence"),
+        "underlying_exit_plan_basis": trade.get("underlying_exit_plan_basis"),
+        "underlying_exit_plan_reasons": _join_list(trade.get("underlying_exit_plan_reasons")),
+        "underlying_exit_plan_json": json.dumps(
+            trade.get("underlying_exit_plan") or {},
+            sort_keys=True,
+            default=str,
+        ),
         "option_premium_pct_of_spot": option_premium_pct_of_spot,
         "target_premium_return_pct": target_premium_return_pct,
         "stop_loss_premium_return_pct": stop_loss_premium_return_pct,
         "selected_option_last_price": trade.get("selected_option_last_price", trade.get("entry_price")),
+        "selected_option_bid_price": trade.get("selected_option_bid_price"),
+        "selected_option_ask_price": trade.get("selected_option_ask_price"),
+        "selected_option_mid_price": trade.get("selected_option_mid_price"),
         "selected_option_volume": trade.get("selected_option_volume"),
         "selected_option_open_interest": trade.get("selected_option_open_interest"),
         "selected_option_iv": trade.get("selected_option_iv"),
@@ -656,6 +774,27 @@ def build_signal_evaluation_row(
         "prev_close": spot_summary.get("prev_close"),
         "lookback_avg_range_pct": spot_summary.get("lookback_avg_range_pct"),
         "trade_strength": trade.get("trade_strength"),
+        "runtime_composite_score": trade.get("runtime_composite_score"),
+        "runtime_composite_observation_tier": trade.get("runtime_composite_observation_tier"),
+        "runtime_composite_observation_threshold": trade.get("runtime_composite_observation_threshold"),
+        "runtime_composite_soft_override_threshold": trade.get("runtime_composite_soft_override_threshold"),
+        "runtime_composite_soft_override_applied": trade.get("runtime_composite_soft_override_applied"),
+        "runtime_composite_soft_override_mode": trade.get("runtime_composite_soft_override_mode"),
+        "runtime_composite_soft_override_blockers": _join_list(trade.get("runtime_composite_soft_override_blockers")),
+        "runtime_composite_soft_override_reason": trade.get("runtime_composite_soft_override_reason"),
+        "runtime_composite_soft_override_constraints": _join_list(trade.get("runtime_composite_soft_override_constraints")),
+        "runtime_composite_soft_override_original_status": trade.get("runtime_composite_soft_override_original_status"),
+        "runtime_composite_soft_override_original_reason_code": trade.get(
+            "runtime_composite_soft_override_original_reason_code"
+        ),
+        "runtime_composite_soft_override_original_message": trade.get("runtime_composite_soft_override_original_message"),
+        "runtime_composite_soft_override_diagnostics": json.dumps(
+            trade.get("runtime_composite_soft_override_diagnostics") or {},
+            sort_keys=True,
+            default=str,
+        ),
+        "effective_min_trade_strength_threshold": trade.get("effective_min_trade_strength_threshold"),
+        "effective_min_composite_score_threshold": trade.get("effective_min_composite_score_threshold"),
         "signal_quality": trade.get("signal_quality"),
         "signal_regime": trade.get("signal_regime"),
         "execution_regime": trade.get("execution_regime"),
@@ -715,6 +854,15 @@ def build_signal_evaluation_row(
         "dealer_pressure_adjustment_score": trade.get("dealer_pressure_adjustment_score"),
         "expected_move_points": trade.get("expected_move_points"),
         "expected_move_pct": trade.get("expected_move_pct"),
+        "open_interest_pcr": canonical_pcr.get("open_interest_pcr"),
+        "volume_pcr": canonical_pcr.get("volume_pcr"),
+        "volume_pcr_atm": canonical_pcr.get("volume_pcr_atm"),
+        "volume_pcr_regime": trade.get("volume_pcr_regime"),
+        "pcr_value": canonical_pcr.get("pcr_value"),
+        "pcr_basis": canonical_pcr.get("pcr_basis"),
+        "pcr_bucket": canonical_pcr.get("pcr_bucket"),
+        "pcr_data_source": pcr_data_source,
+        "pcr_snapshot_age_seconds": None,
         "target_reachability_score": trade.get("target_reachability_score"),
         "premium_efficiency_score": trade.get("premium_efficiency_score"),
         "strike_efficiency_score": trade.get("strike_efficiency_score"),
@@ -736,6 +884,244 @@ def build_signal_evaluation_row(
         "market_charm_exposure": trade.get("charm_exposure"),
         "volatility_regime": trade.get("volatility_regime"),
         "liquidity_vacuum_state": trade.get("liquidity_vacuum_state"),
+        "historical_context_version": historical_context.get("version", trade.get("historical_context_version")),
+        "historical_context_mode": historical_context.get("decision_mode", trade.get("historical_context_mode")),
+        "historical_prior_artifact_version": historical_context.get(
+            "prior_artifact_version",
+            trade.get("historical_prior_artifact_version"),
+        ),
+        "historical_prior_artifact_source_run_id": historical_context.get(
+            "prior_artifact_source_run_id",
+            trade.get("historical_prior_artifact_source_run_id"),
+        ),
+        "historical_context_applied": historical_context.get(
+            "apply_to_live_decision",
+            trade.get("historical_context_applied"),
+        ),
+        "historical_volatility_bucket": historical_vol_context.get("bucket", trade.get("historical_volatility_bucket")),
+        "historical_expected_range_bps": historical_vol_context.get(
+            "expected_range_bps",
+            trade.get("historical_expected_range_bps"),
+        ),
+        "historical_expected_abs_move_bps": historical_vol_context.get(
+            "expected_abs_move_bps",
+            trade.get("historical_expected_abs_move_bps"),
+        ),
+        "historical_range_multiplier": historical_vol_context.get(
+            "range_multiplier",
+            trade.get("historical_range_multiplier"),
+        ),
+        "historical_global_prior_direction": historical_prior_context.get(
+            "prior_direction",
+            trade.get("historical_global_prior_direction"),
+        ),
+        "historical_global_prior_score": historical_prior_context.get(
+            "prior_score",
+            trade.get("historical_global_prior_score"),
+        ),
+        "historical_global_prior_evidence": _join_list(historical_prior_evidence),
+        "historical_pcr_state": historical_pcr_context.get("state"),
+        "historical_pcr_interpretation": historical_pcr_context.get("interpretation"),
+        "historical_max_pain_state": historical_max_pain_context.get("state"),
+        "historical_max_pain_interpretation": historical_max_pain_context.get("interpretation"),
+        "historical_wall_state": historical_wall_context.get("state"),
+        "historical_wall_interpretation": historical_wall_context.get("interpretation"),
+        "historical_context_score_adjustment_preview": historical_context.get(
+            "score_adjustment_preview",
+            trade.get("historical_context_score_adjustment_preview"),
+        ),
+        "historical_context_probability_adjustment_preview": historical_context.get(
+            "probability_adjustment_preview",
+            trade.get("historical_context_probability_adjustment_preview"),
+        ),
+        "historical_context_score_adjustment": historical_context.get(
+            "score_adjustment",
+            trade.get("historical_context_score_adjustment"),
+        ),
+        "historical_context_probability_adjustment": historical_context.get(
+            "probability_adjustment",
+            trade.get("historical_context_probability_adjustment"),
+        ),
+        "historical_context_trade_strength_threshold_adjustment": historical_context.get(
+            "trade_strength_threshold_adjustment",
+            trade.get("historical_context_trade_strength_threshold_adjustment"),
+        ),
+        "historical_context_composite_threshold_adjustment": historical_context.get(
+            "composite_threshold_adjustment",
+            trade.get("historical_context_composite_threshold_adjustment"),
+        ),
+        "historical_context_size_multiplier": historical_context.get(
+            "size_multiplier",
+            trade.get("historical_context_size_multiplier"),
+        ),
+        "historical_context_size_applied": trade.get("historical_context_size_applied"),
+        "historical_context_direction_override": historical_context.get(
+            "direction_override",
+            trade.get("historical_context_direction_override"),
+        ),
+        "historical_context_reasons": _join_list(
+            ((historical_context.get("live_modifiers") or {}).get("reasons") if historical_context else None)
+            or trade.get("historical_context_reasons")
+        ),
+        "historical_interaction_count": historical_interaction_context.get(
+            "matched_count",
+            trade.get("historical_interaction_count"),
+        ),
+        "historical_interaction_score_adjustment": historical_interaction_context.get(
+            "score_adjustment",
+            trade.get("historical_interaction_score_adjustment"),
+        ),
+        "historical_interaction_probability_adjustment": historical_interaction_context.get(
+            "probability_adjustment",
+            trade.get("historical_interaction_probability_adjustment"),
+        ),
+        "historical_interaction_reasons": _join_list(
+            historical_interaction_context.get("reasons") or trade.get("historical_interaction_reasons")
+        ),
+        "historical_interaction_bucket_state": json.dumps(
+            historical_interaction_context.get("bucket_state") or trade.get("historical_interaction_bucket_state") or {},
+            sort_keys=True,
+            default=str,
+        ),
+        "statistical_market_context_version": statistical_market_context.get(
+            "version",
+            trade.get("statistical_market_context_version"),
+        ),
+        "statistical_market_context_artifact_version": statistical_market_context.get(
+            "artifact_version",
+            trade.get("statistical_market_context_artifact_version"),
+        ),
+        "statistical_market_context_source_run_id": statistical_market_context.get(
+            "source_run_id",
+            trade.get("statistical_market_context_source_run_id"),
+        ),
+        "statistical_market_context_applied": statistical_market_context.get(
+            "applied",
+            trade.get("statistical_market_context_applied"),
+        ),
+        "statistical_vol_stress_score": statistical_market_context.get(
+            "vol_stress_score",
+            trade.get("statistical_vol_stress_score"),
+        ),
+        "statistical_expected_range_prior": statistical_market_context.get(
+            "expected_range_prior",
+            trade.get("statistical_expected_range_prior"),
+        ),
+        "statistical_expected_range_bps": statistical_market_context.get(
+            "expected_range_bps",
+            trade.get("statistical_expected_range_bps"),
+        ),
+        "statistical_expected_abs_move_bps": statistical_market_context.get(
+            "expected_abs_move_bps",
+            trade.get("statistical_expected_abs_move_bps"),
+        ),
+        "statistical_abs_move_delta_vs_base_bps": statistical_market_context.get(
+            "abs_move_delta_vs_base_bps",
+            trade.get("statistical_abs_move_delta_vs_base_bps"),
+        ),
+        "statistical_directional_followthrough_prior": statistical_market_context.get(
+            "directional_followthrough_prior",
+            trade.get("statistical_directional_followthrough_prior"),
+        ),
+        "statistical_directional_basis": statistical_market_context.get(
+            "directional_basis",
+            trade.get("statistical_directional_basis"),
+        ),
+        "statistical_regime_confidence": statistical_market_context.get(
+            "regime_confidence",
+            trade.get("statistical_regime_confidence"),
+        ),
+        "statistical_hold_time_hint": statistical_market_context.get(
+            "hold_time_hint",
+            trade.get("statistical_hold_time_hint"),
+        ),
+        "statistical_context_score_adjustment": statistical_market_context.get(
+            "score_adjustment",
+            trade.get("statistical_context_score_adjustment"),
+        ),
+        "statistical_context_probability_adjustment": statistical_market_context.get(
+            "probability_adjustment",
+            trade.get("statistical_context_probability_adjustment"),
+        ),
+        "statistical_context_trade_strength_threshold_adjustment": statistical_market_context.get(
+            "trade_strength_threshold_adjustment",
+            trade.get("statistical_context_trade_strength_threshold_adjustment"),
+        ),
+        "statistical_context_composite_threshold_adjustment": statistical_market_context.get(
+            "composite_threshold_adjustment",
+            trade.get("statistical_context_composite_threshold_adjustment"),
+        ),
+        "statistical_context_size_multiplier": statistical_market_context.get(
+            "size_multiplier",
+            trade.get("statistical_context_size_multiplier"),
+        ),
+        "statistical_context_reasons": _join_list(
+            statistical_market_context.get("reasons") or trade.get("statistical_context_reasons")
+        ),
+        "statistical_context_bucket_state": json.dumps(
+            statistical_market_context.get("bucket_state") or trade.get("statistical_context_bucket_state") or {},
+            sort_keys=True,
+            default=str,
+        ),
+        "statistical_macro_context_applied": statistical_macro_context.get(
+            "applied",
+            trade.get("statistical_macro_context_applied"),
+        ),
+        "statistical_macro_range_prior": statistical_macro_context.get(
+            "macro_range_prior",
+            trade.get("statistical_macro_range_prior"),
+        ),
+        "statistical_macro_range_basis": statistical_macro_context.get(
+            "macro_range_basis",
+            trade.get("statistical_macro_range_basis"),
+        ),
+        "statistical_macro_directional_prior": statistical_macro_context.get(
+            "macro_directional_prior",
+            trade.get("statistical_macro_directional_prior"),
+        ),
+        "statistical_macro_directional_basis": statistical_macro_context.get(
+            "macro_directional_basis",
+            trade.get("statistical_macro_directional_basis"),
+        ),
+        "statistical_macro_factor_buckets": json.dumps(
+            statistical_macro_context.get("macro_factor_buckets")
+            or trade.get("statistical_macro_factor_buckets")
+            or {},
+            sort_keys=True,
+            default=str,
+        ),
+        "statistical_macro_shock_state": json.dumps(
+            statistical_macro_context.get("shock_bucket_state")
+            or trade.get("statistical_macro_shock_state")
+            or {},
+            sort_keys=True,
+            default=str,
+        ),
+        "statistical_macro_score_adjustment": statistical_macro_context.get(
+            "score_adjustment",
+            trade.get("statistical_macro_score_adjustment"),
+        ),
+        "statistical_macro_probability_adjustment": statistical_macro_context.get(
+            "probability_adjustment",
+            trade.get("statistical_macro_probability_adjustment"),
+        ),
+        "statistical_macro_trade_strength_threshold_adjustment": statistical_macro_context.get(
+            "trade_strength_threshold_adjustment",
+            trade.get("statistical_macro_trade_strength_threshold_adjustment"),
+        ),
+        "statistical_macro_composite_threshold_adjustment": statistical_macro_context.get(
+            "composite_threshold_adjustment",
+            trade.get("statistical_macro_composite_threshold_adjustment"),
+        ),
+        "statistical_macro_size_multiplier": statistical_macro_context.get(
+            "size_multiplier",
+            trade.get("statistical_macro_size_multiplier"),
+        ),
+        "statistical_macro_reasons": _join_list(
+            statistical_macro_context.get("reasons") or trade.get("statistical_macro_reasons")
+        ),
+        "historical_context_notes": _join_list(historical_context.get("primary_notes") or trade.get("historical_context_notes")),
+        "historical_context_json": json.dumps(historical_context or {}, sort_keys=True, default=str),
         "confirmation_status": trade.get("confirmation_status"),
         "macro_event_risk_score": trade.get("macro_event_risk_score"),
         "data_quality_score": trade.get("data_quality_score"),

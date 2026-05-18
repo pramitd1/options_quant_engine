@@ -132,6 +132,48 @@ class DealerFlowPolicyConfig:
     charm_weight: float = 0.25
 
 
+@dataclass(frozen=True)
+class TechnicalAnalysisPolicyConfig:
+    """Policy controls for spot-history technical indicators."""
+
+    default_history_days: int = 75
+    minimum_history_rows: int = 14
+    sma_fast_window: int = 20
+    sma_slow_window: int = 50
+    ema_fast_span: int = 12
+    ema_slow_span: int = 26
+    macd_signal_span: int = 9
+    rsi_window: int = 14
+    rsi_overbought: float = 70.0
+    rsi_oversold: float = 30.0
+    bollinger_window: int = 20
+    bollinger_std_mult: float = 2.0
+    trend_signal_confidence: float = 0.60
+    macd_signal_confidence: float = 0.50
+    rsi_signal_confidence: float = 0.70
+
+
+@dataclass(frozen=True)
+class MeanReversionPolicyConfig:
+    """Policy controls for spot-history mean-reversion features."""
+
+    default_history_days: int = 30
+    lookback: int = 20
+    zscore_threshold: float = 1.50
+    detection_threshold: float = 1.80
+    strength_scale: float = 12.50
+
+
+@dataclass(frozen=True)
+class VolumePcrPolicyConfig:
+    """Policy controls for volume put/call-ratio classification."""
+
+    bullish_threshold: float = 0.75
+    bearish_threshold: float = 1.30
+    extreme_cap: float = 9.99
+    atm_strike_window_steps: int = 4
+
+
 def get_gamma_flip_policy_config() -> GammaFlipPolicyConfig:
     """Return the gamma-flip policy bundle used by analytics features."""
     from config.policy_resolver import resolve_dataclass_config
@@ -151,6 +193,27 @@ def get_dealer_flow_policy_config() -> DealerFlowPolicyConfig:
     from config.policy_resolver import resolve_dataclass_config
 
     return resolve_dataclass_config("analytics.dealer_flow", DealerFlowPolicyConfig())
+
+
+def get_technical_analysis_policy_config() -> TechnicalAnalysisPolicyConfig:
+    """Return policy bundle used by spot-history technical indicators."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config("analytics.technical_analysis", TechnicalAnalysisPolicyConfig())
+
+
+def get_mean_reversion_policy_config() -> MeanReversionPolicyConfig:
+    """Return policy bundle used by spot-history mean-reversion features."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config("analytics.mean_reversion", MeanReversionPolicyConfig())
+
+
+def get_volume_pcr_policy_config() -> VolumePcrPolicyConfig:
+    """Return policy bundle used by volume PCR classification."""
+    from config.policy_resolver import resolve_dataclass_config
+
+    return resolve_dataclass_config("analytics.volume_pcr", VolumePcrPolicyConfig())
 
 
 def get_flow_imbalance_policy_config() -> FlowImbalancePolicyConfig:

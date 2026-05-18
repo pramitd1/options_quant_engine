@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from analytics.greeks_engine import summarize_greek_exposures
+from analytics.greeks_engine import enrich_chain_with_greeks, summarize_greek_exposures
 from analytics.gamma_walls import classify_walls, detect_gamma_walls
 from analytics.market_gamma_map import calculate_market_gamma
 from analytics.volatility_surface import compute_risk_reversal
@@ -92,6 +93,30 @@ def test_summarize_greek_exposures_handles_string_inputs_and_regimes():
     assert summary["charm_exposure"] == 2.0
     assert summary["vanna_regime"] == "POSITIVE_VANNA"
     assert summary["charm_regime"] == "POSITIVE_CHARM"
+
+
+def test_date_only_expiry_uses_exchange_close_for_intraday_greeks():
+    chain = pd.DataFrame(
+        {
+            "STRIKE_PR": [100.0],
+            "OPTION_TYP": ["CE"],
+            "IV": [20.0],
+            "LAST_PRICE": [2.0],
+            "OPEN_INT": [1000],
+            "EXPIRY_DT": ["2026-05-18"],
+        }
+    )
+
+    enriched = enrich_chain_with_greeks(
+        chain,
+        spot=100.0,
+        valuation_time="2026-05-18T09:30:00+05:30",
+    )
+
+    expected_tte = (6 * 3600) / (365 * 24 * 3600)
+    assert enriched.loc[0, "TTE"] == pytest.approx(expected_tte)
+    assert pd.notna(enriched.loc[0, "DELTA"])
+    assert pd.notna(enriched.loc[0, "GAMMA"])
 
 
 def test_gamma_walls_raises_on_unknown_option_type():

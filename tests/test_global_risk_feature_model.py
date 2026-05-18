@@ -47,6 +47,32 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         self.assertTrue(snapshot["market_inputs"]["oil_change_24h"] is not None)
         self.assertTrue(snapshot["market_inputs"]["sp500_change_24h"] is not None)
 
+    def test_build_global_market_snapshot_handles_price_first_multiindex_downloads(self):
+        invalidate_download_cache()
+        now = pd.Timestamp.now(tz="Asia/Kolkata")
+
+        def fake_download(tickers, **kwargs):
+            index = pd.DatetimeIndex([now - pd.Timedelta(days=1), now]).tz_convert("UTC")
+            tickers_list = tickers if isinstance(tickers, list) else [tickers]
+            payload = {
+                ("Close", ticker): [100.0 + idx, 102.0 + idx]
+                for idx, ticker in enumerate(tickers_list)
+            }
+            frame = pd.DataFrame(payload, index=index)
+            frame.index.name = "Date"
+            frame.columns = pd.MultiIndex.from_tuples(frame.columns)
+            return frame
+
+        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download):
+            snapshot = build_global_market_snapshot(
+                "NIFTY",
+                as_of=now.isoformat(),
+            )
+
+        self.assertTrue(snapshot["data_available"])
+        self.assertAlmostEqual(snapshot["market_inputs"]["oil_change_24h"], 2.0)
+        self.assertAlmostEqual(snapshot["market_inputs"]["sp500_change_24h"], 2.0 / 105.0 * 100.0)
+
     def test_build_global_market_snapshot_returns_neutral_for_historical_as_of(self):
         with patch("data.global_market_snapshot.yf.download") as mock_download:
             snapshot = build_global_market_snapshot("NIFTY", as_of="2020-01-10T10:00:00+05:30")

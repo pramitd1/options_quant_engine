@@ -2296,37 +2296,40 @@ def _render_ta_visualization(trade: dict, symbol: str):
 
     # Try to fetch and display historical price chart with TA overlays
     try:
+        from config.analytics_feature_policy import get_technical_analysis_policy_config
         from data.historical_spot_fetcher import get_recent_spot_history
-        from features.ta_indicators import _compute_ta_indicators
+        from features.ta_indicators import _compute_ta_indicator_series
 
         # Fetch recent historical data from cache only to avoid repeated Yahoo refreshes
-        hist_df = get_recent_spot_history(symbol, days=30, cache_only=True)
+        ta_cfg = get_technical_analysis_policy_config()
+        hist_df = get_recent_spot_history(symbol, days=ta_cfg.default_history_days, cache_only=True)
         st.caption("Cached TA charts are preferred; live Yahoo refresh is performed only when cache is explicitly refreshed.")
 
         if not hist_df.empty and len(hist_df) >= 14:
             # Compute TA indicators for visualization
-            spot_price = trade.get("spot", hist_df["close"].iloc[-1] if not hist_df.empty else 0)
-            indicators_df = _compute_ta_indicators(hist_df, spot_price)
+            indicator_series = _compute_ta_indicator_series(hist_df, ta_cfg)
+            sma_fast_key = f"sma_{ta_cfg.sma_fast_window}"
+            ema_fast_key = f"ema_{ta_cfg.ema_fast_span}"
 
             # Create price chart with TA overlays
             chart_cols = st.columns(2)
 
             with chart_cols[0]:
                 st.markdown("**Price Chart with Moving Averages**")
-                price_data = pd.DataFrame({
-                    "Close": hist_df["close"],
-                    "SMA_20": indicators_df.get("sma_20", hist_df["close"]),
-                    "EMA_12": indicators_df.get("ema_12", hist_df["close"])
-                })
+                price_data = pd.DataFrame({"Close": hist_df["close"]})
+                if sma_fast_key in indicator_series:
+                    price_data[f"SMA {ta_cfg.sma_fast_window}"] = indicator_series[sma_fast_key]
+                if ema_fast_key in indicator_series:
+                    price_data[f"EMA {ta_cfg.ema_fast_span}"] = indicator_series[ema_fast_key]
                 st.line_chart(price_data, use_container_width=True)
 
             with chart_cols[1]:
                 st.markdown("**MACD Indicator**")
-                if "macd" in indicators_df and "macd_signal" in indicators_df:
+                if "macd_line" in indicator_series and "macd_signal" in indicator_series:
                     macd_data = pd.DataFrame({
-                        "MACD": indicators_df["macd"],
-                        "Signal": indicators_df["macd_signal"],
-                        "Histogram": indicators_df.get("macd_hist", 0)
+                        "MACD": indicator_series["macd_line"],
+                        "Signal": indicator_series["macd_signal"],
+                        "Histogram": indicator_series.get("macd_histogram", 0),
                     })
                     st.line_chart(macd_data, use_container_width=True)
 
@@ -2335,20 +2338,20 @@ def _render_ta_visualization(trade: dict, symbol: str):
 
             with indicator_cols[0]:
                 st.markdown("**RSI (Relative Strength Index)**")
-                if "rsi" in indicators_df:
-                    rsi_data = pd.DataFrame({"RSI": indicators_df["rsi"]})
+                if "rsi" in indicator_series:
+                    rsi_data = pd.DataFrame({"RSI": indicator_series["rsi"]})
                     st.line_chart(rsi_data, use_container_width=True)
                     # Add RSI levels
-                    st.caption("Overbought: >70 | Oversold: <30")
+                    st.caption(f"Overbought: >{ta_cfg.rsi_overbought:g} | Oversold: <{ta_cfg.rsi_oversold:g}")
 
             with indicator_cols[1]:
                 st.markdown("**Bollinger Bands**")
-                if all(k in indicators_df for k in ["bb_upper", "bb_middle", "bb_lower"]):
+                if all(k in indicator_series for k in ["bb_upper", "bb_sma", "bb_lower"]):
                     bb_data = pd.DataFrame({
-                        "Upper": indicators_df["bb_upper"],
-                        "Middle": indicators_df["bb_middle"],
-                        "Lower": indicators_df["bb_lower"],
-                        "Close": hist_df["close"]
+                        "Upper": indicator_series["bb_upper"],
+                        "Middle": indicator_series["bb_sma"],
+                        "Lower": indicator_series["bb_lower"],
+                        "Close": hist_df["close"],
                     })
                     st.line_chart(bb_data, use_container_width=True)
 

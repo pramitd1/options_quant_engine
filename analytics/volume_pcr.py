@@ -32,6 +32,7 @@ from __future__ import annotations
 import pandas as pd
 
 from analytics.flow_utils import front_expiry_atm_slice
+from config.analytics_feature_policy import get_volume_pcr_policy_config
 from data.expiry_resolver import filter_option_chain_by_expiry, resolve_selected_expiry
 
 
@@ -44,14 +45,6 @@ _EMPTY = {
     "call_volume_atm": 0.0,
     "put_volume_atm": 0.0,
 }
-
-# PCR thresholds — standard values used by NIFTY practitioners:
-#   PCR > 1.3  → PUT_DOMINANT (bearish sentiment / potential capitulation)
-#   PCR < 0.75 → CALL_DOMINANT (bullish sentiment / potential complacency)
-_PCR_BULLISH_THRESHOLD = 0.75
-_PCR_BEARISH_THRESHOLD = 1.30
-_PCR_EXTREME_CAP = 9.99
-
 
 def _vol_col(df: pd.DataFrame) -> str | None:
     """Return the volume column name present in df."""
@@ -87,6 +80,7 @@ def compute_volume_pcr(option_chain: pd.DataFrame, spot: float | None = None) ->
     if option_chain is None or option_chain.empty:
         return dict(_EMPTY)
 
+    cfg = get_volume_pcr_policy_config()
     vol_col = _vol_col(option_chain)
     if vol_col is None:
         return dict(_EMPTY)
@@ -110,10 +104,14 @@ def compute_volume_pcr(option_chain: pd.DataFrame, spot: float | None = None) ->
     if call_vol_total > 0:
         full_pcr = round(put_vol_total / call_vol_total, 4)
     elif put_vol_total > 0:
-        full_pcr = _PCR_EXTREME_CAP
+        full_pcr = cfg.extreme_cap
 
     # ── Near-ATM PCR ─────────────────────────────────────────────────────
-    atm_df = front_expiry_atm_slice(option_chain, spot=spot, strike_window_steps=4)
+    atm_df = front_expiry_atm_slice(
+        option_chain,
+        spot=spot,
+        strike_window_steps=max(int(cfg.atm_strike_window_steps), 1),
+    )
     call_vol_atm = 0.0
     put_vol_atm  = 0.0
     if atm_df is not None and not atm_df.empty:
@@ -128,15 +126,15 @@ def compute_volume_pcr(option_chain: pd.DataFrame, spot: float | None = None) ->
     if call_vol_atm > 0:
         atm_pcr = round(put_vol_atm / call_vol_atm, 4)
     elif put_vol_atm > 0:
-        atm_pcr = _PCR_EXTREME_CAP
+        atm_pcr = cfg.extreme_cap
 
     # ── Regime classification (prefer ATM PCR if available) ──────────────
     reference_pcr = atm_pcr if atm_pcr is not None else full_pcr
     if reference_pcr is None:
         regime = "UNAVAILABLE"
-    elif reference_pcr >= _PCR_BEARISH_THRESHOLD:
+    elif reference_pcr >= cfg.bearish_threshold:
         regime = "PUT_DOMINANT"
-    elif reference_pcr <= _PCR_BULLISH_THRESHOLD:
+    elif reference_pcr <= cfg.bullish_threshold:
         regime = "CALL_DOMINANT"
     else:
         regime = "NEUTRAL"

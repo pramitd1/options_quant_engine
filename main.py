@@ -126,6 +126,14 @@ def _refresh_interval_for_source(source: str) -> int:
     return REFRESH_INTERVAL
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse an operator-facing boolean environment flag."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _coerce_runtime_timestamp(value):
     try:
         ts = pd.Timestamp(value)
@@ -602,6 +610,23 @@ def parse_runtime_args():
         default="GROUPED",
         choices=["GROUPED", "NEAREST"],
         help="Sort mode for COMPACT market level table: GROUPED (default) or NEAREST",
+    )
+    parser.add_argument(
+        "--save-live-snapshots",
+        dest="save_live_snapshots",
+        action="store_true",
+        default=_env_bool("SAVE_LIVE_SNAPSHOTS", True),
+        help=(
+            "Persist every live spot and option-chain snapshot, and attach the "
+            "paths to signal-evaluation rows. Defaults on; set "
+            "SAVE_LIVE_SNAPSHOTS=0 or pass --no-save-live-snapshots to disable."
+        ),
+    )
+    parser.add_argument(
+        "--no-save-live-snapshots",
+        dest="save_live_snapshots",
+        action="store_false",
+        help="Disable per-cycle live snapshot persistence for this run.",
     )
     return parser.parse_args()
 
@@ -1348,6 +1373,7 @@ def main():
     print("Data Source:", source)
     print("Budget Constraint Applied:", apply_budget_constraint)
     print("Output Mode:", output_mode)
+    print("Save Live Snapshots:", bool(args.save_live_snapshots and not args.replay))
 
     if args.replay:
         data_router = None
@@ -1492,6 +1518,7 @@ def main():
                 data_router=data_router,
                 live_calibration_gate=calibration_gate,
                 live_directional_gate=gate,
+                save_live_snapshots=bool(args.save_live_snapshots),
             )
 
             if not result.get("ok"):
@@ -1523,7 +1550,7 @@ def main():
                 execution_trade = full_trade.get("execution_trade")
             trade_for_display = full_trade or execution_trade
 
-            if not args.replay and not saved_one_spot_snapshot:
+            if not args.replay and not args.save_live_snapshots and not saved_one_spot_snapshot:
                 try:
                     saved_path = save_spot_snapshot(spot_snapshot)
                     print(f"\nSaved one live spot snapshot to: {saved_path}")
@@ -1545,7 +1572,7 @@ def main():
                 time.sleep(refresh_interval)
                 continue
 
-            if not args.replay and not saved_one_option_chain_snapshot:
+            if not args.replay and not args.save_live_snapshots and not saved_one_option_chain_snapshot:
                 try:
                     saved_chain_path = save_option_chain_snapshot(
                         option_chain_frame,
@@ -1561,12 +1588,18 @@ def main():
                 signal_capture_status = result.get("signal_capture_status", "SKIPPED")
                 if signal_capture_status == "CAPTURED":
                     print(f"\n{'signal_capture':26}: CAPTURED -> {result.get('signal_dataset_path')}")
+                elif signal_capture_status.startswith("CAPTURED_GUARDED:"):
+                    guard_reason = result.get("signal_capture_guard_reason") or signal_capture_status.split(":", 1)[-1]
+                    print(
+                        f"\n{'signal_capture':26}: {signal_capture_status} -> {result.get('signal_dataset_path')}"
+                        f" (guard={guard_reason})"
+                    )
                 elif signal_capture_status.startswith("FAILED:"):
                     print(
                         f"\n{'signal_capture':26}: {signal_capture_status}"
                         f" ({result.get('signal_capture_error', 'unknown error')})"
                     )
-                elif signal_capture_status.startswith("SKIPPED_POLICY:"):
+                elif signal_capture_status.startswith(("SKIPPED_POLICY:", "SKIPPED_RUNTIME_ACTIVATION:")):
                     print(f"\n{'signal_capture':26}: {signal_capture_status}")
 
             if option_chain_frame is not None and not option_chain_frame.empty:

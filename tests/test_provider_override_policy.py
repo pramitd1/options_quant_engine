@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from config.signal_policy import get_trade_runtime_thresholds
-from engine.signal_engine import _evaluate_provider_health_override_eligibility
+from engine.signal_engine import (
+    _evaluate_high_composite_soft_override_eligibility,
+    _evaluate_provider_health_override_eligibility,
+    _runtime_composite_observation_policy,
+)
 
 
 def _runtime_thresholds(**overrides):
@@ -23,6 +27,63 @@ def _runtime_thresholds(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def test_runtime_composite_observation_policy_keeps_80_to_85_observational():
+    policy = _runtime_composite_observation_policy(
+        84.9,
+        {
+            "runtime_composite_observation_threshold": 80,
+            "high_composite_soft_override_threshold": 85,
+        },
+    )
+
+    assert policy["runtime_composite_observation_tier"] == "OBSERVE_80_85"
+    assert policy["runtime_composite_score"] == 84
+    assert policy["eligible_for_soft_override"] is False
+
+
+def test_high_composite_soft_override_allows_only_live_safe_soft_blockers():
+    payload = {
+        "runtime_composite_score": 86,
+        "confirmation_status": "CONFIRMED",
+        "data_quality_status": "GOOD",
+        "analytics_usable": True,
+        "execution_suggestion_usable": True,
+        "provider_health_blocking_status": "PASS",
+        "market_data_trade_blocking_status": "PASS",
+    }
+
+    allowed, details = _evaluate_high_composite_soft_override_eligibility(
+        payload=payload,
+        runtime_thresholds=_runtime_thresholds(enable_high_composite_soft_block_override=1),
+        blocker="GLOBAL_RISK_WATCHLIST",
+    )
+
+    assert allowed is True
+    assert details["runtime_composite_observation_tier"] == "OVERRIDE_85_PLUS"
+    assert details["fail_reasons"] == []
+
+
+def test_high_composite_soft_override_rejects_hard_data_blockers():
+    payload = {
+        "runtime_composite_score": 90,
+        "confirmation_status": "STRONG_CONFIRMATION",
+        "data_quality_status": "GOOD",
+        "analytics_usable": True,
+        "execution_suggestion_usable": False,
+        "provider_health_blocking_status": "PASS",
+        "market_data_trade_blocking_status": "PASS",
+    }
+
+    allowed, details = _evaluate_high_composite_soft_override_eligibility(
+        payload=payload,
+        runtime_thresholds=_runtime_thresholds(enable_high_composite_soft_block_override=1),
+        blocker="GLOBAL_RISK_WATCHLIST",
+    )
+
+    assert allowed is False
+    assert "execution_data_unusable" in details["fail_reasons"]
 
 
 def test_provider_override_disabled_by_default():

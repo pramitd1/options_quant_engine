@@ -205,14 +205,16 @@ class DefaultSignalCaptureSink:
         Notes:
             The contract is intentionally side-effect oriented so runtime orchestration can swap sink implementations without changing engine logic.
         """
+        activation_guard = None
         if capture_signal_evaluation and trade:
             activation_guard = build_runtime_activation_capture_guard(result_payload)
             result_payload["runtime_activation_capture_guard"] = activation_guard
             if not activation_guard.get("capture_allowed", True):
-                result_payload["signal_capture_status"] = f"SKIPPED_RUNTIME_ACTIVATION:{activation_guard.get('status')}"
                 result_payload["signal_capture_guarded"] = True
                 result_payload["signal_capture_guard_reason"] = activation_guard.get("status")
-                return
+            else:
+                result_payload["signal_capture_guarded"] = False
+                result_payload["signal_capture_guard_reason"] = activation_guard.get("status")
 
         if capture_signal_evaluation and should_capture_signal(trade, signal_capture_policy):
             try:
@@ -221,7 +223,15 @@ class DefaultSignalCaptureSink:
                     as_of=(result_payload.get("spot_summary", {}) or {}).get("timestamp"),
                     return_frame=False,
                 )
-                result_payload["signal_capture_status"] = "CAPTURED"
+                if activation_guard and not activation_guard.get("capture_allowed", True):
+                    result_payload["signal_capture_status"] = (
+                        f"CAPTURED_GUARDED:{activation_guard.get('status')}"
+                    )
+                    result_payload["signal_capture_warning"] = (
+                        "captured for raw research with runtime activation guard metadata"
+                    )
+                else:
+                    result_payload["signal_capture_status"] = "CAPTURED"
             except Exception as exc:
                 import logging
                 logger = logging.getLogger(__name__)

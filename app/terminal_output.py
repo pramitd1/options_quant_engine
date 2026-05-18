@@ -877,6 +877,7 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
     slim[oi_col] = pd.to_numeric(slim[oi_col], errors="coerce")
     if oi_change_col:
         slim[oi_change_col] = pd.to_numeric(slim[oi_change_col], errors="coerce").fillna(0.0)
+        slim["_native_changeinOI"] = slim[oi_change_col]
     if ltp_col:
         slim[ltp_col] = pd.to_numeric(slim[ltp_col], errors="coerce")
     slim[type_col] = slim[type_col].astype(str).str.upper().str.strip()
@@ -890,6 +891,22 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
             source_name = str(df["source"].dropna().iloc[0]).upper().strip()
         except Exception:
             source_name = ""
+
+    def _normalize_expiry_key(value):
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+        text_value = str(value).strip()
+        if text_value in ("", "nan", "NaT", "None"):
+            return None
+        try:
+            return str(pd.Timestamp(text_value).date())
+        except Exception:
+            return text_value
 
     def _build_chain_lookup_maps(chain_frame):
         if chain_frame is None or not hasattr(chain_frame, "copy"):
@@ -936,24 +953,23 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
             prev_agg_map[prev_ltp_col] = "max"
         prev_slim = prev_slim.groupby(prev_group_cols, as_index=False).agg(prev_agg_map)
 
-        if prev_expiry_col:
-            prev_oi_map = {
-                (float(r[prev_strike_col]), str(r[prev_type_col]), str(r[prev_expiry_col])): float(r[prev_oi_col])
-                for _idx, r in prev_slim.iterrows()
-            }
-            prev_premium_map = {
-                (float(r[prev_strike_col]), str(r[prev_type_col]), str(r[prev_expiry_col])): float(r[prev_ltp_col])
-                for _idx, r in prev_slim.iterrows()
-            } if prev_ltp_col else None
-        else:
-            prev_oi_map = {
-                (float(r[prev_strike_col]), str(r[prev_type_col]), None): float(r[prev_oi_col])
-                for _idx, r in prev_slim.iterrows()
-            }
-            prev_premium_map = {
-                (float(r[prev_strike_col]), str(r[prev_type_col]), None): float(r[prev_ltp_col])
-                for _idx, r in prev_slim.iterrows()
-            } if prev_ltp_col else None
+        prev_oi_map = {}
+        prev_premium_map = {} if prev_ltp_col else None
+        for _idx, r in prev_slim.iterrows():
+            strike_key = float(r[prev_strike_col])
+            type_key = str(r[prev_type_col])
+            expiry_keys = [None]
+            if prev_expiry_col:
+                normalized_expiry = _normalize_expiry_key(r[prev_expiry_col])
+                raw_expiry = str(r[prev_expiry_col])
+                expiry_keys = [normalized_expiry]
+                if raw_expiry != normalized_expiry:
+                    expiry_keys.append(raw_expiry)
+                expiry_keys.append(None)
+            for expiry_key in dict.fromkeys(expiry_keys):
+                prev_oi_map[(strike_key, type_key, expiry_key)] = float(r[prev_oi_col])
+                if prev_ltp_col and prev_premium_map is not None:
+                    prev_premium_map[(strike_key, type_key, expiry_key)] = float(r[prev_ltp_col])
 
         return prev_oi_map, prev_premium_map
 
@@ -995,14 +1011,23 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
         else:
             native_oi_change_missing = True
 
-    if source_name == "ZERODHA" and native_oi_change_missing:
-        zerodha_baseline = trade.get("zerodha_oi_baseline_chain_frame") if isinstance(trade, dict) else None
-        if zerodha_baseline is None and isinstance(option_chain_frame, pd.DataFrame):
-            zerodha_baseline = option_chain_frame.attrs.get("zerodha_oi_baseline_chain_frame")
-        if zerodha_baseline is not None:
-            previous_oi_by_key, _unused = _build_chain_lookup_maps(zerodha_baseline)
-        elif fallback_previous_chain is not None:
-            previous_oi_by_key, _unused = _build_chain_lookup_maps(fallback_previous_chain)
+    snapshot_oi_delta_sources = {"ICICI", "ZERODHA"}
+    should_use_snapshot_oi_delta = source_name in snapshot_oi_delta_sources
+    if source_name == "ZERODHA":
+        should_use_snapshot_oi_delta = native_oi_change_missing
+
+    if should_use_snapshot_oi_delta:
+        oi_baseline = None
+        if source_name == "ZERODHA":
+            oi_baseline = trade.get("zerodha_oi_baseline_chain_frame") if isinstance(trade, dict) else None
+            if oi_baseline is None and isinstance(option_chain_frame, pd.DataFrame):
+                oi_baseline = option_chain_frame.attrs.get("zerodha_oi_baseline_chain_frame")
+        if oi_baseline is None:
+            oi_baseline = premium_baseline_frames.get("5m")
+        if oi_baseline is None:
+            oi_baseline = fallback_previous_chain
+        if oi_baseline is not None:
+            previous_oi_by_key, _unused = _build_chain_lookup_maps(oi_baseline)
 
     premium_lookup_maps = {}
     for horizon_name in ("1m", "3m", "5m"):
@@ -1018,6 +1043,7 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
     agg_map = {oi_col: "max"}
     if oi_change_col:
         agg_map[oi_change_col] = "sum"
+        agg_map["_native_changeinOI"] = "sum"
     if ltp_col:
         agg_map[ltp_col] = "max"
     slim = slim.groupby([strike_col, type_col], as_index=False).agg(agg_map)
@@ -1061,7 +1087,7 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
         axis=1,
     )
 
-    use_snapshot_oi_change = source_name == "ZERODHA" and native_oi_change_missing and previous_oi_by_key is not None
+    use_snapshot_oi_change = should_use_snapshot_oi_delta and previous_oi_by_key is not None
 
     if use_snapshot_oi_change:
         def _derive_snapshot_oi_change(row):
@@ -1308,6 +1334,8 @@ def _resolve_top_oi_levels(trade, option_chain_frame, *, top_n=5):
                         "premium_change_5m": premium_changes.get("5m"),
                         "premium_change_prev": premium_changes.get("prev"),
                         "primary_premium_change": primary_premium_change,
+                        "native_oi_change": float(r["_native_changeinOI"]) if "_native_changeinOI" in r and pd.notna(r.get("_native_changeinOI")) else None,
+                        "display_oi_change": float(r[oi_change_col]) if oi_change_col and pd.notna(r.get(oi_change_col)) else None,
                     },
                 )
             )
@@ -1366,6 +1394,7 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
 
     for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy, confidence_score, reason_code, horizon_signature, _payload) in enumerate(call_oi, start=1):
         d_pts, d_pct = _dist(lvl)
+        native_chg_oi = _payload.get("native_oi_change") if isinstance(_payload, dict) else None
         oi_rows.append(
             (
                 "CALL",
@@ -1381,11 +1410,14 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 str(horizon_signature),
                 bool(uses_snapshot_proxy),
                 float(oi),
+                _format_oi_change_value(native_chg_oi, uses_snapshot_proxy=False),
+                native_chg_oi,
             )
         )
 
     for idx, (lvl, oi, chg_oi, inference, uses_snapshot_proxy, confidence_score, reason_code, horizon_signature, _payload) in enumerate(put_oi, start=1):
         d_pts, d_pct = _dist(lvl)
+        native_chg_oi = _payload.get("native_oi_change") if isinstance(_payload, dict) else None
         oi_rows.append(
             (
                 "PUT",
@@ -1401,6 +1433,8 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 str(horizon_signature),
                 bool(uses_snapshot_proxy),
                 float(oi),
+                _format_oi_change_value(native_chg_oi, uses_snapshot_proxy=False),
+                native_chg_oi,
             )
         )
 
@@ -1422,7 +1456,7 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
                 oi_rows,
                 key=lambda row: (
                     abs(float(row[2]) - spot_f),
-                    -float(row[11]),
+                    -float(row[12]),
                 ),
             )
 
@@ -1434,18 +1468,42 @@ def _render_market_summary_levels_table(*, spot, resistances, supports, call_oi,
 
     if oi_rows:
         print("\n  HIGHEST OI STRIKES")
-        chg_oi_width = max(len("chg_oi"), *(len(str(row[6])) for row in oi_rows))
+        show_day_change = any(
+            bool(row[11])
+            and row[14] is not None
+            and str(row[13]) not in {"-", "0"}
+            for row in oi_rows
+        )
+        live_chg_label = "live_chg" if show_day_change else "chg_oi"
+        live_chg_width = max(len(live_chg_label), *(len(str(row[6])) for row in oi_rows))
+        day_chg_width = max(len("day_chg"), *(len(str(row[13])) for row in oi_rows)) if show_day_change else 0
         reason_width = max(len("reason"), *(len(str(row[9])) for row in oi_rows))
         hz_width = max(len("horizons"), *(len(str(row[10])) for row in oi_rows))
-        print(f"  kind       rank strike   dist_pts dist_%    oi {'chg_oi':>{chg_oi_width}} inference      conf {'reason':<{reason_width}} {'horizons':<{hz_width}}")
-        used_snapshot_proxy = any(bool(row[11]) for row in oi_rows)
-        for kind, rank, strike, dist_pts, dist_pct, oi_str, chg_oi_str, inference, confidence_score, reason_code, horizon_signature, _uses_snapshot_proxy, _oi_num in oi_rows:
+        if show_day_change:
             print(
+                f"  kind       rank strike   dist_pts dist_%    oi "
+                f"{live_chg_label:>{live_chg_width}} {'day_chg':>{day_chg_width}} "
+                f"inference      conf {'reason':<{reason_width}} {'horizons':<{hz_width}}"
+            )
+        else:
+            print(f"  kind       rank strike   dist_pts dist_%    oi {live_chg_label:>{live_chg_width}} inference      conf {'reason':<{reason_width}} {'horizons':<{hz_width}}")
+        used_snapshot_proxy = any(bool(row[11]) for row in oi_rows)
+        for kind, rank, strike, dist_pts, dist_pct, oi_str, chg_oi_str, inference, confidence_score, reason_code, horizon_signature, _uses_snapshot_proxy, _oi_num, native_chg_oi_str, _native_chg_oi in oi_rows:
+            base = (
                 f"  {kind:<10} {rank:>4} {strike:>7} {dist_pts:>9} {dist_pct:>8} "
-                f"{oi_str:>7} {chg_oi_str:>{chg_oi_width}} {inference:<13} {confidence_score:>5.2f} {reason_code:<{reason_width}} {horizon_signature:<{hz_width}}"
+                f"{oi_str:>7} {chg_oi_str:>{live_chg_width}} "
+            )
+            if show_day_change:
+                base += f"{native_chg_oi_str:>{day_chg_width}} "
+            print(
+                f"{base}{inference:<13} {confidence_score:>5.2f} "
+                f"{reason_code:<{reason_width}} {horizon_signature:<{hz_width}}"
             )
         if used_snapshot_proxy:
-            print("  note: * indicates Zerodha snapshot OI delta proxy (5m rolling baseline when available, prior snapshot otherwise); inference confidence decomposes 1m/3m/5m premium baselines with previous-snapshot and underlying-proxy fallback")
+            if show_day_change:
+                print("  note: * indicates live snapshot OI delta proxy (5m rolling baseline when available, prior snapshot otherwise); day_chg is provider-native changeinOI; inference confidence decomposes 1m/3m/5m premium baselines with previous-snapshot and underlying-proxy fallback")
+            else:
+                print("  note: * indicates live snapshot OI delta proxy (5m rolling baseline when available, prior snapshot otherwise); inference confidence decomposes 1m/3m/5m premium baselines with previous-snapshot and underlying-proxy fallback")
         else:
             print("  note: inference confidence decomposes 1m/3m/5m premium baselines, then falls back to previous-snapshot premium delta and underlying move vs prev_close proxy")
 
@@ -1499,6 +1557,7 @@ def _persist_oi_inference_artifact(*, result, trade, spot_summary, call_oi, put_
                     "strike": lvl,
                     "oi": oi,
                     "chg_oi": chg_oi,
+                    "native_chg_oi": debug_payload.get("native_oi_change") if isinstance(debug_payload, dict) else None,
                     "inference": inference,
                     "confidence_score": confidence_score,
                     "reason_code": reason_code,
@@ -2713,8 +2772,14 @@ def _render_data_usability_diagnostics(trade, *, verbose=False):
         for item in (trade.get("blocked_by") or [])
         if item is not None
     }
-    provider_execution_blocked = bool(
+    provider_block_status = str(
         provider_health.get("trade_blocking_status")
+        or trade.get("provider_health_blocking_status")
+        or trade.get("market_data_trade_blocking_status")
+        or ""
+    ).upper().strip()
+    provider_execution_blocked = bool(
+        provider_block_status in {"BLOCK", "BLOCKED"}
         or "provider_health" in blocked_by
         or str(trade.get("no_trade_reason_code") or "").upper().startswith("PROVIDER_HEALTH_")
     )
@@ -3058,6 +3123,78 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 
         _print_section("REGIME SUMMARY", regime_fields)
 
+        historical_context = trade.get("historical_context") if isinstance(trade.get("historical_context"), dict) else {}
+        if historical_context:
+            vol_ctx = historical_context.get("volatility_context") if isinstance(historical_context.get("volatility_context"), dict) else {}
+            prior_ctx = historical_context.get("global_directional_prior") if isinstance(historical_context.get("global_directional_prior"), dict) else {}
+            pcr_ctx = historical_context.get("pcr_context") if isinstance(historical_context.get("pcr_context"), dict) else {}
+            max_pain_ctx = historical_context.get("max_pain_context") if isinstance(historical_context.get("max_pain_context"), dict) else {}
+            wall_ctx = historical_context.get("wall_context") if isinstance(historical_context.get("wall_context"), dict) else {}
+            interaction_ctx = historical_context.get("interaction_context") if isinstance(historical_context.get("interaction_context"), dict) else {}
+            statistical_ctx = historical_context.get("statistical_market_context") if isinstance(historical_context.get("statistical_market_context"), dict) else {}
+            statistical_macro_ctx = (
+                statistical_ctx.get("macro_context")
+                if isinstance(statistical_ctx.get("macro_context"), dict)
+                else {}
+            )
+            vol_bucket = vol_ctx.get("bucket")
+            if vol_bucket and vol_bucket != "UNAVAILABLE":
+                vol_bucket = (
+                    f"{vol_bucket} "
+                    f"(range~{vol_ctx.get('expected_range_bps')}bps, abs~{vol_ctx.get('expected_abs_move_bps')}bps)"
+                )
+            prior_reasons = [
+                str(item.get("feature"))
+                for item in (prior_ctx.get("evidence") or [])
+                if isinstance(item, dict) and item.get("feature")
+            ]
+            prior_text = prior_ctx.get("prior_direction")
+            if prior_text:
+                prior_text = f"{prior_text} ({prior_ctx.get('prior_score')})"
+                if prior_reasons:
+                    prior_text += f" via {', '.join(prior_reasons[:3])}"
+            _print_section("HISTORICAL CONTEXT", {
+                "mode": historical_context.get("decision_mode"),
+                "score_adj": historical_context.get("score_adjustment"),
+                "prob_adj": historical_context.get("probability_adjustment"),
+                "thresh_adj": historical_context.get("trade_strength_threshold_adjustment"),
+                "size_mult": historical_context.get("size_multiplier"),
+                "artifact": historical_context.get("prior_artifact_source_run_id"),
+                "interaction_adj": (
+                    f"{interaction_ctx.get('score_adjustment')} / {interaction_ctx.get('probability_adjustment')}"
+                    if interaction_ctx else None
+                ),
+                "interactions": ", ".join(str(item) for item in (interaction_ctx.get("reasons") or [])[:3]) if interaction_ctx else None,
+                "stat_ctx": (
+                    f"{statistical_ctx.get('expected_range_prior')} "
+                    f"(vol={statistical_ctx.get('vol_stress_score')}, hold={statistical_ctx.get('hold_time_hint')})"
+                    if statistical_ctx else None
+                ),
+                "stat_adj": (
+                    f"{statistical_ctx.get('score_adjustment')} / {statistical_ctx.get('probability_adjustment')} "
+                    f"/ th {statistical_ctx.get('trade_strength_threshold_adjustment')} "
+                    f"/ size {statistical_ctx.get('size_multiplier')}"
+                    if statistical_ctx else None
+                ),
+                "macro_stat": (
+                    f"{statistical_macro_ctx.get('macro_range_prior')} / {statistical_macro_ctx.get('macro_directional_prior')} "
+                    f"({(statistical_macro_ctx.get('macro_factor_buckets') or {}).get('macro_risk_bucket')}, "
+                    f"{(statistical_macro_ctx.get('macro_factor_buckets') or {}).get('macro_commodity_bucket')})"
+                    if statistical_macro_ctx else None
+                ),
+                "macro_adj": (
+                    f"{statistical_macro_ctx.get('score_adjustment')} / {statistical_macro_ctx.get('probability_adjustment')} "
+                    f"/ th {statistical_macro_ctx.get('trade_strength_threshold_adjustment')} "
+                    f"/ size {statistical_macro_ctx.get('size_multiplier')}"
+                    if statistical_macro_ctx else None
+                ),
+                "vol_bucket": vol_bucket,
+                "global_prior": prior_text,
+                "pcr_read": pcr_ctx.get("interpretation"),
+                "max_pain_use": max_pain_ctx.get("interpretation"),
+                "wall_read": wall_ctx.get("state"),
+            })
+
     _render_regime_rollout_status(result)
 
     # ── 3. TRADE DECISION ────────────────────────────────────────────────
@@ -3129,6 +3266,24 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         print(f"{'target':26}: {target}")
         print(f"{'stop_loss':26}: {stop}")
         print(f"{'reward_to_risk':26}: {rr}")
+        underlying_plan = d.get("underlying_exit_plan") if isinstance(d.get("underlying_exit_plan"), dict) else None
+        if underlying_plan is None and isinstance(trade.get("underlying_exit_plan"), dict):
+            underlying_plan = trade.get("underlying_exit_plan")
+        if underlying_plan:
+            profit = underlying_plan.get("profit_booking") if isinstance(underlying_plan.get("profit_booking"), dict) else {}
+            stop_map = underlying_plan.get("stop_loss") if isinstance(underlying_plan.get("stop_loss"), dict) else {}
+            profit_low = profit.get("lower")
+            profit_high = profit.get("upper")
+            profit_level = profit.get("level")
+            stop_low = stop_map.get("lower")
+            stop_high = stop_map.get("upper")
+            stop_level = stop_map.get("level")
+            print(f"{'underlying_profit':26}: {profit_low} - {profit_high}  (level {profit_level})")
+            print(f"{'underlying_stop':26}: {stop_low} - {stop_high}  (level {stop_level})")
+            plan_conf = underlying_plan.get("confidence")
+            plan_basis = underlying_plan.get("basis")
+            if plan_conf or plan_basis:
+                print(f"{'underlying_plan_basis':26}: {plan_conf or '-'} / {plan_basis or '-'}")
         print(f"{'number_of_lots':26}: {d.get('number_of_lots')}")
         macro_lots = d.get("macro_suggested_lots")
         if macro_lots is not None and macro_lots != d.get("number_of_lots"):

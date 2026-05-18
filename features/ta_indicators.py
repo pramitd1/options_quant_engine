@@ -19,11 +19,14 @@ Downstream Usage:
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
+from config.analytics_feature_policy import (
+    TechnicalAnalysisPolicyConfig,
+    get_technical_analysis_policy_config,
+)
 from data.historical_spot_fetcher import get_recent_spot_history
 
 logger = logging.getLogger(__name__)
@@ -67,7 +70,7 @@ def _prepare_history_frame(hist_df: pd.DataFrame | None, *, as_of=None) -> pd.Da
 def build_ta_features(
     symbol: str,
     current_spot: float,
-    days_history: int = 30,
+    days_history: int | None = None,
     *,
     history_df: pd.DataFrame | None = None,
     as_of=None,
@@ -85,24 +88,26 @@ def build_ta_features(
         Dict with TA signals and metadata
     """
     try:
+        cfg = get_technical_analysis_policy_config()
+        lookback_days = int(days_history or cfg.default_history_days)
         if history_df is None:
             if not allow_live_history:
                 return _no_ta_signal(
                     "point_in_time_unavailable",
                     warning="ta_history_not_supplied_for_historical_mode",
                 )
-            history_df = get_recent_spot_history(symbol, days_history)
+            history_df = get_recent_spot_history(symbol, lookback_days)
 
         hist_df = _prepare_history_frame(history_df, as_of=as_of)
 
-        if hist_df.empty or len(hist_df) < 14:  # Need minimum data for indicators
+        if hist_df.empty or len(hist_df) < cfg.minimum_history_rows:
             return _no_ta_signal("insufficient_data")
 
         # Compute indicators
-        indicators = _compute_ta_indicators(hist_df, current_spot)
+        indicators = _compute_ta_indicators(hist_df, current_spot, cfg)
 
         # Generate signals
-        direction, confidence, regime = _generate_ta_signals(indicators)
+        direction, confidence, regime = _generate_ta_signals(indicators, cfg)
 
         return {
             "ta_direction": direction,
@@ -116,55 +121,119 @@ def build_ta_features(
         return _no_ta_signal("error")
 
 
-def _compute_ta_indicators(hist_df: pd.DataFrame, current_spot: float) -> dict:
+def _valid_window(value: int, *, minimum: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return minimum
+    return max(minimum, parsed)
+
+
+def _close_price_series(hist_df: pd.DataFrame) -> pd.Series:
+    """Return numeric close prices while preserving the original index."""
+    if "close" not in hist_df.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(hist_df["close"], errors="coerce").dropna()
+
+
+def _return_bps(current_spot: float, base_price: float) -> float | None:
+    try:
+        spot = float(current_spot)
+        base = float(base_price)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(spot) or not np.isfinite(base) or base == 0.0:
+        return None
+    return ((spot / base) - 1.0) * 10000.0
+
+
+def _compute_ta_indicator_series(
+    hist_df: pd.DataFrame,
+    cfg: TechnicalAnalysisPolicyConfig | None = None,
+) -> dict[str, pd.Series]:
+    """Compute technical indicator series for charts and latest-value extraction."""
+    cfg = cfg or get_technical_analysis_policy_config()
+    close_prices = _close_price_series(hist_df)
+    if close_prices.empty:
+        return {}
+
+    series: dict[str, pd.Series] = {}
+    sma_fast_window = _valid_window(cfg.sma_fast_window)
+    sma_slow_window = _valid_window(cfg.sma_slow_window)
+    ema_fast_span = _valid_window(cfg.ema_fast_span)
+    ema_slow_span = _valid_window(cfg.ema_slow_span)
+    macd_signal_span = _valid_window(cfg.macd_signal_span)
+    rsi_window = _valid_window(cfg.rsi_window)
+    bollinger_window = _valid_window(cfg.bollinger_window)
+
+    if len(close_prices) >= sma_fast_window:
+        series[f"sma_{sma_fast_window}"] = close_prices.rolling(window=sma_fast_window).mean()
+    if len(close_prices) >= sma_slow_window:
+        series[f"sma_{sma_slow_window}"] = close_prices.rolling(window=sma_slow_window).mean()
+
+    if len(close_prices) >= ema_fast_span:
+        series[f"ema_{ema_fast_span}"] = close_prices.ewm(span=ema_fast_span).mean()
+    if len(close_prices) >= ema_slow_span:
+        series[f"ema_{ema_slow_span}"] = close_prices.ewm(span=ema_slow_span).mean()
+
+    if len(close_prices) >= max(ema_fast_span, ema_slow_span):
+        ema_fast = close_prices.ewm(span=ema_fast_span).mean()
+        ema_slow = close_prices.ewm(span=ema_slow_span).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=macd_signal_span).mean()
+        series["macd_line"] = macd_line
+        series["macd_signal"] = signal_line
+        series["macd_histogram"] = macd_line - signal_line
+
+    if len(close_prices) >= rsi_window:
+        delta = close_prices.diff()
+        gain = delta.where(delta > 0, 0.0).rolling(window=rsi_window).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(window=rsi_window).mean()
+        rs = gain / loss.mask(loss == 0.0, np.nan)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        rsi = rsi.mask((loss == 0.0) & (gain > 0.0), 100.0)
+        rsi = rsi.mask((loss == 0.0) & (gain <= 0.0), 50.0)
+        series["rsi"] = rsi
+
+    if len(close_prices) >= bollinger_window:
+        sma = close_prices.rolling(window=bollinger_window).mean()
+        std = close_prices.rolling(window=bollinger_window).std()
+        series["bb_lower"] = sma - cfg.bollinger_std_mult * std
+        series["bb_upper"] = sma + cfg.bollinger_std_mult * std
+        series["bb_sma"] = sma
+
+    return series
+
+
+def _compute_ta_indicators(
+    hist_df: pd.DataFrame,
+    current_spot: float,
+    cfg: TechnicalAnalysisPolicyConfig | None = None,
+) -> dict:
     """Compute technical indicators manually."""
     indicators = {}
-
-    # Ensure we have enough data
-    if len(hist_df) < 30:
-        return indicators
+    cfg = cfg or get_technical_analysis_policy_config()
 
     # Use close prices for indicators
-    close_prices = hist_df['close']
+    close_prices = _close_price_series(hist_df)
+    if close_prices.empty:
+        return indicators
 
     try:
-        # Simple Moving Averages
+        sma_fast_window = _valid_window(cfg.sma_fast_window)
+        for key, values in _compute_ta_indicator_series(hist_df, cfg).items():
+            latest = values.iloc[-1]
+            if pd.notna(latest):
+                indicators[key] = float(latest)
+
         if len(close_prices) >= 20:
-            indicators['sma_20'] = close_prices.rolling(window=20).mean().iloc[-1]
-        if len(close_prices) >= 50:
-            indicators['sma_50'] = close_prices.rolling(window=50).mean().iloc[-1]
-
-        # Exponential Moving Averages
-        if len(close_prices) >= 12:
-            indicators['ema_12'] = close_prices.ewm(span=12).mean().iloc[-1]
-        if len(close_prices) >= 26:
-            indicators['ema_26'] = close_prices.ewm(span=26).mean().iloc[-1]
-
-        # MACD
-        if len(close_prices) >= 26:
-            ema_12 = close_prices.ewm(span=12).mean()
-            ema_26 = close_prices.ewm(span=26).mean()
-            macd_line = ema_12 - ema_26
-            signal_line = macd_line.ewm(span=9).mean()
-            indicators['macd_line'] = macd_line.iloc[-1]
-            indicators['macd_signal'] = signal_line.iloc[-1]
-            indicators['macd_histogram'] = (macd_line - signal_line).iloc[-1]
-
-        # RSI
-        if len(close_prices) >= 14:
-            delta = close_prices.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            indicators['rsi'] = (100 - (100 / (1 + rs))).iloc[-1]
-
-        # Bollinger Bands
-        if len(close_prices) >= 20:
-            sma = close_prices.rolling(window=20).mean()
-            std = close_prices.rolling(window=20).std()
-            indicators['bb_lower'] = (sma - 2 * std).iloc[-1]
-            indicators['bb_upper'] = (sma + 2 * std).iloc[-1]
-            indicators['bb_sma'] = sma.iloc[-1]
+            ret_20d = _return_bps(current_spot, close_prices.iloc[-20])
+            if ret_20d is not None:
+                indicators["ret_20d_bps"] = ret_20d
+        if sma_fast_window != 20 and len(close_prices) >= sma_fast_window:
+            ret_fast = _return_bps(current_spot, close_prices.iloc[-sma_fast_window])
+            if ret_fast is not None:
+                indicators[f"ret_{sma_fast_window}d_bps"] = ret_fast
 
     except Exception as e:
         logger.warning(f"Error computing TA indicators: {e}")
@@ -172,41 +241,47 @@ def _compute_ta_indicators(hist_df: pd.DataFrame, current_spot: float) -> dict:
     return indicators
 
 
-def _generate_ta_signals(indicators: dict) -> tuple[str, float, str]:
+def _generate_ta_signals(
+    indicators: dict,
+    cfg: TechnicalAnalysisPolicyConfig | None = None,
+) -> tuple[str, float, str]:
     """Generate trading signals from indicators."""
+    cfg = cfg or get_technical_analysis_policy_config()
     direction = "NO_SIGNAL"
     confidence = 0.0
     regime = "neutral"
 
     signals = []
+    sma_fast_key = f"sma_{_valid_window(cfg.sma_fast_window)}"
+    sma_slow_key = f"sma_{_valid_window(cfg.sma_slow_window)}"
 
     # Moving Average signals
-    if indicators.get('sma_20') is not None and indicators.get('sma_50') is not None:
-        sma_20 = indicators['sma_20']
-        sma_50 = indicators['sma_50']
+    if indicators.get(sma_fast_key) is not None and indicators.get(sma_slow_key) is not None:
+        sma_fast = indicators[sma_fast_key]
+        sma_slow = indicators[sma_slow_key]
 
-        if sma_20 > sma_50:
-            signals.append(("CALL", 0.6, "bullish_trend"))
-        elif sma_20 < sma_50:
-            signals.append(("PUT", 0.6, "bearish_trend"))
+        if sma_fast > sma_slow:
+            signals.append(("CALL", cfg.trend_signal_confidence, "bullish_trend"))
+        elif sma_fast < sma_slow:
+            signals.append(("PUT", cfg.trend_signal_confidence, "bearish_trend"))
 
     # MACD signals
     if indicators.get('macd_histogram') is not None:
         macd_hist = indicators['macd_histogram']
 
         if macd_hist > 0:
-            signals.append(("CALL", 0.5, "macd_bullish"))
+            signals.append(("CALL", cfg.macd_signal_confidence, "macd_bullish"))
         elif macd_hist < 0:
-            signals.append(("PUT", 0.5, "macd_bearish"))
+            signals.append(("PUT", cfg.macd_signal_confidence, "macd_bearish"))
 
     # RSI signals
     if indicators.get('rsi') is not None:
         rsi = indicators['rsi']
 
-        if rsi > 70:
-            signals.append(("PUT", 0.7, "overbought"))
-        elif rsi < 30:
-            signals.append(("CALL", 0.7, "oversold"))
+        if rsi > cfg.rsi_overbought:
+            signals.append(("PUT", cfg.rsi_signal_confidence, "overbought"))
+        elif rsi < cfg.rsi_oversold:
+            signals.append(("CALL", cfg.rsi_signal_confidence, "oversold"))
 
     # Aggregate signals
     if signals:

@@ -18,13 +18,20 @@ Downstream Usage:
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
+import math
 from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 
 from config.market_data_policy import IST_TIMEZONE
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +68,21 @@ def _history_path(symbol: str, date: str, *, base_dir: Path = SPOT_HISTORY_DIR) 
     return base_dir / symbol.upper() / f"{symbol.upper()}_{date}.csv"
 
 
+@contextmanager
+def _append_file_lock(path: Path):
+    """Serialize spot-history appends across live engine processes."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def append_spot_observation(
     symbol: str,
     spot: float,
@@ -69,6 +91,10 @@ def append_spot_observation(
     base_dir: Path = SPOT_HISTORY_DIR,
 ) -> Path:
     """Append a single (timestamp, spot) row to the daily spot history file."""
+    spot_value = float(spot)
+    if not math.isfinite(spot_value) or spot_value <= 0:
+        raise ValueError(f"spot history requires a positive finite spot value, got {spot!r}")
+
     ts = pd.Timestamp(timestamp)
     if ts.tzinfo is None:
         ts = ts.tz_localize(IST_TIMEZONE)
@@ -80,11 +106,12 @@ def append_spot_observation(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     ts_iso = ts.isoformat()
-    write_header = not path.exists()
-    with open(path, "a", encoding="utf-8") as f:
-        if write_header:
-            f.write("timestamp,spot\n")
-        f.write(f"{ts_iso},{round(float(spot), 4)}\n")
+    with _append_file_lock(path):
+        write_header = not path.exists() or path.stat().st_size == 0
+        with open(path, "a", encoding="utf-8") as f:
+            if write_header:
+                f.write("timestamp,spot\n")
+            f.write(f"{ts_iso},{round(spot_value, 4)}\n")
 
     return path
 

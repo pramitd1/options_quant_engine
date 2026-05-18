@@ -569,45 +569,6 @@ def _apply_market_data_provenance_to_validations(
     return spot_out, chain_out
 
 
-def _neutral_global_market_snapshot(symbol: str, *, as_of, warning: str) -> dict:
-    """
-    Purpose:
-        Build a neutral global-market snapshot for historical paths that do not
-        have point-in-time cross-asset data available.
-
-    Context:
-        Internal helper used primarily by backtests so they can exercise the
-        same global-risk assembly path as live runtime without silently pulling
-        present-day market data into historical evaluations.
-
-    Inputs:
-        symbol (str): Underlying symbol or index identifier.
-        as_of (Any): Timestamp associated with the current snapshot.
-        warning (str): Reason recorded in the neutral snapshot metadata.
-
-    Returns:
-        dict: Neutral global-market snapshot shaped like the live data payload.
-
-    Notes:
-        This is a parity-preserving fallback rather than a market-data model. It
-        keeps the orchestration path consistent while making the absence of
-        historical cross-asset context explicit.
-    """
-
-    return {
-        "symbol": str(symbol or "").upper().strip(),
-        "provider": "BACKTEST_NEUTRAL",
-        "as_of": as_of,
-        "data_available": False,
-        "neutral_fallback": True,
-        "issues": [],
-        "warnings": [warning],
-        "stale": False,
-        "lookback_days": None,
-        "market_inputs": {},
-    }
-
-
 def _prepare_snapshot_context(
     *,
     symbol: str,

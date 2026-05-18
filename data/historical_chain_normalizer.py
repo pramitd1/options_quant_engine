@@ -327,11 +327,6 @@ def _fill_underlying_price(df: pd.DataFrame) -> pd.DataFrame:
     spot["date"] = pd.to_datetime(spot["date"]).dt.date
     spot_lookup = dict(zip(spot["date"], spot["close"]))
 
-    def _fill(row):
-        if pd.isna(row["underlying_price"]) or row["underlying_price"] == 0:
-            return spot_lookup.get(row["trade_date"], row["underlying_price"])
-        return row["underlying_price"]
-
     # Vectorized approach
     dates = df["trade_date"]
     fill_values = dates.map(spot_lookup)

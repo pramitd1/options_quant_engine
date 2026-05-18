@@ -100,5 +100,6 @@ def test_render_market_summary_note_mentions_rolling_baseline_when_proxy_used() 
         )
         output = buffer.getvalue()
 
+    assert "snapshot OI delta proxy" in output
     assert "5m rolling baseline when available" in output
     assert "+200*" in output

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from config.policy_resolver import temporary_parameter_pack
 from analytics.mean_reversion_detector import compute_mean_reversion_features, detect_mean_reversion_opportunity
 
 
@@ -36,6 +37,34 @@ def test_get_mean_reversion_features_for_trade_uses_historical_close_price_axis(
     assert "mean_reversion_signal" in features
     assert "mean_reversion_strength" in features
     assert "mean_reversion_zscore" in features
+    assert 0.0 <= features["mean_reversion_strength"] <= 100.0
+
+
+def test_mean_reversion_defaults_are_runtime_policy_driven(monkeypatch):
+    import analytics.mean_reversion_detector as mrd
+
+    captured = {}
+
+    def _fake_history(symbol, days_history):
+        captured["symbol"] = symbol
+        captured["days_history"] = days_history
+        return pd.DataFrame({"close": [100.0 + idx for idx in range(12)]})
+
+    monkeypatch.setattr(mrd, "get_recent_spot_history", _fake_history)
+
+    with temporary_parameter_pack(
+        "mean_reversion_policy_test",
+        overrides={
+            "analytics.mean_reversion.default_history_days": 12,
+            "analytics.mean_reversion.lookback": 6,
+            "analytics.mean_reversion.zscore_threshold": 0.25,
+            "analytics.mean_reversion.strength_scale": 20.0,
+        },
+    ):
+        features = mrd.get_mean_reversion_features_for_trade("NIFTY", 111.0)
+
+    assert captured == {"symbol": "NIFTY", "days_history": 12}
+    assert "mean_reversion_signal" in features
     assert 0.0 <= features["mean_reversion_strength"] <= 100.0
 
 

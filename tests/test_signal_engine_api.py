@@ -176,6 +176,7 @@ def test_collect_market_state_emits_timing_breakdown(monkeypatch):
     timings = state["market_state_timings"]
     assert timings["total_ms"] >= 0.0
     assert "gamma_exposure" in timings["step_ms"]
+    assert "open_interest_pcr" in timings["step_ms"]
     assert "greek_exposures" in timings["step_ms"]
     assert len(timings["slowest_steps"]) > 0
 
@@ -229,17 +230,19 @@ def test_collect_market_state_includes_iv_hv_analytics(monkeypatch):
         {
             "strikePrice": [22000, 22000],
             "STRIKE_PR": [22000, 22000],
-            "OPTION_TYP": ["CE", "PE"],
-            "IV": [12.0, 13.0],
-            "EXPIRY_DT": ["2099-12-31", "2099-12-31"],
-            "hist_vol_20d": [18.0, 18.0],
-        }
+                "OPTION_TYP": ["CE", "PE"],
+                "open_interest": [100.0, 160.0],
+                "IV": [12.0, 13.0],
+                "EXPIRY_DT": ["2099-12-31", "2099-12-31"],
+                "hist_vol_20d": [18.0, 18.0],
+            }
     )
 
     state = market_state_mod._collect_market_state(chain, 22000.0, symbol="NIFTY")
 
     assert "iv_hv_regime" in state
     assert state["iv_hv_regime"] in {"IV_CHEAP", "IV_FAIR", "IV_RICH", "UNAVAILABLE"}
+    assert state["open_interest_pcr"] == 1.6
 
 
 def test_advisory_sizing_stays_separate_from_signal_payload():

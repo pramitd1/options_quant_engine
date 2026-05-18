@@ -14,7 +14,9 @@ Downstream Usage:
     Consumed by analytics, the signal engine, replay tooling, and research datasets.
 """
 import json
+import os
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -620,8 +622,17 @@ def save_spot_snapshot(snapshot: dict, output_dir: str = "debug_samples"):
     symbol = snapshot.get("symbol", "UNKNOWN")
     ts = snapshot.get("timestamp", "").replace(":", "-")
     filename = out_dir / f"{symbol}_spot_snapshot_{ts}.json"
+    tmp_path = filename.with_name(f".{filename.name}.{os.getpid()}.{threading.get_ident()}.tmp")
 
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(snapshot, f, indent=2)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, indent=2)
+        os.replace(tmp_path, filename)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
     return str(filename)

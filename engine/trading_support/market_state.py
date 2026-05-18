@@ -87,6 +87,26 @@ def _resolve_realized_hv_input(option_chain: pd.DataFrame | None):
     return None
 
 
+def _compute_open_interest_pcr(option_chain: pd.DataFrame | None) -> float | None:
+    if option_chain is None or option_chain.empty or "OPTION_TYP" not in option_chain.columns:
+        return None
+    oi_col = next(
+        (column for column in ("openInterest", "open_interest", "OPEN_INT", "oi") if column in option_chain.columns),
+        None,
+    )
+    if oi_col is None:
+        return None
+    oi = pd.to_numeric(option_chain[oi_col], errors="coerce").fillna(0.0)
+    option_type = option_chain["OPTION_TYP"].astype(str).str.upper()
+    call_oi = float(oi[option_type == "CE"].sum())
+    put_oi = float(oi[option_type == "PE"].sum())
+    if call_oi > 0:
+        return round(put_oi / call_oi, 4)
+    if put_oi > 0:
+        return 9.99
+    return None
+
+
 def _summarize_market_gamma(market_gex):
     """
     Purpose:
@@ -226,6 +246,14 @@ def _collect_market_state(
         df,
         default={},
     ) or {}
+    open_interest_pcr = _timed_step("open_interest_pcr", _compute_open_interest_pcr, df)
+    if open_interest_pcr is None:
+        call_oi_total = _safe_float(dealer_metrics.get("call_oi"), 0.0)
+        put_oi_total = _safe_float(dealer_metrics.get("put_oi"), 0.0)
+        if call_oi_total > 0:
+            open_interest_pcr = round(put_oi_total / call_oi_total, 4)
+        elif put_oi_total > 0:
+            open_interest_pcr = 9.99
     dealer_pos = dealer_metrics.get("position")
     if not dealer_pos:
         dealer_pos = _timed_step(
@@ -655,6 +683,7 @@ def _collect_market_state(
         "expected_move_up": straddle_data.get("expected_move_up"),
         "expected_move_down": straddle_data.get("expected_move_down"),
         "expected_move_pct": straddle_data.get("expected_move_pct"),
+        "open_interest_pcr": open_interest_pcr,
         "volume_pcr": volume_pcr_data.get("volume_pcr"),
         "volume_pcr_atm": volume_pcr_data.get("volume_pcr_atm"),
         "volume_pcr_regime": volume_pcr_data.get("volume_pcr_regime", "UNAVAILABLE"),

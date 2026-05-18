@@ -75,6 +75,11 @@ from research.signal_evaluation.legacy_backfill import (
     partition_repair_proposals,
     propose_repairs_for_unresolved_signal_contract_matches,
 )
+from research.signal_evaluation.option_premium_path import (
+    backfill_option_premium_dataset,
+    build_option_chain_snapshot_index,
+    enrich_option_premium_paths,
+)
 from research.signal_evaluation.policy import (
     CAPTURE_POLICY_ACTIONABLE,
     CAPTURE_POLICY_ALL,
@@ -122,9 +127,12 @@ __all__ = [
     "build_signal_evaluation_row",
     "build_regime_fingerprint",
     "build_research_report",
+    "backfill_option_premium_dataset",
+    "build_option_chain_snapshot_index",
     "average_realized_return_by_horizon",
     "average_score_by_signal_quality",
     "evaluate_signal_outcomes",
+    "enrich_option_premium_paths",
     "fetch_realized_spot_path",
     "hit_rate_by_macro_regime",
     "hit_rate_by_trade_strength",

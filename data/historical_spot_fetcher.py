@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from io import StringIO
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import pytz
@@ -117,6 +117,22 @@ def _fetch_from_yahoo(symbol: str, start_date: str, end_date: str, interval: str
             return pd.DataFrame()
 
 
+def _flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Flatten yfinance MultiIndex columns to OHLCV field names."""
+    if not isinstance(df.columns, pd.MultiIndex):
+        return df
+
+    field_names = {"Open", "High", "Low", "Close", "Adj Close", "Volume", "Date", "Datetime"}
+    flattened = []
+    for column in df.columns:
+        parts = [str(part) for part in column if str(part)]
+        field = next((part for part in parts if part in field_names), parts[0] if parts else str(column))
+        flattened.append(field)
+    out = df.copy()
+    out.columns = flattened
+    return out
+
+
 def _fetch_from_yahoo_with_yfinance(symbol: str, start_date: str, end_date: str, interval: str) -> pd.DataFrame:
     if yf is None:
         raise RuntimeError("yfinance is required for this path but is not installed")
@@ -138,6 +154,7 @@ def _fetch_from_yahoo_with_yfinance(symbol: str, start_date: str, end_date: str,
     if df.empty:
         raise ValueError(f"yfinance returned no data for {symbol} from {start_date} to {end_date}")
 
+    df = _flatten_yfinance_columns(df)
     df = df.reset_index()
     if 'Date' in df.columns:
         df['timestamp'] = pd.to_datetime(df['Date'])
@@ -183,7 +200,7 @@ def _fetch_from_yahoo_direct(symbol: str, start_date: str, end_date: str, interv
     response = requests.get(url, params=params, headers=headers)
     response.raise_for_status()
 
-    df = pd.read_csv(pd.io.common.StringIO(response.text))
+    df = pd.read_csv(StringIO(response.text))
     df['timestamp'] = pd.to_datetime(df['Date'])
     df = df.rename(columns={
         'Open': 'open',
@@ -213,7 +230,8 @@ def get_recent_spot_history(symbol: str, days: int = 30, cache_only: bool = Fals
     Returns:
         DataFrame with recent OHLC data
     """
-    end_date = datetime.now(pytz.timezone(IST_TIMEZONE)).strftime('%Y-%m-%d')
-    start_date = (datetime.now(pytz.timezone(IST_TIMEZONE)) - timedelta(days=days)).strftime('%Y-%m-%d')
+    now = datetime.now(pytz.timezone(IST_TIMEZONE))
+    end_date = now.strftime('%Y-%m-%d')
+    start_date = (now - timedelta(days=days)).strftime('%Y-%m-%d')
 
     return fetch_historical_spot_ohlc(symbol, start_date, end_date, cache_only=cache_only)

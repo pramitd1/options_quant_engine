@@ -19,6 +19,10 @@ import math
 
 import pandas as pd
 import numpy as np
+try:
+    from scipy.special import ndtr as _norm_cdf_array
+except Exception:  # pragma: no cover - scipy is a declared runtime dependency
+    _norm_cdf_array = None
 
 from config.analytics_feature_policy import get_iv_hv_spread_policy_config
 from utils.regime_normalization import normalize_iv_decimal
@@ -284,16 +288,6 @@ def compute_risk_reversal(option_chain, spot: float, delta_target: float = 0.25)
                     return max(value / 365.0, 1.0 / 365.0)
         return 30.0 / 365.0
 
-    def _bs_delta(option_type: str, strike: float, sigma: float, t_years: float) -> float | None:
-        if spot <= 0 or strike <= 0 or sigma <= 0 or t_years <= 0:
-            return None
-        sqrt_t = math.sqrt(t_years)
-        d1 = (math.log(spot / strike) + 0.5 * sigma * sigma * t_years) / max(sigma * sqrt_t, 1e-9)
-        call_delta = _norm_cdf(d1)
-        if option_type == "CE":
-            return float(call_delta)
-        return float(call_delta - 1.0)
-
     def _nearest_iv(side_df, option_type: str, target_moneyness_sign: float) -> float | None:
         """Return IV at the strike closest to target delta, with moneyness fallback."""
         if side_df.empty:
@@ -320,7 +314,10 @@ def compute_risk_reversal(option_chain, spot: float, delta_target: float = 0.25)
             abs_delta = np.full_like(strikes, np.nan, dtype=float)
             if valid_strike_mask.any() and spot > 0:
                 d1 = (np.log(float(spot) / strikes[valid_strike_mask]) + 0.5 * sigma * sigma * float(t_years)) / denom
-                call_delta = np.vectorize(_norm_cdf, otypes=[float])(d1)
+                if _norm_cdf_array is not None:
+                    call_delta = _norm_cdf_array(d1)
+                else:
+                    call_delta = np.vectorize(_norm_cdf, otypes=[float])(d1)
                 if option_type == "CE":
                     deltas = call_delta
                 else:
@@ -576,4 +573,3 @@ def iv_hv_spread(atm_iv: float | None, realized_hv: float | None) -> dict:
         "atm_iv_pct": round(atm_iv_dec * 100.0, 2),
         "realized_hv_pct": round(hv_dec * 100.0, 2),
     }
-

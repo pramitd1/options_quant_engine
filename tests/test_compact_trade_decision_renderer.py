@@ -282,6 +282,39 @@ class TestCompactTradeDecisionBlockRendering:
             except Exception as e:
                 pytest.fail(f"render_compact raised exception: {e}")
 
+    def test_compact_trade_suggestion_displays_underlying_exit_map(self):
+        trade = self._create_mock_trade(hybrid_move_probability=0.64)
+        trade["underlying_exit_plan"] = {
+            "profit_booking": {"lower": 23290.0, "upper": 23330.0, "level": 23310.0},
+            "stop_loss": {"lower": 23405.0, "upper": 23435.0, "level": 23420.0},
+            "confidence": "HIGH",
+            "basis": "DELTA_PROJECTED_OPTION_EXIT+MARKET_STRUCTURE",
+        }
+
+        with patch("app.terminal_output.compute_signal_confidence") as mock_conf:
+            mock_conf.return_value = {
+                "confidence_score": 72,
+                "confidence_level": "HIGH",
+                "confidence_recalibration_guards": [],
+            }
+
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                render_compact(
+                    result={},
+                    trade=trade,
+                    spot_summary={},
+                    macro_event_state={},
+                    global_risk_state={},
+                    execution_trade=None,
+                )
+
+        output = output_buffer.getvalue()
+        assert "underlying_profit" in output
+        assert "23290.0 - 23330.0" in output
+        assert "underlying_stop" in output
+        assert "23405.0 - 23435.0" in output
+
     def test_compact_consistency_section_passes_when_no_findings(self):
         trade = self._create_mock_trade(hybrid_move_probability=0.42)
         trade.update(

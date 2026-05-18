@@ -8,7 +8,12 @@
   ],
   "metadata": {
     "state": "candidate",
-    "owner": "research"
+    "owner": "research",
+    "threshold_adoption_config_hint": "evaluation_thresholds.selection.composite_signal_score_floor",
+    "threshold_adoption_candidate_value": 85.0,
+    "threshold_adoption_generated_at": "2026-05-15T03:21:43.622588+00:00"
   },
-  "overrides": {}
+  "overrides": {
+    "evaluation_thresholds.selection.composite_signal_score_floor": 85.0
+  }
 }

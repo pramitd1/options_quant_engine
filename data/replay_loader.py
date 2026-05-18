@@ -17,7 +17,9 @@ Downstream Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -189,7 +191,16 @@ def save_option_chain_snapshot(
     source = str(source or "UNKNOWN").upper().strip()
     timestamp = pd.Timestamp.now(tz="Asia/Kolkata").isoformat().replace(":", "-")
     filename = out_dir / f"{symbol}_{source}_option_chain_snapshot_{timestamp}.csv"
-    option_chain.to_csv(filename, index=False)
+    tmp_path = filename.with_name(f".{filename.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        option_chain.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, filename)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
     return str(filename)
 
 

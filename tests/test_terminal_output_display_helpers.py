@@ -157,3 +157,35 @@ def test_render_data_usability_diagnostics_shows_usability_and_weights() -> None
     assert "execution_suggestion_usable" in output
     assert "ANALYTICS_ONLY" in output
     assert "feature_weights" in output
+
+
+def test_render_data_usability_diagnostics_does_not_treat_provider_pass_as_blocked() -> None:
+    trade = {
+        "analytics_usable": True,
+        "execution_suggestion_usable": True,
+        "provider_health": {
+            "trade_blocking_status": "PASS",
+        },
+    }
+
+    with StringIO() as buffer, redirect_stdout(buffer):
+        _render_data_usability_diagnostics(trade, verbose=False)
+        output = buffer.getvalue()
+
+    assert "provider_exec_blocked" not in output
+
+
+def test_render_data_usability_diagnostics_shows_provider_blocked_when_status_blocks() -> None:
+    trade = {
+        "analytics_usable": True,
+        "execution_suggestion_usable": False,
+        "provider_health": {
+            "trade_blocking_status": "BLOCK",
+        },
+    }
+
+    with StringIO() as buffer, redirect_stdout(buffer):
+        _render_data_usability_diagnostics(trade, verbose=False)
+        output = buffer.getvalue()
+
+    assert "provider_exec_blocked" in output

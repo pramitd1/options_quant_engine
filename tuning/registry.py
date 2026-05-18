@@ -22,8 +22,12 @@ from typing import Any
 from config.analytics_feature_policy import (
     DealerFlowPolicyConfig,
     FlowImbalancePolicyConfig,
+    GammaFlipPolicyConfig,
     IvHvSpreadPolicyConfig,
+    MeanReversionPolicyConfig,
     SmartMoneyFlowPolicyConfig,
+    TechnicalAnalysisPolicyConfig,
+    VolumePcrPolicyConfig,
     VolatilityRegimePolicyConfig,
 )
 from config.dealer_hedging_pressure_policy import DealerHedgingPressurePolicyConfig
@@ -41,6 +45,8 @@ from config.news_category_policy import (
 )
 from config.option_efficiency_policy import OptionEfficiencyPolicyConfig
 from config.probability_feature_policy import ProbabilityFeaturePolicyConfig
+from config.signal_consistency_policy import SignalConsistencyPolicyConfig
+from config.signal_drift_policy import SIGNAL_DRIFT_MONITOR_POLICY
 from config.signal_evaluation_scoring import (
     SIGNAL_EVALUATION_DIRECTION_WEIGHTS,
     SIGNAL_EVALUATION_SCORE_WEIGHTS,
@@ -57,9 +63,11 @@ from config.signal_policy import (
     DIRECTION_MIN_SCORE,
     DIRECTION_VOTE_WEIGHTS,
     ExecutionRegimePolicyConfig,
+    ExitTimingPolicyConfig,
     LargeMoveScoringPolicyConfig,
     TRADE_RUNTIME_THRESHOLDS,
     TRADE_STRENGTH_WEIGHTS,
+    TradeStrengthContinuousPolicyConfig,
     TradeModifierPolicyConfig,
 )
 from config.strike_selection_policy import STRIKE_SELECTION_SCORE_CONFIG
@@ -151,6 +159,12 @@ GROUP_TUNING_METADATA = {
         "overfit_risk": "medium",
         "tuning_priority": 16,
     },
+    "data_quality": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "medium",
+        "tuning_priority": 17,
+    },
     "analytics": {
         "search_strategy": "coordinate_descent",
         "validation_mode": "walk_forward_regime_aware",
@@ -162,6 +176,12 @@ GROUP_TUNING_METADATA = {
         "validation_mode": "walk_forward_regime_aware",
         "overfit_risk": "high",
         "tuning_priority": 40,
+    },
+    "signal_drift": {
+        "search_strategy": "coordinate_descent",
+        "validation_mode": "walk_forward_regime_aware",
+        "overfit_risk": "low",
+        "tuning_priority": 42,
     },
 }
 
@@ -606,6 +626,112 @@ def build_default_parameter_registry() -> ParameterRegistry:
         )
     )
     definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.trade_strength_continuous",
+            module="config.signal_policy",
+            group="signal_engine",
+            category="trade_strength_continuous",
+            config_obj=TradeStrengthContinuousPolicyConfig(),
+            description_prefix="Continuous trade-strength parameter",
+            min_values={
+                "hybrid_probability_floor": 0.0,
+                "hybrid_probability_ceiling": 0.05,
+                "hybrid_max_score": 0,
+                "ml_probability_floor": 0.0,
+                "ml_probability_ceiling": 0.05,
+                "ml_max_score": 0,
+                "overlap_hybrid_threshold": 0.0,
+                "overlap_ml_threshold": 0.0,
+                "overlap_penalty": 0,
+                "probability_total_score_cap": 0,
+                "wall_distance_cap_multiplier": 0.25,
+                "liquidity_path_distance_cap_multiplier": 0.50,
+                "flip_distance_cap_pct": 0.05,
+                "spot_flip_conflict_floor": -10.0,
+            },
+            max_values={
+                "hybrid_probability_floor": 0.95,
+                "hybrid_probability_ceiling": 1.0,
+                "hybrid_max_score": 30,
+                "ml_probability_floor": 0.95,
+                "ml_probability_ceiling": 1.0,
+                "ml_max_score": 20,
+                "overlap_hybrid_threshold": 1.0,
+                "overlap_ml_threshold": 1.0,
+                "overlap_penalty": 10,
+                "probability_total_score_cap": 40,
+                "wall_distance_cap_multiplier": 5.0,
+                "liquidity_path_distance_cap_multiplier": 8.0,
+                "flip_distance_cap_pct": 3.0,
+                "spot_flip_conflict_floor": 0.0,
+            },
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="signal_engine.exit_timing",
+            module="config.signal_policy",
+            group="signal_engine",
+            category="exit_timing",
+            config_obj=ExitTimingPolicyConfig(),
+            description_prefix="Signal-engine exit-timing parameter",
+            min_values={
+                "peak_alpha_minutes": 15,
+                "max_hold_minutes": 15,
+                "early_session_cutoff_minutes_from_open": 0,
+                "early_session_peak_alpha_minutes": 15,
+                "late_session_cutoff_minutes_to_close": 0,
+                "late_session_max_hold_minutes": 5,
+                "strong_signal_hold_extension_minutes": 0,
+                "strong_signal_threshold": 0,
+                "vol_expansion_hold_reduction_minutes": 0,
+                "negative_gamma_hold_reduction_minutes": 0,
+                "urgency_critical_minutes": 1,
+                "urgency_high_minutes": 5,
+                "urgency_moderate_minutes": 10,
+            },
+            max_values={
+                "peak_alpha_minutes": 360,
+                "max_hold_minutes": 480,
+                "early_session_cutoff_minutes_from_open": 180,
+                "early_session_peak_alpha_minutes": 360,
+                "late_session_cutoff_minutes_to_close": 240,
+                "late_session_max_hold_minutes": 180,
+                "strong_signal_hold_extension_minutes": 120,
+                "strong_signal_threshold": 100,
+                "vol_expansion_hold_reduction_minutes": 120,
+                "negative_gamma_hold_reduction_minutes": 120,
+                "urgency_critical_minutes": 60,
+                "urgency_high_minutes": 120,
+                "urgency_moderate_minutes": 180,
+            },
+        )
+    )
+    _signal_consistency_defaults = SignalConsistencyPolicyConfig()
+    definitions.extend(
+        [
+            _parameter_definition(
+                key="signal_engine.consistency.default_trade_escalation_min_severity",
+                module="config.signal_consistency_policy",
+                group="signal_engine",
+                category="consistency",
+                default_value=_signal_consistency_defaults.default_trade_escalation_min_severity,
+                description="Signal consistency escalation severity threshold",
+                allowed_values=("NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"),
+            ),
+            _parameter_definition(
+                key="signal_engine.consistency.trade_escalation_regime_map",
+                module="config.signal_consistency_policy",
+                group="signal_engine",
+                category="consistency",
+                default_value=_signal_consistency_defaults.trade_escalation_regime_map,
+                description="Signal consistency regime-specific escalation map",
+                tunable=False,
+                live_safe=True,
+            ),
+        ]
+    )
+    definitions.extend(
         [
             _parameter_definition(
                 key=f"signal_engine.probability.{field.name}",
@@ -742,6 +868,129 @@ def build_default_parameter_registry() -> ParameterRegistry:
     )
 
     definitions.extend(
+        [
+            _parameter_definition(
+                key="tradable_data_layer.analytics.min_rows",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=20,
+                description="Minimum option-chain rows required for analytics usability",
+                min_value=1,
+                max_value=500,
+            ),
+            _parameter_definition(
+                key="tradable_data_layer.execution.min_rows",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=40,
+                description="Minimum option-chain rows required for execution suggestions",
+                min_value=1,
+                max_value=500,
+            ),
+            _parameter_definition(
+                key="tradable_data_layer.execution.max_stale_ratio",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=0.20,
+                description="Maximum stale quote ratio allowed before execution data weakens",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            _parameter_definition(
+                key="tradable_data_layer.execution.max_crossed_locked_ratio",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=0.10,
+                description="Maximum crossed-or-locked quote ratio allowed before execution data weakens",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            _parameter_definition(
+                key="tradable_data_layer.execution.max_outlier_ratio",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=0.20,
+                description="Maximum price outlier ratio allowed before execution data weakens",
+                min_value=0.0,
+                max_value=1.0,
+            ),
+            _parameter_definition(
+                key="tradable_data_layer.outlier.mad_threshold",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=8.0,
+                description="MAD threshold used for option-price outlier detection",
+                min_value=1.0,
+                max_value=30.0,
+            ),
+            _parameter_definition(
+                key="tradable_data_layer.quote.stale_seconds",
+                module="data.tradable_data_layer",
+                group="data_quality",
+                category="tradable_data_layer",
+                default_value=180.0,
+                description="Quote age in seconds beyond which option-chain rows are stale",
+                min_value=15.0,
+                max_value=1800.0,
+            ),
+            _parameter_definition(
+                key="option_chain_validation.provider_health.core_window_points",
+                module="data.option_chain_validation",
+                group="data_quality",
+                category="provider_health",
+                default_value=400.0,
+                description="Provider-health core strike window around spot in index points",
+                min_value=50.0,
+                max_value=2000.0,
+            ),
+            _parameter_definition(
+                key="option_chain_validation.provider_health.core_min_rows",
+                module="data.option_chain_validation",
+                group="data_quality",
+                category="provider_health",
+                default_value=40.0,
+                description="Minimum core option-chain rows used for provider-health checks",
+                min_value=5.0,
+                max_value=300.0,
+            ),
+            _parameter_definition(
+                key="option_chain_validation.provider_health.max_quote_age_seconds",
+                module="data.option_chain_validation",
+                group="data_quality",
+                category="provider_health",
+                default_value=900.0,
+                description="Maximum option quote age in seconds before provider freshness is weak",
+                min_value=30.0,
+                max_value=3600.0,
+            ),
+            _parameter_definition(
+                key="option_chain_validation.provider_health.core_quote_integrity_standalone_block",
+                module="data.option_chain_validation",
+                group="data_quality",
+                category="provider_health",
+                default_value=False,
+                description="Whether weak core quote integrity blocks even when trade-price marketability is acceptable",
+                allowed_values=(False, True),
+            ),
+            _parameter_definition(
+                key="option_chain_validation.provider_health.thin_row_escalates_to_caution",
+                module="data.option_chain_validation",
+                group="data_quality",
+                category="provider_health",
+                default_value=False,
+                description="Whether thin option-chain row coverage escalates provider summary status to CAUTION",
+                allowed_values=(False, True),
+            ),
+        ]
+    )
+
+    definitions.extend(
         _from_dataclass(
             prefix="analytics.flow_imbalance",
             module="config.analytics_feature_policy",
@@ -804,6 +1053,112 @@ def build_default_parameter_registry() -> ParameterRegistry:
             max_values={
                 "gamma_weight": 2.0,
                 "charm_weight": 2.0,
+            },
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.gamma_flip",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="gamma_flip",
+            config_obj=GammaFlipPolicyConfig(),
+            description_prefix="Analytics gamma-flip parameter",
+            min_values={
+                "neutral_band_pct": 0.05,
+            },
+            max_values={
+                "neutral_band_pct": 2.0,
+            },
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.technical_analysis",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="technical_analysis",
+            config_obj=TechnicalAnalysisPolicyConfig(),
+            description_prefix="Analytics technical-analysis parameter",
+            min_values={
+                "default_history_days": 20,
+                "minimum_history_rows": 5,
+                "sma_fast_window": 5,
+                "sma_slow_window": 20,
+                "ema_fast_span": 4,
+                "ema_slow_span": 10,
+                "macd_signal_span": 3,
+                "rsi_window": 5,
+                "rsi_overbought": 55.0,
+                "rsi_oversold": 5.0,
+                "bollinger_window": 5,
+                "bollinger_std_mult": 0.5,
+                "trend_signal_confidence": 0.0,
+                "macd_signal_confidence": 0.0,
+                "rsi_signal_confidence": 0.0,
+            },
+            max_values={
+                "default_history_days": 180,
+                "minimum_history_rows": 60,
+                "sma_fast_window": 50,
+                "sma_slow_window": 120,
+                "ema_fast_span": 50,
+                "ema_slow_span": 120,
+                "macd_signal_span": 30,
+                "rsi_window": 40,
+                "rsi_overbought": 95.0,
+                "rsi_oversold": 45.0,
+                "bollinger_window": 60,
+                "bollinger_std_mult": 4.0,
+                "trend_signal_confidence": 1.0,
+                "macd_signal_confidence": 1.0,
+                "rsi_signal_confidence": 1.0,
+            },
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.mean_reversion",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="mean_reversion",
+            config_obj=MeanReversionPolicyConfig(),
+            description_prefix="Analytics mean-reversion parameter",
+            min_values={
+                "default_history_days": 10,
+                "lookback": 3,
+                "zscore_threshold": 0.25,
+                "detection_threshold": 0.25,
+                "strength_scale": 1.0,
+            },
+            max_values={
+                "default_history_days": 120,
+                "lookback": 60,
+                "zscore_threshold": 4.0,
+                "detection_threshold": 5.0,
+                "strength_scale": 50.0,
+            },
+        )
+    )
+    definitions.extend(
+        _from_dataclass(
+            prefix="analytics.volume_pcr",
+            module="config.analytics_feature_policy",
+            group="analytics",
+            category="volume_pcr",
+            config_obj=VolumePcrPolicyConfig(),
+            description_prefix="Analytics volume-PCR parameter",
+            min_values={
+                "bullish_threshold": 0.20,
+                "bearish_threshold": 0.80,
+                "extreme_cap": 2.0,
+                "atm_strike_window_steps": 1,
+            },
+            max_values={
+                "bullish_threshold": 1.20,
+                "bearish_threshold": 3.00,
+                "extreme_cap": 25.0,
+                "atm_strike_window_steps": 12,
             },
         )
     )
@@ -1116,6 +1471,160 @@ def build_default_parameter_registry() -> ParameterRegistry:
                 live_safe=False,
             )
             for name, value in SIGNAL_EVALUATION_SELECTION_POLICY.items()
+        ]
+    )
+    definitions.extend(
+        [
+            _parameter_definition(
+                key="signal_drift.monitor.recent_days",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["recent_days"],
+                description="Recent window size for signal drift monitoring",
+                min_value=1,
+                max_value=120,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.baseline_days",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["baseline_days"],
+                description="Baseline window size for signal drift monitoring",
+                min_value=20,
+                max_value=500,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.min_recent_labeled",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["min_recent_labeled"],
+                description="Minimum labeled recent samples required for drift monitoring",
+                min_value=1,
+                max_value=500,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.min_baseline_labeled",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["min_baseline_labeled"],
+                description="Minimum labeled baseline samples required for drift monitoring",
+                min_value=1,
+                max_value=1000,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.top_n",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["top_n"],
+                description="Maximum number of drift buckets to report",
+                min_value=1,
+                max_value=100,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.apply_missing_policies",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["apply_missing_policies"],
+                description="Whether drift monitoring applies missing-label policies",
+                allowed_values=(False, True),
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.hit_rate_drop_warn",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["hit_rate_drop_warn"],
+                description="Hit-rate drop that triggers drift warning",
+                min_value=0.0,
+                max_value=0.5,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.return_drop_bps_warn",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["return_drop_bps_warn"],
+                description="Return deterioration in basis points that triggers drift warning",
+                min_value=0.0,
+                max_value=200.0,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.calibration_gap_delta_warn",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["calibration_gap_delta_warn"],
+                description="Calibration gap deterioration that triggers drift warning",
+                min_value=0.0,
+                max_value=0.5,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.label_coverage_drop_warn",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["label_coverage_drop_warn"],
+                description="Label coverage drop that triggers drift warning",
+                min_value=0.0,
+                max_value=0.8,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.retention_delta_warn",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["retention_delta_warn"],
+                description="Dataset retention deterioration that triggers drift warning",
+                min_value=0.0,
+                max_value=0.8,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.dimensions",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["dimensions"],
+                description="Signal drift grouping dimensions",
+                tunable=False,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.probability_fields",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["probability_fields"],
+                description="Signal drift probability fields",
+                tunable=False,
+                live_safe=False,
+            ),
+            _parameter_definition(
+                key="signal_drift.monitor.score_fields",
+                module="config.signal_drift_policy",
+                group="signal_drift",
+                category="monitor",
+                default_value=SIGNAL_DRIFT_MONITOR_POLICY["score_fields"],
+                description="Signal drift score fields",
+                tunable=False,
+                live_safe=False,
+            ),
         ]
     )
 

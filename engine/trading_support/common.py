@@ -15,6 +15,8 @@ Downstream Usage:
 """
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from analytics.greeks_engine import enrich_chain_with_greeks
@@ -26,6 +28,9 @@ from analytics.greeks_engine import enrich_chain_with_greeks
 from utils.numerics import clip as _clip  # noqa: F401
 from utils.numerics import safe_float as _safe_float  # noqa: F401
 from utils.numerics import safe_div as _safe_div  # noqa: F401
+
+
+_LOG = logging.getLogger(__name__)
 
 
 def normalize_option_chain(option_chain, spot=None, valuation_time=None):
@@ -130,9 +135,23 @@ def _call_first(module, candidate_names, *args, default=None, **kwargs):
         if callable(fn):
             try:
                 return fn(*args, **kwargs)
-            except TypeError:
+            except TypeError as exc:
+                _LOG.debug(
+                    "Candidate analytics call %s.%s rejected by signature/type error: %s",
+                    getattr(module, "__name__", module.__class__.__name__),
+                    name,
+                    exc,
+                    exc_info=True,
+                )
                 continue
-            except Exception:
+            except Exception as exc:
+                _LOG.debug(
+                    "Candidate analytics call %s.%s failed; trying fallback: %s",
+                    getattr(module, "__name__", module.__class__.__name__),
+                    name,
+                    exc,
+                    exc_info=True,
+                )
                 continue
     return default
 

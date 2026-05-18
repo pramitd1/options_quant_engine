@@ -52,3 +52,27 @@ def test_fetch_historical_spot_ohlc_cache_only_loads_existing_cache(tmp_path, mo
     assert list(result.columns) == ["timestamp", "open", "high", "low", "close", "volume"]
     assert len(result) == 5
     assert result.iloc[0]["open"] == 23500
+
+
+def test_yfinance_fetcher_handles_single_ticker_multiindex_columns(monkeypatch):
+    dates = pd.date_range("2026-05-01", periods=2, freq="D")
+    payload = pd.DataFrame(
+        {
+            ("Open", "^NSEI"): [23500.0, 23600.0],
+            ("High", "^NSEI"): [23600.0, 23700.0],
+            ("Low", "^NSEI"): [23400.0, 23550.0],
+            ("Close", "^NSEI"): [23550.0, 23650.0],
+            ("Volume", "^NSEI"): [1000, 1200],
+        },
+        index=dates,
+    )
+    payload.index.name = "Date"
+
+    monkeypatch.setattr(hs.yf, "download", lambda *args, **kwargs: payload)
+
+    result = hs._fetch_from_yahoo_with_yfinance("NIFTY", "2026-05-01", "2026-05-02", "1D")
+
+    assert list(result.columns) == ["timestamp", "open", "high", "low", "close", "volume"]
+    assert len(result) == 2
+    assert result.iloc[0]["close"] == 23550.0
+    assert str(result["timestamp"].dt.tz) == "Asia/Kolkata"

@@ -26,6 +26,7 @@ CANONICAL_NUMERIC_COLUMNS = [
     "askPrice",
     "openInterest",
     "changeinOI",
+    "CHG_IN_OI",
     "impliedVolatility",
     "totalTradedVolume",
     "STRIKE_PR",
@@ -96,6 +97,7 @@ def normalize_live_option_chain(option_chain, *, source: str, symbol: str):
         ("bidPrice", "BID_PRICE"),
         ("askPrice", "ASK_PRICE"),
         ("openInterest", "OPEN_INT"),
+        ("changeinOI", "CHG_IN_OI"),
         ("impliedVolatility", "IV"),
         ("totalTradedVolume", "VOLUME"),
     ]

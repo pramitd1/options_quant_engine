@@ -28,6 +28,26 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return int(default)
+    try:
+        return int(float(str(raw).strip()))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer value (got {raw!r})") from exc
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return float(default)
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a numeric value (got {raw!r})") from exc
+
+
 def _is_placeholder_secret(value: str, key_name: str) -> bool:
     if not value:
         return True
@@ -175,8 +195,8 @@ def get_icici_runtime_config() -> dict:
 # Engine Core Settings
 # ================================
 
-DEFAULT_SYMBOL = "NIFTY"
-DEFAULT_DATA_SOURCE = "ICICI"
+DEFAULT_SYMBOL = os.getenv("OQE_DEFAULT_SYMBOL", "NIFTY").strip().upper() or "NIFTY"
+DEFAULT_DATA_SOURCE = os.getenv("OQE_DEFAULT_DATA_SOURCE", "ICICI").strip().upper() or "ICICI"
 
 # Terminal output verbosity: COMPACT, STANDARD, or FULL_DEBUG
 OUTPUT_MODE = os.getenv("OQE_OUTPUT_MODE", "COMPACT").upper().strip()
@@ -188,38 +208,38 @@ IS_PRODUCTION = RUNTIME_ENV in {"PROD", "PRODUCTION"}
 
 validate_runtime_secret_hygiene(runtime_env=RUNTIME_ENV)
 
-REFRESH_INTERVAL = 10
-NSE_REFRESH_INTERVAL = 12
-ICICI_REFRESH_INTERVAL = 8
+REFRESH_INTERVAL = _env_int("OQE_REFRESH_INTERVAL", 10)
+NSE_REFRESH_INTERVAL = _env_int("OQE_NSE_REFRESH_INTERVAL", 12)
+ICICI_REFRESH_INTERVAL = _env_int("OQE_ICICI_REFRESH_INTERVAL", 8)
 
-MAX_RETRIES = 3
-QUOTE_BATCH_SIZE = 200
+MAX_RETRIES = _env_int("OQE_MAX_RETRIES", 3)
+QUOTE_BATCH_SIZE = _env_int("OQE_QUOTE_BATCH_SIZE", 200)
 
 
 # ================================
 # Trading Parameters
 # ================================
 
-TARGET_PROFIT_PERCENT = 30
-STOP_LOSS_PERCENT = 15
+TARGET_PROFIT_PERCENT = _env_float("OQE_TARGET_PROFIT_PERCENT", 30)
+STOP_LOSS_PERCENT = _env_float("OQE_STOP_LOSS_PERCENT", 15)
 
-MAX_CAPITAL_PER_TRADE = 50000
-RISK_SCORE = 5
+MAX_CAPITAL_PER_TRADE = _env_float("OQE_MAX_CAPITAL_PER_TRADE", 50000)
+RISK_SCORE = _env_int("OQE_RISK_SCORE", 5)
 
-LOT_SIZE = 65
-NUMBER_OF_LOTS = 1
-RISK_FREE_RATE = 0.06
-DIVIDEND_YIELD = 0.0
+LOT_SIZE = _env_int("OQE_LOT_SIZE", 65)
+NUMBER_OF_LOTS = _env_int("OQE_NUMBER_OF_LOTS", 1)
+RISK_FREE_RATE = _env_float("OQE_RISK_FREE_RATE", 0.06)
+DIVIDEND_YIELD = _env_float("OQE_DIVIDEND_YIELD", 0.0)
 
 
 # ================================
 # Analytics Thresholds
 # ================================
 
-HIGH_GAMMA_THRESHOLD = 1e6
-MIN_OPEN_INTEREST = 100
-LIQUIDITY_VOID_OI_THRESHOLD = 50
-VOL_EXPANSION_THRESHOLD = 1.3
+HIGH_GAMMA_THRESHOLD = _env_float("OQE_HIGH_GAMMA_THRESHOLD", 1e6)
+MIN_OPEN_INTEREST = _env_int("OQE_MIN_OPEN_INTEREST", 100)
+LIQUIDITY_VOID_OI_THRESHOLD = _env_int("OQE_LIQUIDITY_VOID_OI_THRESHOLD", 50)
+VOL_EXPANSION_THRESHOLD = _env_float("OQE_VOL_EXPANSION_THRESHOLD", 1.3)
 
 
 # ================================
@@ -402,6 +422,14 @@ GLOBAL_MARKET_STALE_DAYS = int(os.getenv("GLOBAL_MARKET_STALE_DAYS", "5"))
 
 
 def _validate_runtime_settings() -> None:
+    if not DEFAULT_SYMBOL:
+        raise ValueError("DEFAULT_SYMBOL must be non-empty")
+    if DEFAULT_DATA_SOURCE not in DATA_SOURCE_OPTIONS:
+        raise ValueError(
+            "Invalid DEFAULT_DATA_SOURCE=%r. Allowed values: %s"
+            % (DEFAULT_DATA_SOURCE, DATA_SOURCE_OPTIONS)
+        )
+
     allowed_backtest_sources = {"historical", "live", "combined"}
     if BACKTEST_DATA_SOURCE not in allowed_backtest_sources:
         raise ValueError(
@@ -422,6 +450,7 @@ def _validate_runtime_settings() -> None:
         "MACRO_EVENT_EVENT_DURATION_MINUTES": MACRO_EVENT_EVENT_DURATION_MINUTES,
         "MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES": MACRO_EVENT_POST_EVENT_COOLDOWN_MINUTES,
         "HEADLINE_STALE_MINUTES": HEADLINE_STALE_MINUTES,
+        "DIVIDEND_YIELD": DIVIDEND_YIELD,
     }
     for field_name, field_value in non_negative_checks.items():
         if field_value < 0:
@@ -431,6 +460,22 @@ def _validate_runtime_settings() -> None:
         "HEADLINE_MAX_RECORDS": HEADLINE_MAX_RECORDS,
         "GLOBAL_MARKET_LOOKBACK_DAYS": GLOBAL_MARKET_LOOKBACK_DAYS,
         "GLOBAL_MARKET_STALE_DAYS": GLOBAL_MARKET_STALE_DAYS,
+        "REFRESH_INTERVAL": REFRESH_INTERVAL,
+        "NSE_REFRESH_INTERVAL": NSE_REFRESH_INTERVAL,
+        "ICICI_REFRESH_INTERVAL": ICICI_REFRESH_INTERVAL,
+        "MAX_RETRIES": MAX_RETRIES,
+        "QUOTE_BATCH_SIZE": QUOTE_BATCH_SIZE,
+        "TARGET_PROFIT_PERCENT": TARGET_PROFIT_PERCENT,
+        "STOP_LOSS_PERCENT": STOP_LOSS_PERCENT,
+        "MAX_CAPITAL_PER_TRADE": MAX_CAPITAL_PER_TRADE,
+        "RISK_SCORE": RISK_SCORE,
+        "LOT_SIZE": LOT_SIZE,
+        "NUMBER_OF_LOTS": NUMBER_OF_LOTS,
+        "RISK_FREE_RATE": RISK_FREE_RATE,
+        "HIGH_GAMMA_THRESHOLD": HIGH_GAMMA_THRESHOLD,
+        "MIN_OPEN_INTEREST": MIN_OPEN_INTEREST,
+        "LIQUIDITY_VOID_OI_THRESHOLD": LIQUIDITY_VOID_OI_THRESHOLD,
+        "VOL_EXPANSION_THRESHOLD": VOL_EXPANSION_THRESHOLD,
     }
     for field_name, field_value in positive_checks.items():
         if field_value <= 0:

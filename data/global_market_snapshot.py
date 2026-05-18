@@ -190,6 +190,11 @@ def _extract_batch_history(batch_history: pd.DataFrame, ticker: str) -> pd.DataF
         level_zero = batch_history.columns.get_level_values(0)
         if ticker in level_zero:
             return _normalize_download_history(batch_history[ticker].copy())
+        level_one = batch_history.columns.get_level_values(1)
+        if ticker in level_one:
+            return _normalize_download_history(
+                batch_history.xs(ticker, level=1, axis=1, drop_level=True).copy()
+            )
     return _normalize_download_history(batch_history.copy())
 
 

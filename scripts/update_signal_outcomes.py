@@ -32,6 +32,8 @@ from research.signal_evaluation import (
     resolve_research_as_of,
     update_signal_dataset_outcomes,
 )
+from research.signal_evaluation.option_premium_path import enrich_option_premium_paths
+from research.signal_evaluation.dataset import write_signals_dataset
 from data.spot_history import load_spot_history
 
 
@@ -79,6 +81,11 @@ def parse_args():
             "to avoid network/provider calls and rely only on the local spot store."
         ),
     )
+    parser.add_argument(
+        "--option-premium-paths",
+        action="store_true",
+        help="Also backfill selected-contract option premium paths from saved option-chain snapshots.",
+    )
     return parser.parse_args()
 
 
@@ -108,6 +115,10 @@ def main():
     if args.spot_source == "local_spot_history":
         kwargs["fetch_spot_history_fn"] = _local_spot_history_fetch
     frame = update_signal_dataset_outcomes(**kwargs)
+    premium_summary = None
+    if args.option_premium_paths:
+        frame, premium_summary = enrich_option_premium_paths(frame, as_of=resolved_as_of)
+        write_signals_dataset(frame, args.dataset_path)
 
     pending = int((frame.get("outcome_status") == "PENDING").sum()) if not frame.empty else 0
     partial = int((frame.get("outcome_status") == "PARTIAL").sum()) if not frame.empty else 0
@@ -120,6 +131,9 @@ def main():
     print(f"pending: {pending}")
     print(f"partial: {partial}")
     print(f"complete: {complete}")
+    if premium_summary is not None:
+        for key, value in premium_summary.items():
+            print(f"option_premium_{key}: {value}")
 
 
 if __name__ == "__main__":

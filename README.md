@@ -42,6 +42,19 @@ Use this repository as a governed signal and research engine.
 - Change runtime behavior through parameter packs first, not ad-hoc code edits.
 - Base promotion decisions on signal-evaluation evidence, not discretionary trade anecdotes.
 
+## Current Operating Snapshot
+
+As of the latest local review on 2026-05-18:
+
+- the default option-chain source is `ICICI` through `OQE_DEFAULT_DATA_SOURCE`
+- `baseline_v1` remains the active runtime parameter pack unless the operator explicitly sets another pack
+- `candidate_v1` contains the reviewed `composite_signal_score >= 85` threshold candidate, but it is not active runtime behavior until deliberately selected and reconciled
+- live CLI runs default to saving raw spot and option-chain snapshots for replayable signal research
+- the signal dataset captures market-data provenance, canonical PCR fields, selected-option entry premium, and selected-option bid/ask/mid when provider quotes are available
+- selected-contract option premium paths can be reconstructed from saved option-chain snapshots for later P&L analysis
+- regime-parameter artifacts remain research-only unless fresh-forward validation, explicit runtime toggles, and audit output are added
+- forward backlog, audit reports, research reports, and plan documents are local-only artifacts; the root README is the only versioned operator document
+
 ## Direction Head Governance Note
 
 Direction-head promotion governance in this repository is currently signal-quality-first by design.
@@ -52,6 +65,7 @@ Direction-head promotion governance in this repository is currently signal-quali
 
 ## Compact Table Of Contents
 
+- [Current Operating Snapshot](#current-operating-snapshot)
 - [Quick Start](#quick-start)
 - [10-Minute Runbook](#10-minute-runbook)
 - [Main Workflows](#main-workflows)
@@ -66,7 +80,7 @@ Direction-head promotion governance in this repository is currently signal-quali
 
 ### Environment
 
-Recommended runtime: Python 3.11.15.
+Recommended runtime: Python 3.11.x.
 
 macOS / Linux:
 
@@ -95,7 +109,7 @@ python -m pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Fill in provider credentials only for the routes you want to use.
+Fill in provider credentials only for the routes you want to use. The default live option-chain route is ICICI; switch deliberately with `OQE_DEFAULT_DATA_SOURCE=ZERODHA` only when that provider is intended.
 
 Notes:
 
@@ -178,6 +192,22 @@ The PCR chart:
 python scripts/update_signal_outcomes.py
 ```
 
+To enrich selected-contract option premium paths for future P&L research, run:
+
+```bash
+python scripts/update_signal_outcomes.py --option-premium-paths
+```
+
+Live CLI runs default to saving spot and option-chain snapshots, so this premium-path enrichment can reconstruct 5m/15m/30m/60m/120m option marks from the saved chain files.
+
+For end-of-day local maintenance, refresh the cumulative dataset and premium paths with:
+
+```bash
+python scripts/refresh_cumulative_signal_dataset.py
+```
+
+Generated signal datasets, SQLite mirrors, audit outputs, research reports, plan documents, and saved snapshots are intentionally ignored by git.
+
 ### Research Reporting
 
 ```bash
@@ -187,7 +217,7 @@ python scripts/signal_evaluation_report.py
 ### Daily Research Report
 
 ```bash
-python scripts/daily_research_report.py
+python scripts/ops/run_daily_research_workflow.py --date YYYY-MM-DD --include-cumulative
 ```
 
 ### Signal-Quality Model Audit
@@ -507,7 +537,7 @@ To keep the repository maintainable and reproducible, use these artifact path co
 - One-off analysis outputs from ad-hoc scripts: store under `research/` with a date-stamped subfolder.
 - Audit reports, deployment reviews, and ad-hoc docs snapshots: store in the local docs archive (intentionally excluded from git).
 - Avoid writing generated artifacts to repository root.
-- For unused-candidate archival governance, follow `research/reviews/archive_unused_candidates_runbook_2026-04-07.md`.
+- Keep archival runbooks and review memos local-only unless their durable operating rules are summarized in this README.
 
 Commit hygiene:
 
@@ -544,10 +574,14 @@ These layers are intentionally modifiers and filters. They do not replace the co
 
 - Live engine loop: `python main.py`
 - Replay snapshot run: `python main.py --replay`
+- Daily research workflow: `python scripts/ops/run_daily_research_workflow.py --date YYYY-MM-DD --include-cumulative`
+- Empirical regime outcome tables: `python scripts/ops/run_regime_outcome_tables.py`
 - Daily+cumulative signal reports: `python scripts/reports/run_signal_evaluation_reports.py`
 - Signal-report PDFs (canonical): `python scripts/reports/generate_professional_pdfs.py`
 - Watchlist second-pass scheduler: `python scripts/schedule_watchlist_second_pass.py --target-date YYYY-MM-DD`
 - Watchlist realized evaluation (scheduler target): `python scripts/watchlist_realized_evaluation.py`
+- PCR backfill from saved chains: `python scripts/ops/backfill_pcr_fields.py --write`
+- Option premium path backfill from saved chains: `python scripts/ops/backfill_option_premium_paths.py --write`
 - Parameter governance and tuning: `python scripts/parameter_governance.py ...`
 - Offline replay pack suite: `python scripts/ops/run_offline_replay_pack_suite.py ...`
 
@@ -667,7 +701,7 @@ Enable automatic HIGH-confidence promotion in production cron/task:
 - rank-gate + confidence-sizing research: `python research/ml_evaluation/rank_gate_sizing/rank_gate_sizing_runner.py`
 - predictor method comparison: `python research/ml_evaluation/predictor_comparison/predictor_comparison_runner.py`
 - each runner reads from the canonical signal datasets, produces structured reports (`.md`, `.json`, `.csv`), and generates visualizations (`.png`)
-- all research outputs are version-controlled alongside the runner scripts
+- generated research outputs are stored under `research/` for local audit and may be git-ignored; runner scripts are the reproducible source of truth
 
 ## Scoring Modes (Production Defaults)
 
@@ -762,12 +796,10 @@ Recommended staged rollout order:
 
 Validation status for this integration:
 
-- targeted integration tests passed
-- full regression suite passed (`434 passed, 12 subtests passed`)
+- targeted integration tests passed when the integration landed
+- rerun the current regression suite before using these notes for a fresh promotion decision
 
-Detailed implementation and rollout notes:
-
-- `documentation/implementation_notes/ANALYTICS_INTEGRATION_DIRECTION_STRENGTH_OVERLAYS_2026-03-25.md`
+Detailed implementation and rollout notes should stay in the ignored local documentation tree; durable operating rules belong in this README.
 
 ## Pluggable Predictor Architecture
 
@@ -803,7 +835,7 @@ For more details, see the local developer guide for pluggable predictor architec
 
 ## ML Model Registry and Selection
 
-All trained ML models are version-controlled in the registry under `models_store/registry/`.
+Trained ML models are stored in the local registry under `models_store/registry/`. That directory is git-ignored; rebuild or refresh it with the model-registry script when needed.
 
 ### Available Models
 
@@ -941,7 +973,8 @@ Recent production-hardening updates focused on evaluation correctness, regime se
 
 Validation snapshot:
 
-- Full regression suite: `456 passed, 12 subtests passed`.
+- the stability changes passed the then-current regression suite when they landed
+- use the current `pytest -q` result as the authority for new changes
 
 ## Parameter Tuning and Governance
 
@@ -968,9 +1001,9 @@ Optimal thresholds on 7,404-signal backtest dataset:
 
 Tighter thresholds improve hit rate from 62.4% → 100% (on holdout set) but reduce signal volume from 93 → 25.
 
-### Known Tuning Issues
+### Current Tuning Caveats
 
-- **Registry range bug**: `evaluation_thresholds.selection.move_probability_floor` has range [0, 100] but actual values are 0-1 (unit mismatch). Use `allow_live_unsafe=True` for parameter searches on `evaluation_thresholds` group.
+- `evaluation_thresholds.selection.move_probability_floor` is probability-scaled (`0.0` to `1.0`); score-like floors remain `0` to `100`.
 - **Score-computation groups** (`trade_strength`, `confirmation_filter`, `large_move_probability`) don't affect pre-computed backtest datasets — must re-run signal generation to tune these.
 
 For full governance workflow details, see the local developer guide tuning-workflow section.
@@ -1109,13 +1142,9 @@ python tuning/search.py --param confirmation_filter.core.reversal_veto_steps \
   --min 0 --max 6 --step 1 --objective flip_persist_ratio
 ```
 
-#### Analysis & Artifacts
+#### Analysis Artifacts
 
-Comprehensive sweep analysis available:
-
-- `research/reviews/direction_confirmation_stickiness_2026-03-23/reversal_veto_sweep.csv` — full 1D veto sweep
-- `research/reviews/direction_confirmation_stickiness_2026-03-23/direction_change_decay_sweep.csv` — 2D decay model sweep
-- `research/reviews/direction_confirmation_stickiness_2026-03-23/direction_confirmation_stickiness_memo.md` — detailed findings
+Generated sweep outputs are local-only research artifacts. Regenerate them when needed instead of relying on versioned CSV or memo files.
 
 Run fresh analysis:
 
@@ -1240,14 +1269,11 @@ Environment variables are loaded from `.env` when present.
 
 ### External Market Data (USD/INR, WTI Crude Oil)
 
-**Available as of April 8, 2026**
+Cross-market spillover signals feed macro/statistical context, global risk checks, and future regime work.
 
-Cross-market spillover signals enable advanced regime packs (e.g., `cross_market_spillover_v1`).
-
-Historical data (already fetched):
+Historical cache files, when present locally:
 
 ```bash
-# CSV files ready for backtesting (no additional setup needed)
 data/cache/usd_inr_historical_365d.csv       # 257 trading days
 data/cache/wti_historical_365d.csv           # 251 trading days
 ```
@@ -1255,8 +1281,7 @@ data/cache/wti_historical_365d.csv           # 251 trading days
 Live/real-time quotes (optional setup):
 
 ```bash
-# For live trading, set Finnhub API key (free tier, 250 req/min)
-FINNHUB_API_KEY=d7b5flhr01qhndem3m9gd7b5flhr01qhndem3ma0
+FINNHUB_API_KEY=YOUR_FINNHUB_API_KEY
 ```
 
 Local setup and handoff notes can be kept under the ignored `documentation/` tree when needed. Cross-asset platform planning should live in the parent `Quant Engines/` folder instead of this repo.
@@ -1282,6 +1307,13 @@ OQE_PREDICTION_METHOD=blended   # blended | pure_ml | pure_rule | research_dual_
 Set to `blended` (default) for the production rule + ML weighted blend. Set to `pure_ml` to use only the ML leg, `pure_rule` for only the rule-based heuristic, `research_dual_model` to use the research GBT ranking + LogReg calibration dual-model, `research_decision_policy` to use the decision-policy layer that applies ALLOW/BLOCK/DOWNGRADE policies over the dual-model output, `ev_sizing` to use expected-value-based sizing from conditional return tables (blocks negative-EV signals, scales positive-EV proportionally), `research_rank_gate` to block low-rank signals with a research rank threshold, or `research_uncertainty_adjusted` to downweight high-uncertainty signals using dual-model disagreement and confidence ambiguity. The backtester also accepts a per-run `prediction_method` parameter that overrides this setting for that run only.
 
 ### Common Provider Settings
+
+Default provider:
+
+```bash
+OQE_DEFAULT_DATA_SOURCE=ICICI   # ICICI | ZERODHA
+OQE_ICICI_REFRESH_INTERVAL=8
+```
 
 Zerodha:
 
@@ -1356,13 +1388,14 @@ GLOBAL_MARKET_STALE_DAYS=5
 
 ## Parameter Packs
 
-Named packs currently live under [parameter_packs](config/parameter_packs):
+Named packs currently live under [parameter_packs](config/parameter_packs). Notable packs:
 
 - `baseline_v1`: registry-default pack, intended to preserve current behavior
 - `macro_overlay_v1`: stronger macro/global caution candidate
 - `overnight_focus_v1`: more conservative overnight selection candidate
 - `experimental_v1`: research-only pack for offline experiments
-- `candidate_v1`: reserved promotion slot
+- `candidate_v1`: promotion slot currently carrying the reviewed `composite_signal_score >= 85` candidate
+- `caution_conditional_shadow_*`: shadow/research caution variants retained for validation and comparison
 
 Pack format is JSON and supports inheritance through `parent` plus a flat `overrides` map keyed by stable parameter ids such as `trade_strength.scoring.flow_call_bullish` or `global_risk.core.risk_adjustment_extreme`.
 

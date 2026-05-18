@@ -22,6 +22,7 @@ from research.signal_evaluation import (
     write_signals_dataset,
 )
 from research.signal_evaluation.legacy_backfill import backfill_signal_contract_fields
+from research.signal_evaluation.option_premium_path import enrich_option_premium_paths
 from tuning.walk_forward import build_walk_forward_splits_with_fallback
 
 
@@ -82,6 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--as-of", default=None)
     parser.add_argument("--skip-outcome-update", action="store_true")
     parser.add_argument("--skip-backfill", action="store_true")
+    parser.add_argument("--skip-option-premium-backfill", action="store_true")
     parser.add_argument("--minimum-trading-days", type=int, default=20)
     parser.add_argument("--minimum-completed-signals", type=int, default=500)
     parser.add_argument("--minimum-splits", type=int, default=4)
@@ -112,6 +114,22 @@ def main() -> int:
             write_signals_dataset(updated, dataset_path)
             frame = updated
 
+    premium_stats = {
+        "rows_seen": 0,
+        "rows_updated": 0,
+        "premium_points_filled": 0,
+        "rows_complete": 0,
+        "rows_partial": 0,
+        "rows_pending": 0,
+        "rows_no_entry_premium": 0,
+        "snapshot_read_failures": 0,
+    }
+    if not args.skip_option_premium_backfill:
+        updated, premium_stats = enrich_option_premium_paths(frame, as_of=resolved_as_of)
+        if not updated.equals(frame):
+            write_signals_dataset(updated, dataset_path)
+            frame = updated
+
     readiness = _readiness_summary(
         frame,
         minimum_trading_days=args.minimum_trading_days,
@@ -125,6 +143,8 @@ def main() -> int:
     print(f"rows: {len(frame)}")
     for key, value in backfill_stats.items():
         print(f"backfill_{key}: {value}")
+    for key, value in premium_stats.items():
+        print(f"option_premium_{key}: {value}")
     for key, value in readiness.items():
         print(f"readiness_{key}: {value}")
     return 0

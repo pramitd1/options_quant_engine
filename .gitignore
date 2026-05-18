@@ -14,6 +14,7 @@ logs/
 !.env.example
 data_store/icici_cache/
 data_store/historical/
+data_store/historical_spot/
 data_store/spot_history/
 data_store/NIFTY/
 data_store/decision_journal.sqlite3
@@ -102,7 +103,7 @@ test_*tests_*/
 # Research output artifacts — regenerable from code + raw data
 research/data_audit/
 research/audits/
-research/ml_research/
+research/ml_research/*
 research/**/reports/
 research/**/report/
 research/**/audit/

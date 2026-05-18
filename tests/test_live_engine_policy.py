@@ -58,9 +58,9 @@ class LiveEnginePolicyTests(unittest.TestCase):
     def test_provider_normalization_adds_metadata_and_dedupes(self):
         option_chain = pd.DataFrame(
             [
-                {"strikePrice": 22000, "OPTION_TYP": "ce", "lastPrice": "101.5", "openInterest": "1200", "EXPIRY_DT": "2026-03-26"},
-                {"strikePrice": 22000, "OPTION_TYP": "ce", "lastPrice": "102.0", "openInterest": "1300", "EXPIRY_DT": "2026-03-26"},
-                {"STRIKE_PR": 22000, "OPTION_TYP": "PE", "LAST_PRICE": "98", "OPEN_INT": "1400", "EXPIRY_DT": "2026-03-26"},
+                {"strikePrice": 22000, "OPTION_TYP": "ce", "lastPrice": "101.5", "openInterest": "1200", "changeinOI": "50", "EXPIRY_DT": "2026-03-26"},
+                {"strikePrice": 22000, "OPTION_TYP": "ce", "lastPrice": "102.0", "openInterest": "1300", "changeinOI": "75", "EXPIRY_DT": "2026-03-26"},
+                {"STRIKE_PR": 22000, "OPTION_TYP": "PE", "LAST_PRICE": "98", "OPEN_INT": "1400", "CHG_IN_OI": "-25", "EXPIRY_DT": "2026-03-26"},
             ]
         )
 
@@ -72,6 +72,8 @@ class LiveEnginePolicyTests(unittest.TestCase):
         self.assertEqual(set(normalized["OPTION_TYP"].tolist()), {"CE", "PE"})
         self.assertTrue(pd.api.types.is_numeric_dtype(normalized["lastPrice"]))
         self.assertTrue(pd.api.types.is_numeric_dtype(normalized["openInterest"]))
+        self.assertTrue(pd.api.types.is_numeric_dtype(normalized["changeinOI"]))
+        self.assertTrue(pd.api.types.is_numeric_dtype(normalized["CHG_IN_OI"]))
 
     def test_weighted_direction_policy_accepts_aligned_call(self):
         direction, source, bull_prob, bear_prob, *_ = decide_direction(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -95,7 +98,17 @@ def test_parameter_registry_exposes_key_groups():
     assert "confirmation_filter.core.flow_support" in registry.keys()
     assert "signal_engine.data_quality.invalid_spot_penalty" in registry.keys()
     assert "signal_engine.probability.vacuum_breakout_strength" in registry.keys()
+    assert "signal_engine.trade_strength_continuous.hybrid_probability_floor" in registry.keys()
+    assert "signal_engine.exit_timing.peak_alpha_minutes" in registry.keys()
+    assert "signal_engine.consistency.default_trade_escalation_min_severity" in registry.keys()
+    assert "tradable_data_layer.analytics.min_rows" in registry.keys()
+    assert "option_chain_validation.provider_health.core_window_points" in registry.keys()
     assert "analytics.flow_imbalance.bullish_threshold" in registry.keys()
+    assert "analytics.gamma_flip.neutral_band_pct" in registry.keys()
+    assert "analytics.technical_analysis.sma_fast_window" in registry.keys()
+    assert "analytics.mean_reversion.zscore_threshold" in registry.keys()
+    assert "analytics.volume_pcr.bearish_threshold" in registry.keys()
+    assert "signal_drift.monitor.recent_days" in registry.keys()
     assert "headline_rules.geopolitics.vol_weight" in registry.keys()
     assert "macro_news.adjustment.lockdown_adjustment_score" in registry.keys()
     assert "global_risk.core.risk_adjustment_extreme" in registry.keys()
@@ -104,6 +117,45 @@ def test_parameter_registry_exposes_key_groups():
     assert "event_windows.core.pre_event_warning_minutes" in registry.keys()
     assert "keyword_category.impact.geopolitics" in registry.keys()
     assert "evaluation_thresholds.selection.trade_strength_floor" in registry.keys()
+
+
+def test_static_runtime_policy_keys_are_registered():
+    root = Path(__file__).resolve().parents[1]
+    scan_dirs = ("config", "data", "analytics", "engine", "features", "macro", "research")
+    registry_keys = set(get_parameter_registry().keys())
+    missing: list[str] = []
+
+    for dirname in scan_dirs:
+        for path in sorted((root / dirname).rglob("*.py")):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+
+                func = node.func
+                name = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else None
+                )
+                if not node.args or not isinstance(node.args[0], ast.Constant):
+                    continue
+                first_arg = node.args[0].value
+                if not isinstance(first_arg, str):
+                    continue
+
+                if name in {"resolve_mapping", "resolve_dataclass_config"}:
+                    if not any(
+                        key == first_arg or key.startswith(f"{first_arg}.")
+                        for key in registry_keys
+                    ):
+                        missing.append(f"{first_arg} ({path.relative_to(root)}:{node.lineno})")
+                elif name == "get_parameter_value" and first_arg not in registry_keys:
+                    missing.append(f"{first_arg} ({path.relative_to(root)}:{node.lineno})")
+
+    assert missing == []
 
 
 def test_parameter_packs_resolve_and_override_defaults():

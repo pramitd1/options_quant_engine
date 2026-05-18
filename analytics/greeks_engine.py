@@ -24,6 +24,7 @@ import logging
 
 import pandas as pd
 
+from config.market_data_policy import IST_TIMEZONE
 from config.settings import DIVIDEND_YIELD, RISK_FREE_RATE
 from utils.numerics import safe_float as _safe_float  # noqa: F401
 from utils.math_helpers import norm_pdf as _norm_pdf, norm_cdf as _norm_cdf  # noqa: F401
@@ -31,6 +32,8 @@ from utils.math_helpers import norm_pdf as _norm_pdf, norm_cdf as _norm_cdf  # n
 
 _LOG = logging.getLogger(__name__)
 _SECONDS_PER_YEAR = 365.0 * 24.0 * 3600.0
+_EXCHANGE_EXPIRY_CLOSE_HOUR = 15
+_EXCHANGE_EXPIRY_CLOSE_MINUTE = 30
 _GREEKS_MIN_TTE_SECONDS = float(os.getenv("OQE_GREEKS_MIN_TTE_SECONDS", "60"))
 _GREEKS_MIN_TTE_YEARS_FLOOR = float(os.getenv("OQE_GREEKS_MIN_TTE_YEARS_FLOOR", "1e-6"))
 
@@ -120,6 +123,43 @@ def _coerce_valuation_timestamp(value):
     return parsed
 
 
+def _expiry_value_has_explicit_time(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return bool(re.search(r"\d{1,2}:\d{2}", text) or "T" in text)
+
+
+def _coerce_expiry_timestamp(value):
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+    if pd.isna(parsed):
+        return None
+
+    has_explicit_time = _expiry_value_has_explicit_time(value)
+    is_midnight = (
+        parsed.hour == 0
+        and parsed.minute == 0
+        and parsed.second == 0
+        and parsed.microsecond == 0
+        and parsed.nanosecond == 0
+    )
+    if not has_explicit_time and is_midnight:
+        parsed = pd.Timestamp(
+            year=parsed.year,
+            month=parsed.month,
+            day=parsed.day,
+            hour=_EXCHANGE_EXPIRY_CLOSE_HOUR,
+            minute=_EXCHANGE_EXPIRY_CLOSE_MINUTE,
+            tz=IST_TIMEZONE,
+        )
+    elif parsed.tzinfo is None:
+        parsed = parsed.tz_localize(IST_TIMEZONE)
+
+    return parsed.tz_convert("UTC")
+
+
 def _parse_expiry_years(expiry_value, valuation_time=None):
     """
     Purpose:
@@ -148,12 +188,10 @@ def _parse_expiry_years(expiry_value, valuation_time=None):
             return max(years, _GREEKS_MIN_TTE_YEARS_FLOOR)
         parsed = _parse_expiry_timestamp_cached(expiry_value)
     else:
-        parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
+        parsed = _coerce_expiry_timestamp(expiry_value)
 
-    if pd.isna(parsed):
-        parsed = pd.to_datetime(expiry_value, errors="coerce", dayfirst=True, utc=True)
-        if pd.isna(parsed):
-            return None
+    if parsed is None or pd.isna(parsed):
+        return None
 
     now_ts = _coerce_valuation_timestamp(valuation_time)
 
@@ -177,12 +215,7 @@ def _parse_expiry_timestamp_cached(expiry_value: str):
     assert isinstance(expiry_value, str), (
         f"_parse_expiry_timestamp_cached expects a str, got {type(expiry_value).__name__!r}"
     )
-    parsed = pd.to_datetime(expiry_value, errors="coerce", utc=True)
-    if pd.isna(parsed):
-        parsed = pd.to_datetime(expiry_value, errors="coerce", dayfirst=True, utc=True)
-        if pd.isna(parsed):
-            return None
-    return parsed
+    return _coerce_expiry_timestamp(expiry_value)
 
 
 def compute_option_greeks(

@@ -40,6 +40,13 @@ class TestAppendSpotObservation:
         df = load_spot_history("Nifty", base_dir=tmp_path)
         assert len(df) == 1
 
+    def test_rejects_non_positive_or_non_finite_spot(self, tmp_path):
+        with pytest.raises(ValueError, match="positive finite"):
+            append_spot_observation("NIFTY", 0.0, "2026-03-16T12:30:00+05:30", base_dir=tmp_path)
+
+        with pytest.raises(ValueError, match="positive finite"):
+            append_spot_observation("NIFTY", float("nan"), "2026-03-16T12:30:00+05:30", base_dir=tmp_path)
+
 
 class TestLoadSpotHistory:
     def test_empty_when_no_data(self, tmp_path):

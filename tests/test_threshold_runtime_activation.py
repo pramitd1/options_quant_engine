@@ -5,6 +5,7 @@ from pathlib import Path
 
 import app.runtime_sinks as runtime_sinks
 from app.runtime_sinks import DefaultSignalCaptureSink
+from research.signal_evaluation.evaluator import build_signal_evaluation_row
 from research.signal_evaluation.threshold_runtime_activation import (
     build_runtime_activation_capture_guard,
     build_threshold_runtime_activation_marker,
@@ -126,7 +127,7 @@ def test_runtime_activation_loader_returns_empty_dict_when_missing(tmp_path: Pat
     assert marker == {}
 
 
-def test_default_signal_capture_sink_skips_wrong_pack_after_runtime_activation(monkeypatch):
+def test_default_signal_capture_sink_persists_guarded_wrong_pack_after_runtime_activation(monkeypatch):
     saved = []
     result_payload = _capture_payload(parameter_pack_name="baseline_v1")
 
@@ -154,8 +155,8 @@ def test_default_signal_capture_sink_skips_wrong_pack_after_runtime_activation(m
         signal_capture_policy="ALL_SIGNALS",
     )
 
-    assert saved == []
-    assert result_payload["signal_capture_status"] == "SKIPPED_RUNTIME_ACTIVATION:PARAMETER_PACK_MISMATCH"
+    assert len(saved) == 1
+    assert result_payload["signal_capture_status"] == "CAPTURED_GUARDED:PARAMETER_PACK_MISMATCH"
     assert result_payload["signal_capture_guarded"] is True
     assert result_payload["signal_capture_guard_reason"] == "PARAMETER_PACK_MISMATCH"
     assert result_payload["runtime_activation_capture_guard"]["observed_parameter_pack"] == "baseline_v1"
@@ -192,3 +193,21 @@ def test_default_signal_capture_sink_persists_allowed_rows_after_runtime_activat
     assert len(saved) == 1
     assert result_payload["signal_capture_status"] == "CAPTURED"
     assert result_payload["runtime_activation_capture_guard"]["status"] == "PARAMETER_PACK_MATCH"
+
+
+def test_signal_evaluation_row_records_runtime_activation_guard_metadata():
+    result_payload = _capture_payload(parameter_pack_name="baseline_v1")
+    guard = build_runtime_activation_capture_guard(result_payload, marker=_activation_marker())
+    result_payload["runtime_activation_capture_guard"] = guard
+    result_payload["signal_capture_guarded"] = True
+    result_payload["signal_capture_guard_reason"] = guard["status"]
+
+    row = build_signal_evaluation_row(result_payload)
+
+    assert row["signal_capture_guarded"] is True
+    assert row["signal_capture_guard_reason"] == "PARAMETER_PACK_MISMATCH"
+    assert row["runtime_activation_guard_active"] is True
+    assert row["runtime_activation_capture_allowed"] is False
+    assert row["runtime_activation_guard_status"] == "PARAMETER_PACK_MISMATCH"
+    assert row["runtime_activation_expected_parameter_pack"] == "candidate_v1"
+    assert row["runtime_activation_observed_parameter_pack"] == "baseline_v1"

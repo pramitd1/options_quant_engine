@@ -47,6 +47,7 @@ from engine.trading_support import (
     derive_gamma_vol_trade_modifiers,
     derive_global_risk_trade_modifiers,
     derive_option_efficiency_trade_modifiers,
+    build_historical_context,
     normalize_option_chain,
 )
 from analytics.signal_confidence import compute_signal_confidence
@@ -2473,6 +2474,319 @@ def _compute_runtime_composite_score(
     return int(_clip(round(composite), 0, 100))
 
 
+_HIGH_COMPOSITE_SOFT_OVERRIDE_BLOCKERS = {
+    "GLOBAL_RISK_WATCHLIST",
+    "REGIME_SEGMENT_GUARD",
+    "TRADE_STRENGTH_THRESHOLD",
+    "RUNTIME_COMPOSITE_THRESHOLD",
+    "HISTORICAL_OUTCOME_GUARD",
+}
+
+
+def _runtime_composite_observation_policy(runtime_composite_score, runtime_thresholds):
+    thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
+    score_value = _safe_float(runtime_composite_score, None)
+    observation_threshold = int(
+        _clip(round(_safe_float(thresholds.get("runtime_composite_observation_threshold"), 80.0)), 0, 100)
+    )
+    soft_override_threshold = int(
+        _clip(round(_safe_float(thresholds.get("high_composite_soft_override_threshold"), 85.0)), 0, 100)
+    )
+    soft_override_threshold = max(soft_override_threshold, observation_threshold)
+
+    if score_value is None:
+        return {
+            "runtime_composite_score": None,
+            "runtime_composite_observation_threshold": observation_threshold,
+            "runtime_composite_soft_override_threshold": soft_override_threshold,
+            "runtime_composite_observation_tier": "UNAVAILABLE",
+            "eligible_for_soft_override": False,
+        }
+
+    score = int(_clip(score_value, 0, 100))
+    if score >= soft_override_threshold:
+        tier = "OVERRIDE_85_PLUS"
+    elif score >= observation_threshold:
+        tier = "OBSERVE_80_85"
+    else:
+        tier = "NONE"
+
+    return {
+        "runtime_composite_score": score,
+        "runtime_composite_observation_threshold": observation_threshold,
+        "runtime_composite_soft_override_threshold": soft_override_threshold,
+        "runtime_composite_observation_tier": tier,
+        "eligible_for_soft_override": tier == "OVERRIDE_85_PLUS",
+    }
+
+
+def _evaluate_high_composite_soft_override_eligibility(*, payload, runtime_thresholds, blocker):
+    payload = payload if isinstance(payload, dict) else {}
+    thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
+    policy = _runtime_composite_observation_policy(payload.get("runtime_composite_score"), thresholds)
+    blocker_key = _as_upper(blocker)
+    fail_reasons = []
+
+    enabled = bool(int(_safe_float(thresholds.get("enable_high_composite_soft_block_override"), 1.0)))
+    if not enabled:
+        fail_reasons.append("override_disabled")
+
+    allowed_blockers = _normalize_string_set(
+        thresholds.get("high_composite_soft_override_allowed_blockers"),
+        default=_HIGH_COMPOSITE_SOFT_OVERRIDE_BLOCKERS,
+    )
+    if blocker_key not in allowed_blockers:
+        fail_reasons.append("blocker_not_allowlisted")
+
+    if not policy.get("eligible_for_soft_override"):
+        fail_reasons.append("runtime_composite_below_soft_override_threshold")
+
+    require_confirmed = bool(int(_safe_float(thresholds.get("high_composite_soft_override_require_confirmed_status"), 1.0)))
+    confirmation_status = _as_upper(payload.get("confirmation_status"))
+    if require_confirmed and confirmation_status not in {"CONFIRMED", "STRONG_CONFIRMATION"}:
+        fail_reasons.append("confirmation_not_strong")
+
+    allowed_data_quality_statuses = _normalize_string_set(
+        thresholds.get("high_composite_soft_override_allowed_data_quality_statuses"),
+        default={"GOOD", "STRONG", "CAUTION"},
+    )
+    data_quality_status = _as_upper(payload.get("data_quality_status"))
+    if data_quality_status not in allowed_data_quality_statuses:
+        fail_reasons.append("data_quality_not_allowlisted")
+
+    if not bool(payload.get("analytics_usable", True)):
+        fail_reasons.append("analytics_data_unusable")
+
+    if bool(payload.get("analytics_usable")) and not bool(payload.get("execution_suggestion_usable")):
+        fail_reasons.append("execution_data_unusable")
+
+    if _as_upper(payload.get("provider_health_blocking_status")) == "BLOCK":
+        fail_reasons.append("provider_health_blocked")
+
+    if _as_upper(payload.get("market_data_trade_blocking_status")) == "BLOCK":
+        fail_reasons.append("market_data_blocked")
+
+    if bool(payload.get("event_lockdown_flag")):
+        fail_reasons.append("event_lockdown")
+
+    details = {
+        "eligible": not fail_reasons,
+        "blocker": blocker_key,
+        "fail_reasons": fail_reasons,
+        "allowed_blockers": sorted(allowed_blockers),
+        "enabled": enabled,
+        "confirmation_status": confirmation_status,
+        "data_quality_status": data_quality_status,
+        **policy,
+    }
+    return details["eligible"], details
+
+
+def _nearest_level(levels, spot_value, *, side):
+    candidates = []
+    for level in levels or []:
+        level_value = _safe_float(level, None)
+        if level_value is None or level_value <= 0:
+            continue
+        if side == "ABOVE" and level_value > spot_value:
+            candidates.append(level_value)
+        elif side == "BELOW" and level_value < spot_value:
+            candidates.append(level_value)
+    if not candidates:
+        return None
+    return min(candidates) if side == "ABOVE" else max(candidates)
+
+
+def _build_underlying_exit_plan(
+    *,
+    spot,
+    direction,
+    entry_price,
+    target,
+    stop_loss,
+    option_delta,
+    delta_is_proxy=False,
+    expected_move_points=None,
+    support_wall=None,
+    resistance_wall=None,
+    gamma_flip=None,
+    liquidity_levels=None,
+    runtime_thresholds=None,
+):
+    thresholds = runtime_thresholds if isinstance(runtime_thresholds, dict) else {}
+    if not bool(int(_safe_float(thresholds.get("enable_underlying_exit_plan"), 1.0))):
+        return {}
+
+    spot_value = _safe_float(spot, None)
+    entry_value = _safe_float(entry_price, None)
+    target_value = _safe_float(target, None)
+    stop_value = _safe_float(stop_loss, None)
+    direction_upper = _as_upper(direction)
+    if (
+        spot_value is None
+        or spot_value <= 0
+        or entry_value is None
+        or entry_value <= 0
+        or target_value is None
+        or stop_value is None
+        or direction_upper not in {"CALL", "PUT"}
+    ):
+        return {}
+
+    expected_move = _safe_float(expected_move_points, None)
+    if expected_move is not None and expected_move <= 0:
+        expected_move = None
+
+    min_delta = _clip(_safe_float(thresholds.get("underlying_exit_plan_min_delta"), 0.08), 0.01, 1.0)
+    fallback_delta = _clip(_safe_float(thresholds.get("underlying_exit_plan_fallback_delta"), 0.45), min_delta, 1.0)
+    raw_delta = abs(_safe_float(option_delta, 0.0))
+    reasons = []
+    confidence = "HIGH"
+    if raw_delta >= min_delta:
+        projection_delta = raw_delta
+        if bool(delta_is_proxy):
+            confidence = "MEDIUM"
+            reasons.append("delta_proxy_used")
+    else:
+        projection_delta = fallback_delta
+        confidence = "LOW"
+        reasons.append("fallback_delta_used")
+
+    premium_reward = abs(target_value - entry_value)
+    premium_risk = abs(entry_value - stop_value)
+    if premium_reward <= 0 or premium_risk <= 0:
+        return {}
+
+    profit_move = premium_reward / projection_delta
+    stop_move = premium_risk / projection_delta
+    if expected_move is not None:
+        profit_cap = expected_move * _clip(
+            _safe_float(thresholds.get("underlying_exit_plan_profit_expected_move_cap"), 0.85),
+            0.10,
+            2.00,
+        )
+        stop_cap = expected_move * _clip(
+            _safe_float(thresholds.get("underlying_exit_plan_stop_expected_move_cap"), 0.45),
+            0.05,
+            1.50,
+        )
+        if profit_move > profit_cap:
+            profit_move = profit_cap
+            reasons.append("profit_move_capped_by_expected_move")
+        if stop_move > stop_cap:
+            stop_move = stop_cap
+            reasons.append("stop_move_capped_by_expected_move")
+    else:
+        confidence = "MEDIUM" if confidence == "HIGH" else confidence
+        reasons.append("expected_move_unavailable")
+
+    sign = 1.0 if direction_upper == "CALL" else -1.0
+    projected_profit = spot_value + sign * profit_move
+    projected_stop = spot_value - sign * stop_move
+
+    levels = []
+    for level in [support_wall, resistance_wall, gamma_flip]:
+        level_value = _safe_float(level, None)
+        if level_value is not None and level_value > 0:
+            levels.append(level_value)
+    if isinstance(liquidity_levels, (list, tuple, set)):
+        for level in liquidity_levels:
+            level_value = _safe_float(level, None)
+            if level_value is not None and level_value > 0:
+                levels.append(level_value)
+
+    favorable_side = "ABOVE" if direction_upper == "CALL" else "BELOW"
+    unfavorable_side = "BELOW" if direction_upper == "CALL" else "ABOVE"
+    favorable_level = _nearest_level(levels, spot_value, side=favorable_side)
+    unfavorable_level = _nearest_level(levels, spot_value, side=unfavorable_side)
+
+    if expected_move is not None:
+        raw_buffer = expected_move * _clip(
+            _safe_float(thresholds.get("underlying_exit_plan_zone_buffer_pct_of_expected_move"), 0.08),
+            0.01,
+            0.25,
+        )
+    else:
+        raw_buffer = spot_value * 0.0007
+    buffer_points = _clip(
+        raw_buffer,
+        _safe_float(thresholds.get("underlying_exit_plan_min_buffer_points"), 12.0),
+        _safe_float(thresholds.get("underlying_exit_plan_max_buffer_points"), 45.0),
+    )
+
+    profit_candidates = [projected_profit]
+    if favorable_level is not None and abs(favorable_level - spot_value) <= profit_move + buffer_points:
+        profit_candidates.append(favorable_level)
+        reasons.append("profit_zone_blended_with_nearby_market_structure")
+
+    stop_candidates = [projected_stop]
+    if unfavorable_level is not None and abs(unfavorable_level - spot_value) <= stop_move + buffer_points:
+        stop_candidates.append(unfavorable_level)
+        reasons.append("stop_zone_blended_with_nearby_market_structure")
+
+    def _zone(candidates, *, kind):
+        low = min(candidates) - (buffer_points * 0.35)
+        high = max(candidates) + (buffer_points * 0.35)
+        directional_gap = max(2.0, min(8.0, buffer_points * 0.20))
+        if direction_upper == "CALL" and kind == "profit":
+            low = max(low, spot_value + directional_gap)
+        elif direction_upper == "PUT" and kind == "profit":
+            high = min(high, spot_value - directional_gap)
+        elif direction_upper == "CALL" and kind == "stop":
+            high = min(high, spot_value - directional_gap)
+        elif direction_upper == "PUT" and kind == "stop":
+            low = max(low, spot_value + directional_gap)
+        return round(low, 1), round(high, 1)
+
+    profit_lower, profit_upper = _zone(profit_candidates, kind="profit")
+    stop_lower, stop_upper = _zone(stop_candidates, kind="stop")
+    if direction_upper == "CALL":
+        profit_level = min(profit_candidates)
+        stop_level = max(stop_candidates)
+    else:
+        profit_level = max(profit_candidates)
+        stop_level = min(stop_candidates)
+
+    basis_parts = ["DELTA_PROJECTED_OPTION_EXIT"]
+    if favorable_level is not None or unfavorable_level is not None:
+        basis_parts.append("MARKET_STRUCTURE")
+    if expected_move is not None:
+        basis_parts.append("EXPECTED_MOVE_CAPPED")
+
+    plan = {
+        "underlying_profit_booking_level": round(profit_level, 1),
+        "underlying_profit_booking_lower": profit_lower,
+        "underlying_profit_booking_upper": profit_upper,
+        "underlying_stop_loss_level": round(stop_level, 1),
+        "underlying_stop_loss_lower": stop_lower,
+        "underlying_stop_loss_upper": stop_upper,
+        "underlying_exit_plan_confidence": confidence,
+        "underlying_exit_plan_basis": "+".join(basis_parts),
+        "underlying_exit_plan_reasons": _dedupe_keep_order(reasons),
+    }
+    plan["underlying_exit_plan"] = {
+        "direction": direction_upper,
+        "spot": round(spot_value, 2),
+        "profit_booking": {
+            "level": plan["underlying_profit_booking_level"],
+            "lower": profit_lower,
+            "upper": profit_upper,
+        },
+        "stop_loss": {
+            "level": plan["underlying_stop_loss_level"],
+            "lower": stop_lower,
+            "upper": stop_upper,
+        },
+        "projection_delta": round(projection_delta, 4),
+        "expected_move_points": round(expected_move, 2) if expected_move is not None else None,
+        "buffer_points": round(buffer_points, 2),
+        "basis": plan["underlying_exit_plan_basis"],
+        "confidence": confidence,
+        "reasons": plan["underlying_exit_plan_reasons"],
+    }
+    return plan
+
+
 def _compute_feature_reliability_overlay(option_chain_validation):
     """Summarize feature reliability weights for downstream diagnostics and weighting."""
     weights = (
@@ -3570,6 +3884,44 @@ def generate_trade(
     trade_strength = signal_state["trade_strength"]
     scoring_breakdown = signal_state["scoring_breakdown"]
     confirmation = signal_state["confirmation"]
+    historical_context = build_historical_context(
+        spot=spot,
+        market_state=market_state,
+        global_risk_state=global_risk_state,
+        direction=direction,
+        valuation_time=valuation_time,
+        weekday=_global_ctx.get("weekday"),
+    )
+    historical_live_modifiers = (
+        historical_context.get("live_modifiers")
+        if isinstance(historical_context.get("live_modifiers"), dict)
+        else {}
+    )
+    historical_direction_override = historical_live_modifiers.get("direction_override")
+    if direction is None and historical_direction_override in {"CALL", "PUT"}:
+        direction = historical_direction_override
+        direction_source = (
+            "HISTORICAL_GLOBAL_PRIOR"
+            if not direction_source
+            else f"{direction_source}+HISTORICAL_GLOBAL_PRIOR"
+        )
+        confirmation["status"] = "MIXED" if _as_upper(confirmation.get("status")) in {"", "NO_DIRECTION"} else confirmation.get("status")
+        if not isinstance(confirmation.get("reasons"), list):
+            confirmation["reasons"] = []
+        confirmation["reasons"].append("historical_global_prior_direction_fallback")
+        historical_context = build_historical_context(
+            spot=spot,
+            market_state=market_state,
+            global_risk_state=global_risk_state,
+            direction=direction,
+            valuation_time=valuation_time,
+            weekday=_global_ctx.get("weekday"),
+        )
+        historical_live_modifiers = (
+            historical_context.get("live_modifiers")
+            if isinstance(historical_context.get("live_modifiers"), dict)
+            else {}
+        )
 
     # Path-aware filter uses consecutive snapshot spot deltas as a micro-path proxy.
     path_filtering_enabled = bool(int(_safe_float(get_trade_runtime_thresholds().get("enable_path_aware_filtering"), 1.0)))
@@ -3652,6 +4004,17 @@ def generate_trade(
             ),
             4,
         )
+    historical_probability_adjustment = _safe_float(historical_live_modifiers.get("probability_adjustment"), 0.0)
+    if probability_state.get("hybrid_move_probability") is not None and historical_probability_adjustment != 0:
+        _historical_probability_base = _safe_float(probability_state.get("hybrid_move_probability"), 0.0)
+        probability_state["hybrid_move_probability"] = round(
+            _clip(_historical_probability_base + historical_probability_adjustment, 0.0, 1.0),
+            4,
+        )
+        if isinstance(probability_state.get("components"), dict):
+            probability_state["components"]["historical_probability_base"] = round(_historical_probability_base, 4)
+            probability_state["components"]["historical_probability_adjustment"] = round(historical_probability_adjustment, 4)
+            probability_state["components"]["historical_probability_final"] = probability_state["hybrid_move_probability"]
     if bool(macro_news_adjustments.get("event_overlay_suppress_signal", False)):
         direction = None
         confirmation["reasons"].append("event_overlay_signal_suppressed")
@@ -3794,6 +4157,52 @@ def generate_trade(
     global_risk_features = global_risk_state.get("global_risk_features", {}) if isinstance(global_risk_state, dict) else {}
     india_vix_level = global_risk_features.get("india_vix_level")
     india_vix_change_24h = global_risk_features.get("india_vix_change_24h")
+    historical_score_adjustment = int(_safe_float(historical_live_modifiers.get("score_adjustment"), 0.0))
+    statistical_market_context = (
+        historical_context.get("statistical_market_context")
+        if isinstance(historical_context.get("statistical_market_context"), dict)
+        else {}
+    )
+    statistical_macro_context = (
+        statistical_market_context.get("macro_context")
+        if isinstance(statistical_market_context.get("macro_context"), dict)
+        else {}
+    )
+    scoring_breakdown["historical_context_applied"] = bool(historical_live_modifiers.get("applied", False))
+    scoring_breakdown["historical_context_score_adjustment"] = historical_score_adjustment
+    scoring_breakdown["historical_context_probability_adjustment"] = historical_probability_adjustment
+    scoring_breakdown["historical_context_trade_strength_threshold_adjustment"] = int(
+        _safe_float(historical_live_modifiers.get("trade_strength_threshold_adjustment"), 0.0)
+    )
+    scoring_breakdown["historical_context_composite_threshold_adjustment"] = int(
+        _safe_float(historical_live_modifiers.get("composite_threshold_adjustment"), 0.0)
+    )
+    scoring_breakdown["historical_context_size_multiplier"] = _safe_float(historical_live_modifiers.get("size_multiplier"), 1.0)
+    scoring_breakdown["historical_context_reasons"] = historical_live_modifiers.get("reasons", [])
+    scoring_breakdown["historical_interaction_count"] = (historical_context.get("interaction_context") or {}).get("matched_count")
+    scoring_breakdown["historical_interaction_score_adjustment"] = (historical_context.get("interaction_context") or {}).get("score_adjustment")
+    scoring_breakdown["historical_interaction_probability_adjustment"] = (historical_context.get("interaction_context") or {}).get("probability_adjustment")
+    scoring_breakdown["historical_interaction_reasons"] = (historical_context.get("interaction_context") or {}).get("reasons", [])
+    scoring_breakdown["historical_context_score_adjustment_preview"] = historical_context.get("score_adjustment_preview", 0)
+    scoring_breakdown["historical_context_probability_adjustment_preview"] = historical_context.get("probability_adjustment_preview", 0.0)
+    scoring_breakdown["statistical_market_context_applied"] = bool(statistical_market_context.get("applied", False))
+    scoring_breakdown["statistical_vol_stress_score"] = statistical_market_context.get("vol_stress_score")
+    scoring_breakdown["statistical_expected_range_prior"] = statistical_market_context.get("expected_range_prior")
+    scoring_breakdown["statistical_context_score_adjustment"] = statistical_market_context.get("score_adjustment")
+    scoring_breakdown["statistical_context_probability_adjustment"] = statistical_market_context.get("probability_adjustment")
+    scoring_breakdown["statistical_context_trade_strength_threshold_adjustment"] = statistical_market_context.get(
+        "trade_strength_threshold_adjustment"
+    )
+    scoring_breakdown["statistical_context_size_multiplier"] = statistical_market_context.get("size_multiplier")
+    scoring_breakdown["statistical_macro_context_applied"] = bool(statistical_macro_context.get("applied", False))
+    scoring_breakdown["statistical_macro_range_prior"] = statistical_macro_context.get("macro_range_prior")
+    scoring_breakdown["statistical_macro_directional_prior"] = statistical_macro_context.get("macro_directional_prior")
+    scoring_breakdown["statistical_macro_score_adjustment"] = statistical_macro_context.get("score_adjustment")
+    scoring_breakdown["statistical_macro_probability_adjustment"] = statistical_macro_context.get("probability_adjustment")
+    scoring_breakdown["statistical_macro_trade_strength_threshold_adjustment"] = statistical_macro_context.get(
+        "trade_strength_threshold_adjustment"
+    )
+    scoring_breakdown["statistical_macro_size_multiplier"] = statistical_macro_context.get("size_multiplier")
     option_efficiency_state = {}
     option_efficiency_trade_modifiers = derive_option_efficiency_trade_modifiers(option_efficiency_state)
     option_efficiency_raw_adjustment_score = int(_safe_float(option_efficiency_trade_modifiers["option_efficiency_adjustment_score"], 0.0))
@@ -3822,7 +4231,11 @@ def generate_trade(
         adjusted_trade_strength = int(_clip(adjusted_trade_strength - freshness_score_penalty, 0, 100))
     adjusted_trade_strength = int(
         _clip(
-            adjusted_trade_strength + global_risk_adjustment_score + gamma_vol_adjustment_score + dealer_pressure_adjustment_score,
+            adjusted_trade_strength
+            + global_risk_adjustment_score
+            + gamma_vol_adjustment_score
+            + dealer_pressure_adjustment_score
+            + historical_score_adjustment,
             0,
             100,
         )
@@ -4013,6 +4426,7 @@ def generate_trade(
         # Keep this field as straddle-derived expected-move percent for
         # consistency with atm_straddle_price in user-facing output.
         "expected_move_pct": market_state.get("expected_move_pct"),
+        "open_interest_pcr": market_state.get("open_interest_pcr"),
         "volume_pcr": market_state.get("volume_pcr"),
         "volume_pcr_atm": market_state.get("volume_pcr_atm"),
         "volume_pcr_regime": market_state.get("volume_pcr_regime"),
@@ -4034,6 +4448,65 @@ def generate_trade(
         "liquidity_vacuum_state": market_state["vacuum_state"],
         "dealer_liquidity_map": market_state["dealer_liquidity_map"],
         "market_state_timings": market_state.get("market_state_timings"),
+        "historical_context": historical_context,
+        "historical_context_version": historical_context.get("version"),
+        "historical_context_mode": historical_context.get("decision_mode"),
+        "historical_prior_artifact_version": historical_context.get("prior_artifact_version"),
+        "historical_prior_artifact_source_run_id": historical_context.get("prior_artifact_source_run_id"),
+        "historical_context_applied": bool(historical_context.get("apply_to_live_decision", False)),
+        "historical_context_score_adjustment": historical_context.get("score_adjustment"),
+        "historical_context_probability_adjustment": historical_context.get("probability_adjustment"),
+        "historical_context_trade_strength_threshold_adjustment": historical_context.get("trade_strength_threshold_adjustment"),
+        "historical_context_composite_threshold_adjustment": historical_context.get("composite_threshold_adjustment"),
+        "historical_context_size_multiplier": historical_context.get("size_multiplier"),
+        "historical_context_direction_override": historical_context.get("direction_override"),
+        "historical_context_reasons": (historical_context.get("live_modifiers") or {}).get("reasons", []),
+        "historical_volatility_bucket": (historical_context.get("volatility_context") or {}).get("bucket"),
+        "historical_expected_range_bps": (historical_context.get("volatility_context") or {}).get("expected_range_bps"),
+        "historical_expected_abs_move_bps": (historical_context.get("volatility_context") or {}).get("expected_abs_move_bps"),
+        "historical_range_multiplier": (historical_context.get("volatility_context") or {}).get("range_multiplier"),
+        "historical_global_prior_direction": (historical_context.get("global_directional_prior") or {}).get("prior_direction"),
+        "historical_global_prior_score": (historical_context.get("global_directional_prior") or {}).get("prior_score"),
+        "historical_interaction_count": (historical_context.get("interaction_context") or {}).get("matched_count"),
+        "historical_interaction_score_adjustment": (historical_context.get("interaction_context") or {}).get("score_adjustment"),
+        "historical_interaction_probability_adjustment": (historical_context.get("interaction_context") or {}).get("probability_adjustment"),
+        "historical_interaction_reasons": (historical_context.get("interaction_context") or {}).get("reasons", []),
+        "historical_interaction_bucket_state": (historical_context.get("interaction_context") or {}).get("bucket_state", {}),
+        "statistical_market_context": statistical_market_context,
+        "statistical_market_context_version": statistical_market_context.get("version"),
+        "statistical_market_context_artifact_version": statistical_market_context.get("artifact_version"),
+        "statistical_market_context_source_run_id": statistical_market_context.get("source_run_id"),
+        "statistical_market_context_applied": bool(statistical_market_context.get("applied", False)),
+        "statistical_vol_stress_score": statistical_market_context.get("vol_stress_score"),
+        "statistical_expected_range_prior": statistical_market_context.get("expected_range_prior"),
+        "statistical_expected_range_bps": statistical_market_context.get("expected_range_bps"),
+        "statistical_expected_abs_move_bps": statistical_market_context.get("expected_abs_move_bps"),
+        "statistical_abs_move_delta_vs_base_bps": statistical_market_context.get("abs_move_delta_vs_base_bps"),
+        "statistical_directional_followthrough_prior": statistical_market_context.get("directional_followthrough_prior"),
+        "statistical_directional_basis": statistical_market_context.get("directional_basis"),
+        "statistical_regime_confidence": statistical_market_context.get("regime_confidence"),
+        "statistical_hold_time_hint": statistical_market_context.get("hold_time_hint"),
+        "statistical_context_score_adjustment": statistical_market_context.get("score_adjustment"),
+        "statistical_context_probability_adjustment": statistical_market_context.get("probability_adjustment"),
+        "statistical_context_trade_strength_threshold_adjustment": statistical_market_context.get("trade_strength_threshold_adjustment"),
+        "statistical_context_composite_threshold_adjustment": statistical_market_context.get("composite_threshold_adjustment"),
+        "statistical_context_size_multiplier": statistical_market_context.get("size_multiplier"),
+        "statistical_context_reasons": statistical_market_context.get("reasons", []),
+        "statistical_context_bucket_state": statistical_market_context.get("bucket_state", {}),
+        "statistical_macro_context_applied": bool(statistical_macro_context.get("applied", False)),
+        "statistical_macro_range_prior": statistical_macro_context.get("macro_range_prior"),
+        "statistical_macro_range_basis": statistical_macro_context.get("macro_range_basis"),
+        "statistical_macro_directional_prior": statistical_macro_context.get("macro_directional_prior"),
+        "statistical_macro_directional_basis": statistical_macro_context.get("macro_directional_basis"),
+        "statistical_macro_factor_buckets": statistical_macro_context.get("macro_factor_buckets", {}),
+        "statistical_macro_shock_state": statistical_macro_context.get("shock_bucket_state", {}),
+        "statistical_macro_score_adjustment": statistical_macro_context.get("score_adjustment"),
+        "statistical_macro_probability_adjustment": statistical_macro_context.get("probability_adjustment"),
+        "statistical_macro_trade_strength_threshold_adjustment": statistical_macro_context.get("trade_strength_threshold_adjustment"),
+        "statistical_macro_composite_threshold_adjustment": statistical_macro_context.get("composite_threshold_adjustment"),
+        "statistical_macro_size_multiplier": statistical_macro_context.get("size_multiplier"),
+        "statistical_macro_reasons": statistical_macro_context.get("reasons", []),
+        "historical_context_notes": historical_context.get("primary_notes", []),
         "ta_features": market_state.get("ta_features", {}),
         "mean_reversion_features": market_state.get("mean_reversion_features", {}),
         # Flatten TA features for signal confidence computation
@@ -4225,6 +4698,22 @@ def generate_trade(
         "time_decay_fallback_used": False,
         "time_decay_elapsed_source": None,
         "runtime_composite_score": None,
+        "runtime_composite_observation_tier": None,
+        "runtime_composite_observation_threshold": int(
+            _safe_float(runtime_thresholds.get("runtime_composite_observation_threshold"), 80.0)
+        ),
+        "runtime_composite_soft_override_threshold": int(
+            _safe_float(runtime_thresholds.get("high_composite_soft_override_threshold"), 85.0)
+        ),
+        "runtime_composite_soft_override_applied": False,
+        "runtime_composite_soft_override_mode": None,
+        "runtime_composite_soft_override_blockers": [],
+        "runtime_composite_soft_override_reason": None,
+        "runtime_composite_soft_override_constraints": [],
+        "runtime_composite_soft_override_original_status": None,
+        "runtime_composite_soft_override_original_reason_code": None,
+        "runtime_composite_soft_override_original_message": None,
+        "runtime_composite_soft_override_diagnostics": {},
         "time_decay_elapsed_minutes": None,
         "time_decay_factor": None,
         "live_calibration_gate": live_calibration_gate if isinstance(live_calibration_gate, dict) else {},
@@ -4693,6 +5182,17 @@ def generate_trade(
         option_row_dict.get("_normalized_ba_spread_ratio"),
         _safe_float((ranked_candidate or {}).get("ba_spread_ratio"), None),
     )
+    selected_option_bid_price = _safe_float(option_row_dict.get("bidPrice", option_row_dict.get("BID_PRICE")), None)
+    selected_option_ask_price = _safe_float(option_row_dict.get("askPrice", option_row_dict.get("ASK_PRICE")), None)
+    if selected_option_bid_price is not None and selected_option_bid_price <= 0:
+        selected_option_bid_price = None
+    if selected_option_ask_price is not None and selected_option_ask_price <= 0:
+        selected_option_ask_price = None
+    selected_option_mid_price = (
+        round((float(selected_option_bid_price) + float(selected_option_ask_price)) / 2.0, 2)
+        if selected_option_bid_price is not None and selected_option_ask_price is not None
+        else None
+    )
     selected_option_capital_per_lot = _safe_float(
         (ranked_candidate or {}).get("capital_per_lot"),
         round(entry_price * float(lot_size), 2) if lot_size is not None else None,
@@ -4770,6 +5270,21 @@ def generate_trade(
         data_quality_status=data_quality["status"],
     )
     base_payload["signal_regime"] = signal_regime
+    underlying_exit_plan = _build_underlying_exit_plan(
+        spot=spot,
+        direction=direction,
+        entry_price=entry_price,
+        target=target,
+        stop_loss=stop_loss,
+        option_delta=resolved_delta_input,
+        delta_is_proxy=bool((ranked_candidate or {}).get("delta_is_proxy", False)),
+        expected_move_points=option_efficiency_trade_modifiers["expected_move_points"],
+        support_wall=market_state["support_wall"],
+        resistance_wall=market_state["resistance_wall"],
+        gamma_flip=market_state["flip"],
+        liquidity_levels=market_state["liquidity_levels"],
+        runtime_thresholds=runtime_thresholds,
+    )
 
     base_payload.update({
         "direction": direction,
@@ -4790,6 +5305,9 @@ def generate_trade(
         "breakout_evidence": round(float(breakout_evidence or 0.0), 3),
         "entry_price": round(entry_price, 2),
         "selected_option_last_price": round(entry_price, 2),
+        "selected_option_bid_price": _to_python_number(selected_option_bid_price),
+        "selected_option_ask_price": _to_python_number(selected_option_ask_price),
+        "selected_option_mid_price": _to_python_number(selected_option_mid_price),
         "selected_option_volume": _to_python_number(
             _safe_float(
                 option_row_dict.get("totalTradedVolume", option_row_dict.get("VOLUME")),
@@ -4819,6 +5337,7 @@ def generate_trade(
         "selected_option_score": _to_python_number(_safe_float((ranked_candidate or {}).get("score"), None)),
         "target": round(target, 2),
         "stop_loss": round(stop_loss, 2),
+        **underlying_exit_plan,
         "recommended_hold_minutes": recommended_hold_minutes,
         "max_hold_minutes": max_hold_minutes,
         "exit_urgency": exit_timing["exit_urgency"],
@@ -4974,9 +5493,27 @@ def generate_trade(
     base_payload["premium_load_pct_of_spot"] = advisory_sizing.get("premium_load_pct_of_spot")
     base_payload["premium_priority_adjustment"] = advisory_sizing.get("premium_priority_adjustment")
     base_payload["premium_size_cap"] = advisory_sizing.get("premium_size_cap")
-
-    if global_risk["risk_trade_status"] == "WATCHLIST":
-        return _finalize(base_payload, "WATCHLIST", global_risk["risk_message"])
+    historical_size_multiplier = _clip(_safe_float(historical_live_modifiers.get("size_multiplier"), 1.0), 0.0, 1.0)
+    if historical_size_multiplier < 1.0:
+        current_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        adjusted_cap = min(current_cap, historical_size_multiplier)
+        base_payload["effective_size_cap"] = round(adjusted_cap, 2)
+        existing_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), 0.0)), 0)
+        resized_lots = max(int(existing_lots * historical_size_multiplier), 0)
+        if existing_lots > 0 and resized_lots == 0 and historical_size_multiplier > 0:
+            resized_lots = 1
+        if existing_lots > 0:
+            base_payload["macro_suggested_lots"] = min(existing_lots, resized_lots)
+            base_payload["advisory_lots"] = base_payload["macro_suggested_lots"]
+            base_payload["advisory_position_size_multiplier"] = round(
+                _clip(_safe_float(base_payload.get("advisory_position_size_multiplier"), 1.0), 0.0, 1.0)
+                * historical_size_multiplier,
+                4,
+            )
+            base_payload["advisory_capital_required"] = round(entry_price * lot_size * base_payload["advisory_lots"], 2)
+        base_payload["historical_context_size_applied"] = True
+    else:
+        base_payload["historical_context_size_applied"] = False
 
     composite_probability_input = probability_state["hybrid_move_probability"]
     overlay_probability = _safe_float(base_payload.get("signal_success_probability"), None)
@@ -5083,6 +5620,24 @@ def generate_trade(
         current_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
         segment_cap = _clip(_safe_float(runtime_thresholds.get("regime_segment_guard_size_cap"), 0.75), 0.0, 1.0)
         base_payload["effective_size_cap"] = round(min(current_cap, segment_cap), 2)
+    historical_strength_threshold_adjustment = int(
+        _safe_float(historical_live_modifiers.get("trade_strength_threshold_adjustment"), 0.0)
+    )
+    historical_composite_threshold_adjustment = int(
+        _safe_float(historical_live_modifiers.get("composite_threshold_adjustment"), 0.0)
+    )
+    if historical_strength_threshold_adjustment != 0:
+        effective_min_trade_strength = int(_clip(
+            effective_min_trade_strength + historical_strength_threshold_adjustment,
+            0,
+            100,
+        ))
+    if historical_composite_threshold_adjustment != 0:
+        effective_min_composite_score = int(_clip(
+            effective_min_composite_score + historical_composite_threshold_adjustment,
+            0,
+            100,
+        ))
     base_payload["bearish_bias_guard"] = bearish_bias_guard
     base_payload["effective_min_trade_strength_threshold"] = int(effective_min_trade_strength)
     base_payload["effective_min_composite_score_threshold"] = int(effective_min_composite_score)
@@ -5144,29 +5699,133 @@ def generate_trade(
         base_payload["time_decay_factor"] = 1.0
     
     base_payload["runtime_composite_score"] = runtime_composite_score
+    runtime_composite_policy = _runtime_composite_observation_policy(runtime_composite_score, runtime_thresholds)
+    base_payload.update(runtime_composite_policy)
+
+    def _apply_high_composite_soft_override(*, blocker: str, original_status: str, original_message: str, reason_code: str | None = None) -> bool:
+        override_allowed, override_details = _evaluate_high_composite_soft_override_eligibility(
+            payload=base_payload,
+            runtime_thresholds=runtime_thresholds,
+            blocker=blocker,
+        )
+        diagnostics = (
+            dict(base_payload.get("runtime_composite_soft_override_diagnostics"))
+            if isinstance(base_payload.get("runtime_composite_soft_override_diagnostics"), dict)
+            else {}
+        )
+        diagnostics[override_details["blocker"]] = override_details
+        base_payload["runtime_composite_soft_override_diagnostics"] = diagnostics
+        if not override_allowed:
+            return False
+
+        override_size_cap = _clip(_safe_float(runtime_thresholds.get("high_composite_soft_override_size_cap"), 0.65), 0.0, 1.0)
+        current_size_cap = _clip(_safe_float(base_payload.get("effective_size_cap"), 1.0), 0.0, 1.0)
+        new_size_cap = min(current_size_cap, override_size_cap)
+        base_payload["effective_size_cap"] = round(new_size_cap, 2)
+
+        original_lots = max(int(_safe_float(base_payload.get("macro_suggested_lots"), requested_lots)), 0)
+        constrained_lots = max(int(original_lots * new_size_cap), 0)
+        if original_lots > 0 and constrained_lots == 0 and new_size_cap > 0:
+            constrained_lots = 1
+        base_payload["macro_suggested_lots"] = constrained_lots
+        base_payload["advisory_lots"] = constrained_lots
+        base_payload["advisory_position_size_multiplier"] = round(new_size_cap, 4)
+        if "entry_price" in base_payload:
+            base_payload["advisory_capital_required"] = round(entry_price * lot_size * constrained_lots, 2)
+
+        override_hold_cap = max(int(_safe_float(runtime_thresholds.get("high_composite_soft_override_hold_cap_minutes"), 35.0)), 5)
+        base_payload["recommended_hold_minutes"] = min(
+            int(_safe_float(base_payload.get("recommended_hold_minutes"), override_hold_cap)),
+            override_hold_cap,
+        )
+        base_payload["max_hold_minutes"] = min(
+            int(_safe_float(base_payload.get("max_hold_minutes"), override_hold_cap)),
+            override_hold_cap,
+        )
+        base_payload["overnight_hold_allowed"] = False
+        base_payload["overnight_trade_block"] = True
+        base_payload["overnight_hold_reason"] = "runtime_composite_soft_override_intraday_only"
+
+        blockers = [
+            str(item)
+            for item in (base_payload.get("runtime_composite_soft_override_blockers") or [])
+            if str(item).strip()
+        ]
+        blocker_key = override_details["blocker"]
+        if blocker_key not in blockers:
+            blockers.append(blocker_key)
+        base_payload["runtime_composite_soft_override_blockers"] = blockers
+        base_payload["runtime_composite_soft_override_applied"] = True
+        base_payload["runtime_composite_soft_override_mode"] = "HIGH_RUNTIME_COMPOSITE_SOFT_BLOCK"
+        base_payload["runtime_composite_soft_override_reason"] = (
+            f"{blocker_key}:runtime_composite_score "
+            f"{runtime_composite_score} >= {runtime_composite_policy['runtime_composite_soft_override_threshold']}"
+        )
+        base_payload["runtime_composite_soft_override_constraints"] = [
+            f"size_cap:{round(new_size_cap, 2)}",
+            f"max_hold_minutes:{override_hold_cap}",
+            "no_overnight",
+        ]
+        if not base_payload.get("runtime_composite_soft_override_original_status"):
+            base_payload["runtime_composite_soft_override_original_status"] = original_status
+            base_payload["runtime_composite_soft_override_original_reason_code"] = reason_code or blocker_key
+            base_payload["runtime_composite_soft_override_original_message"] = original_message
+
+        base_payload["no_trade_reason_code"] = None
+        base_payload["no_trade_reason"] = None
+        return True
+
+    if global_risk["risk_trade_status"] == "WATCHLIST":
+        if not _apply_high_composite_soft_override(
+            blocker="GLOBAL_RISK_WATCHLIST",
+            original_status="WATCHLIST",
+            original_message=global_risk["risk_message"],
+            reason_code="GLOBAL_RISK_WATCHLIST",
+        ):
+            return _finalize(base_payload, "WATCHLIST", global_risk["risk_message"])
 
     if regime_segment_verdict == "BLOCK":
         base_payload["no_trade_reason_code"] = "REGIME_SEGMENT_GUARD"
         base_payload["no_trade_reason"] = regime_segment_guard.get("reason") or "Regime segment guard downgraded the setup"
-        return _finalize(
-            base_payload,
-            "WATCHLIST",
-            "Regime segment guard routed TRADE to WATCHLIST",
-        )
+        if not _apply_high_composite_soft_override(
+            blocker="REGIME_SEGMENT_GUARD",
+            original_status="WATCHLIST",
+            original_message="Regime segment guard routed TRADE to WATCHLIST",
+            reason_code="REGIME_SEGMENT_GUARD",
+        ):
+            return _finalize(
+                base_payload,
+                "WATCHLIST",
+                "Regime segment guard routed TRADE to WATCHLIST",
+            )
 
     if adjusted_trade_strength < effective_min_trade_strength:
-        return _finalize(
-            base_payload,
-            "WATCHLIST",
-            f"Trade strength {adjusted_trade_strength} below threshold {effective_min_trade_strength}",
-        )
+        threshold_message = f"Trade strength {adjusted_trade_strength} below threshold {effective_min_trade_strength}"
+        if not _apply_high_composite_soft_override(
+            blocker="TRADE_STRENGTH_THRESHOLD",
+            original_status="WATCHLIST",
+            original_message=threshold_message,
+            reason_code="TRADE_STRENGTH_THRESHOLD",
+        ):
+            return _finalize(
+                base_payload,
+                "WATCHLIST",
+                threshold_message,
+            )
 
     if runtime_composite_score < effective_min_composite_score:
-        return _finalize(
-            base_payload,
-            "WATCHLIST",
-            f"Runtime composite score {runtime_composite_score} below threshold {effective_min_composite_score}",
-        )
+        threshold_message = f"Runtime composite score {runtime_composite_score} below threshold {effective_min_composite_score}"
+        if not _apply_high_composite_soft_override(
+            blocker="RUNTIME_COMPOSITE_THRESHOLD",
+            original_status="WATCHLIST",
+            original_message=threshold_message,
+            reason_code="RUNTIME_COMPOSITE_THRESHOLD",
+        ):
+            return _finalize(
+                base_payload,
+                "WATCHLIST",
+                threshold_message,
+            )
 
     if bool(base_payload.get("analytics_usable")) and not bool(base_payload.get("execution_suggestion_usable")):
         tradable_data = base_payload.get("tradable_data") if isinstance(base_payload.get("tradable_data"), dict) else {}
@@ -5333,11 +5992,17 @@ def generate_trade(
         base_payload["historical_outcome_guard_active"] = True
         base_payload["no_trade_reason_code"] = "HISTORICAL_OUTCOME_GUARD"
         base_payload["no_trade_reason"] = historical_outcome_guard.get("reason") or "Historical outcome guard downgraded the setup"
-        return _finalize(
-            base_payload,
-            "WATCHLIST",
-            "Historical outcome guard routed TRADE to WATCHLIST",
-        )
+        if not _apply_high_composite_soft_override(
+            blocker="HISTORICAL_OUTCOME_GUARD",
+            original_status="WATCHLIST",
+            original_message="Historical outcome guard routed TRADE to WATCHLIST",
+            reason_code="HISTORICAL_OUTCOME_GUARD",
+        ):
+            return _finalize(
+                base_payload,
+                "WATCHLIST",
+                "Historical outcome guard routed TRADE to WATCHLIST",
+            )
 
     session_risk_governor = _compute_session_risk_governor(
         payload={**base_payload, "valuation_time": valuation_time, "direction": direction},
@@ -5448,13 +6113,16 @@ def generate_trade(
             "Signal generated; execution sizing withheld due to budget constraint",
         )
 
-    if apply_budget_constraint:
-        base_payload["message"] = "Tradable signal generated with advisory sizing separation"
+    if bool(base_payload.get("runtime_composite_soft_override_applied")):
+        final_trade_message = "Tradable signal generated via high-composite soft-block override"
+    elif apply_budget_constraint:
+        final_trade_message = "Tradable signal generated with advisory sizing separation"
     else:
-        base_payload["message"] = "Tradable signal generated"
+        final_trade_message = "Tradable signal generated"
+    base_payload["message"] = final_trade_message
 
     return _finalize(
         base_payload,
         "TRADE",
-        "Tradable signal generated with advisory sizing separation" if apply_budget_constraint else "Tradable signal generated",
+        final_trade_message,
     )
