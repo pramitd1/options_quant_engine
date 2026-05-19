@@ -86,6 +86,7 @@ class ICICIBreezeOptionChain:
     SECURITY_MASTER_URL = "https://directlink.icicidirect.com/NewSecurityMaster/SecurityMaster.zip"
     SECURITY_MASTER_MEMBER = "FONSEScripMaster.txt"
     INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
+    EXPIRY_SESSION_CLOSE_UTC = (10, 0)  # 15:30 IST
 
     def __init__(self, debug=None):
         """
@@ -702,10 +703,10 @@ class ICICIBreezeOptionChain:
             while weeks_covered < count:
                 # Locate the next occurrence of the nominal expiry weekday.
                 days_ahead = (target_weekday - current_anchor.weekday()) % 7
-                # If we land exactly on today and the market session has already
-                # started (UTC 03:45 ≈ IST 09:15), advance to next week so we don't
-                # retry a date that is mid-session or settling.
-                if days_ahead == 0 and now_utc.hour >= 4:
+                # Keep same-day weekly expiry available throughout the trading
+                # session. Only advance to next week after the regular expiry
+                # session close, when same-day contracts are effectively stale.
+                if days_ahead == 0 and (now_utc.hour, now_utc.minute) >= self.EXPIRY_SESSION_CLOSE_UTC:
                     days_ahead = 7
                 nominal_date = current_anchor + timedelta(days=days_ahead)
 
