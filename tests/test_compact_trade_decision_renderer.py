@@ -46,6 +46,9 @@ class TestCompactTradeDecisionBlockRendering:
             "stop_loss": 235.45,
             "hybrid_move_probability": hybrid_move_probability,
             "trade_strength": 77,
+            "runtime_composite_score": 72,
+            "effective_min_composite_score_threshold": 58,
+            "min_composite_score_threshold": 55,
             "decision_classification": "TRADE",
             "trade_status": trade_status,
             "provider_health_status": provider_health,
@@ -201,10 +204,81 @@ class TestCompactTradeDecisionBlockRendering:
             assert "TRADE DECISION" in output
             assert "decision" in output
             assert "trade_strength" in output
+            assert "runtime_composite_score" in output
+            assert "72/58" in output
             assert "signal_quality" in output
             assert "confirmation" in output
             assert "move_probability" in output
             assert "confidence" in output
+
+    def test_compact_trade_decision_sits_above_trading_suggestion(self):
+        """GIVEN compact output with a trade payload,
+        WHEN render_compact is called,
+        THEN TRADE DECISION is printed directly before TRADING SUGGESTION in the execution area."""
+
+        trade = self._create_mock_trade(hybrid_move_probability=0.33)
+        trade["spot"] = 23750
+        trade["gamma_flip"] = 23720
+
+        with patch("app.terminal_output.compute_signal_confidence") as mock_conf:
+            mock_conf.return_value = {
+                "confidence_score": 65,
+                "confidence_level": "MEDIUM",
+                "confidence_recalibration_guards": [],
+            }
+
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                render_compact(
+                    result={},
+                    trade=trade,
+                    spot_summary={},
+                    macro_event_state={},
+                    global_risk_state={},
+                    execution_trade=None,
+                )
+
+            output = output_buffer.getvalue()
+
+            assert output.index("DEALER GAMMA LEVELS") < output.index("TRADE DECISION")
+            assert output.index("TRADE DECISION") < output.index("TRADING SUGGESTION")
+
+    def test_compact_watchlist_prints_runtime_composite_threshold_block(self):
+        """GIVEN a watchlist setup with a runtime composite score,
+        WHEN render_compact is called,
+        THEN compact output shows the composite threshold progress separately from trade strength."""
+
+        trade = self._create_mock_trade(
+            hybrid_move_probability=0.33,
+            trade_status="WATCHLIST",
+        )
+        trade["decision_classification"] = "WATCHLIST_SETUP"
+        trade["runtime_composite_score"] = 52
+        trade["effective_min_composite_score_threshold"] = 58
+
+        with patch("app.terminal_output.compute_signal_confidence") as mock_conf:
+            mock_conf.return_value = {
+                "confidence_score": 65,
+                "confidence_level": "MEDIUM",
+                "confidence_recalibration_guards": [],
+            }
+
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                render_compact(
+                    result={},
+                    trade=trade,
+                    spot_summary={},
+                    macro_event_state={},
+                    global_risk_state={},
+                    execution_trade=None,
+                )
+
+            output = output_buffer.getvalue()
+
+            assert "Runtime Composite Threshold" in output
+            assert "52/58" in output
+            assert "Trade Strength Threshold" in output
 
     def test_compact_trade_decision_effective_threshold_uses_comma_separator(self):
         """GIVEN a trade with multiple regime adjustments,

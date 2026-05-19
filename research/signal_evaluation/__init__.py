@@ -80,6 +80,11 @@ from research.signal_evaluation.option_premium_path import (
     build_option_chain_snapshot_index,
     enrich_option_premium_paths,
 )
+from research.signal_evaluation.heston_backfill import (
+    OFFLINE_HESTON_BACKFILL_VERSION,
+    backfill_heston_research_dataset,
+    enrich_heston_research_features_from_snapshots,
+)
 from research.signal_evaluation.policy import (
     CAPTURE_POLICY_ACTIONABLE,
     CAPTURE_POLICY_ALL,
@@ -128,10 +133,12 @@ __all__ = [
     "build_regime_fingerprint",
     "build_research_report",
     "backfill_option_premium_dataset",
+    "backfill_heston_research_dataset",
     "build_option_chain_snapshot_index",
     "average_realized_return_by_horizon",
     "average_score_by_signal_quality",
     "evaluate_signal_outcomes",
+    "enrich_heston_research_features_from_snapshots",
     "enrich_option_premium_paths",
     "fetch_realized_spot_path",
     "hit_rate_by_macro_regime",
@@ -141,6 +148,7 @@ __all__ = [
     "load_signals_dataset",
     "move_probability_calibration",
     "normalize_capture_policy",
+    "OFFLINE_HESTON_BACKFILL_VERSION",
     "regime_fingerprint_performance",
     "resolve_research_as_of",
     "save_signal_evaluation",

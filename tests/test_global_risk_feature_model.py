@@ -37,7 +37,14 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
             frame.columns = pd.MultiIndex.from_tuples(frame.columns)
             return frame
 
-        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download):
+        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download), patch(
+            "data.global_market_snapshot.fetch_icici_gift_nifty_snapshot",
+            return_value={
+                "available": False,
+                "issues": ["gift_nifty_icici_quote_unavailable"],
+                "warnings": [],
+            },
+        ):
             snapshot = build_global_market_snapshot(
                 "NIFTY",
                 as_of=pd.Timestamp.now(tz="Asia/Kolkata").isoformat(),
@@ -63,7 +70,14 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
             frame.columns = pd.MultiIndex.from_tuples(frame.columns)
             return frame
 
-        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download):
+        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download), patch(
+            "data.global_market_snapshot.fetch_icici_gift_nifty_snapshot",
+            return_value={
+                "available": False,
+                "issues": ["gift_nifty_icici_quote_unavailable"],
+                "warnings": [],
+            },
+        ):
             snapshot = build_global_market_snapshot(
                 "NIFTY",
                 as_of=now.isoformat(),
@@ -72,6 +86,42 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         self.assertTrue(snapshot["data_available"])
         self.assertAlmostEqual(snapshot["market_inputs"]["oil_change_24h"], 2.0)
         self.assertAlmostEqual(snapshot["market_inputs"]["sp500_change_24h"], 2.0 / 105.0 * 100.0)
+
+    def test_build_global_market_snapshot_prefers_icici_gift_nifty(self):
+        invalidate_download_cache()
+        now = pd.Timestamp.now(tz="Asia/Kolkata")
+
+        def fake_download(tickers, **kwargs):
+            index = pd.DatetimeIndex([now - pd.Timedelta(days=1), now]).tz_convert("UTC")
+            tickers_list = tickers if isinstance(tickers, list) else [tickers]
+            payload = {
+                (ticker, "Close"): [100.0 + idx, 101.0 + idx]
+                for idx, ticker in enumerate(tickers_list)
+            }
+            frame = pd.DataFrame(payload, index=index)
+            frame.index.name = "Date"
+            frame.columns = pd.MultiIndex.from_tuples(frame.columns)
+            return frame
+
+        with patch("data.global_market_snapshot.yf.download", side_effect=fake_download), patch(
+            "data.global_market_snapshot.fetch_icici_gift_nifty_snapshot",
+            return_value={
+                "available": True,
+                "gift_nifty_change_24h": 0.62,
+                "gift_nifty_level": 23810.5,
+                "gift_nifty_previous_close": 23663.75,
+                "gift_nifty_quote_timestamp": "19-May-2026 09:20:00",
+                "issues": [],
+                "warnings": [],
+            },
+        ):
+            snapshot = build_global_market_snapshot("NIFTY", as_of=now.isoformat())
+
+        self.assertEqual(snapshot["provider"], "YFINANCE+ICICI")
+        self.assertEqual(snapshot["gift_nifty_source"], "ICICI")
+        self.assertFalse(snapshot["gift_nifty_proxy_in_use"])
+        self.assertAlmostEqual(snapshot["market_inputs"]["gift_nifty_change_24h"], 0.62)
+        self.assertAlmostEqual(snapshot["market_inputs"]["gift_nifty_level"], 23810.5)
 
     def test_build_global_market_snapshot_returns_neutral_for_historical_as_of(self):
         with patch("data.global_market_snapshot.yf.download") as mock_download:
@@ -143,8 +193,43 @@ class GlobalRiskFeatureModelTests(unittest.TestCase):
         self.assertEqual(features["india_vix_level"], 15.5)
         self.assertEqual(features["dxy_change_24h"], 0.6)
         self.assertEqual(features["gift_nifty_change_24h"], -0.7)
+        self.assertFalse(features["gift_nifty_proxy_in_use"])
         self.assertTrue(features["market_data_available"])
         self.assertFalse(features["neutral_fallback"])
+
+    def test_build_global_risk_features_respects_gift_proxy_metadata(self):
+        features = build_global_risk_features(
+            macro_event_state={
+                "macro_event_risk_score": 0,
+                "event_window_status": "NO_EVENT_DATA",
+                "event_lockdown_flag": False,
+                "event_data_available": True,
+            },
+            macro_news_state={
+                "macro_regime": "MACRO_NEUTRAL",
+                "neutral_fallback": False,
+                "news_confidence_score": 70,
+            },
+            global_market_snapshot={
+                "provider": "YFINANCE",
+                "data_available": True,
+                "neutral_fallback": False,
+                "stale": False,
+                "gift_nifty_proxy_in_use": True,
+                "issues": [],
+                "warnings": [],
+                "market_inputs": {
+                    "gift_nifty_change_24h": 0.8,
+                    "realized_vol_5d": 0.12,
+                    "realized_vol_30d": 0.20,
+                },
+            },
+            holding_profile="AUTO",
+            as_of="2026-03-14T10:00:00+05:30",
+        )
+
+        self.assertTrue(features["gift_nifty_proxy_in_use"])
+        self.assertEqual(features["gift_nifty_lead_score"], 0.0)
 
     def test_build_global_risk_features_neutralizes_stale_market_snapshot(self):
         features = build_global_risk_features(

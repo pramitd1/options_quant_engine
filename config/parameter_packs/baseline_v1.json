@@ -10,5 +10,7 @@
     "state": "baseline",
     "owner": "research"
   },
-  "overrides": {}
+  "overrides": {
+    "analytics.technical_analysis.default_history_days": 120
+  }
 }

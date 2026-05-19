@@ -503,6 +503,10 @@ def build_global_risk_features(
     global_market_snapshot, market_inputs, market_data_available, market_data_stale, market_neutral_fallback = (
         _market_snapshot_details(global_market_snapshot)
     )
+    snapshot_warnings = list(global_market_snapshot.get("warnings", []))
+    gift_nifty_proxy_in_use = bool(global_market_snapshot.get("gift_nifty_proxy_in_use", False)) or any(
+        "gift_nifty_proxy_in_use" in str(item) for item in snapshot_warnings
+    )
     market_state = _market_input_state(
         market_inputs,
         market_data_usable=market_data_available,
@@ -562,7 +566,11 @@ def build_global_risk_features(
     rates_shock_score = _rates_shock_score(us10y_change_bp, cfg=cfg)
     currency_shock_score = _currency_shock_score(usdinr_change_24h, cfg=cfg)
     dxy_shock_score = _dxy_shock_score(dxy_change_24h, cfg=cfg)
-    gift_nifty_lead_score = _gift_nifty_lead_score(gift_nifty_change_24h, cfg=cfg)
+    gift_nifty_lead_score = (
+        0.0
+        if gift_nifty_proxy_in_use
+        else _gift_nifty_lead_score(gift_nifty_change_24h, cfg=cfg)
+    )
     macro_event_risk_score = _safe_int(macro_event_state.get("macro_event_risk_score"), 0)
     macro_event_risk_norm = _clip(_safe_float(macro_event_risk_score, 0.0) / 100.0, 0.0, 1.0)
     volatility_compression_score = _volatility_compression_score(realized_vol_5d, realized_vol_30d, cfg=cfg)
@@ -620,10 +628,9 @@ def build_global_risk_features(
         4,
     )
     neutral_fallback = not market_data_available and headline_neutral_fallback and not event_data_available
-    warnings = list(macro_news_state.get("warnings", [])) + list(global_market_snapshot.get("warnings", []))
+    warnings = list(macro_news_state.get("warnings", [])) + snapshot_warnings
     if market_state["market_features_neutralized"]:
         warnings.append(f"market_features_neutralized:{market_state['market_neutralization_reason']}")
-    gift_nifty_proxy_in_use = any("gift_nifty_proxy_in_use" in str(item) for item in warnings)
 
     return {
         "holding_profile": holding_profile,
@@ -691,6 +698,7 @@ def build_global_risk_features(
         "market_data_available": market_data_available,
         "market_data_stale": market_data_stale,
         "market_data_provider": global_market_snapshot.get("provider"),
+        "gift_nifty_source": global_market_snapshot.get("gift_nifty_source"),
         "market_data_as_of": global_market_snapshot.get("as_of"),
         "market_data_latest_timestamp": global_market_snapshot.get("latest_market_timestamp"),
         "market_data_neutral_fallback": market_neutral_fallback,

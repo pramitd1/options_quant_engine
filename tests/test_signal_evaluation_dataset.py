@@ -104,6 +104,36 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
                 "selected_option_vega": 0.221,
                 "selected_option_vanna": 0.013,
                 "selected_option_charm": -0.009,
+                "heston_research_enabled": True,
+                "heston_calibration_status": "CALIBRATED",
+                "heston_calibration_reason": "ok",
+                "heston_calibration_sample_size": 48,
+                "heston_kappa": 1.72,
+                "heston_theta": 0.052,
+                "heston_vol_of_vol": 0.61,
+                "heston_rho": -0.43,
+                "heston_v0": 0.048,
+                "heston_calibration_error": 0.071,
+                "heston_surface_quality": "GOOD",
+                "heston_quality_flags": "",
+                "heston_bound_hit_count": 0,
+                "heston_tte_days": 5.25,
+                "heston_tte_bucket": "FRONT_WEEK",
+                "heston_expiry_context": "NON_EXPIRY",
+                "heston_short_tte_guard": "NONE",
+                "heston_selected_iv_quality": "OK",
+                "heston_skew_state": "NEGATIVE_SKEW",
+                "heston_forward_variance_proxy": 0.0486,
+                "heston_model_price": 112.4,
+                "heston_model_delta": 0.481,
+                "heston_model_gamma": 0.0121,
+                "heston_model_iv_proxy": 0.301,
+                "bs_model_price_for_heston": 110.2,
+                "bs_vs_heston_price_gap": 2.2,
+                "heston_price_gap_rel_pct": 1.9964,
+                "bs_vs_heston_greek_gap": 0.0075,
+                "greek_model_divergence_score": 14,
+                "heston_diagnostics_json": '{"surface_quality": "GOOD"}',
                 "selected_option_capital_per_lot": 13685.75,
                 "selected_option_ba_spread_ratio": 0.012,
                 "selected_option_ba_spread_pct": 1.2,
@@ -313,6 +343,16 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
         self.assertEqual(row_a["selected_option_delta"], 0.4735)
         self.assertEqual(row_a["selected_option_gamma"], 0.0124)
         self.assertEqual(row_a["selected_option_charm"], -0.009)
+        self.assertEqual(row_a["heston_calibration_status"], "CALIBRATED")
+        self.assertEqual(row_a["heston_surface_quality"], "GOOD")
+        self.assertEqual(row_a["heston_quality_flags"], "")
+        self.assertEqual(row_a["heston_bound_hit_count"], 0)
+        self.assertEqual(row_a["heston_tte_bucket"], "FRONT_WEEK")
+        self.assertEqual(row_a["heston_selected_iv_quality"], "OK")
+        self.assertEqual(row_a["heston_skew_state"], "NEGATIVE_SKEW")
+        self.assertAlmostEqual(row_a["heston_calibration_error"], 0.071)
+        self.assertAlmostEqual(row_a["heston_price_gap_rel_pct"], 1.9964)
+        self.assertEqual(row_a["greek_model_divergence_score"], 14)
         self.assertEqual(row_a["market_gamma_exposure"], -8420.0)
         self.assertEqual(row_a["market_charm_exposure"], -44.0)
         self.assertAlmostEqual(row_a["target_premium_return_pct"], 30.0, places=4)
@@ -502,6 +542,13 @@ class SignalEvaluationDatasetTests(unittest.TestCase):
             self.assertIn("option_premium_pnl_per_lot_60m", frame.columns)
             self.assertIn("selected_option_delta", frame.columns)
             self.assertIn("selected_option_iv", frame.columns)
+            self.assertIn("heston_calibration_status", frame.columns)
+            self.assertIn("heston_surface_quality", frame.columns)
+            self.assertIn("heston_quality_flags", frame.columns)
+            self.assertIn("heston_tte_bucket", frame.columns)
+            self.assertIn("heston_selected_iv_quality", frame.columns)
+            self.assertIn("heston_price_gap_rel_pct", frame.columns)
+            self.assertIn("greek_model_divergence_score", frame.columns)
             self.assertIn("market_gamma_exposure", frame.columns)
             self.assertIn("market_charm_exposure", frame.columns)
             self.assertIn("strike_efficiency_score", frame.columns)

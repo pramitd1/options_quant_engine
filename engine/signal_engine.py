@@ -22,6 +22,11 @@ from pathlib import Path
 
 from config.settings import (
     BACKTEST_MIN_TRADE_STRENGTH,
+    HESTON_CALIBRATION_ERROR_REJECT,
+    HESTON_CALIBRATION_MAX_ROWS,
+    HESTON_CALIBRATION_MIN_ROWS,
+    HESTON_CALIBRATION_TIMEOUT_SECONDS,
+    HESTON_RESEARCH_ENABLED,
     LOT_SIZE,
     MAX_CAPITAL_PER_TRADE,
     NUMBER_OF_LOTS,
@@ -77,6 +82,7 @@ from strategy.score_calibration import (
 from strategy.time_decay_model import initialize_time_decay, apply_time_decay
 from strategy.path_aware_filtering import PathAwareFilter, PathPatternLibrary
 from strategy.regime_conditional_thresholds import initialize_regime_thresholds, compute_regime_thresholds
+from models.heston.heston_features import build_heston_research_features, default_heston_research_features
 
 
 _LOG = logging.getLogger(__name__)
@@ -4720,6 +4726,14 @@ def generate_trade(
         "live_directional_gate": live_directional_gate if isinstance(live_directional_gate, dict) else {},
         "operator_control_state": operator_control_state if isinstance(operator_control_state, dict) else {},
         "backtest_mode": backtest_mode,
+        **default_heston_research_features(
+            enabled=bool(HESTON_RESEARCH_ENABLED),
+            reason=(
+                "awaiting_contract_selection"
+                if HESTON_RESEARCH_ENABLED
+                else "heston_research_disabled"
+            ),
+        ),
     }
 
     portfolio_concentration_context = _compute_portfolio_concentration_context(
@@ -5285,6 +5299,24 @@ def generate_trade(
         liquidity_levels=market_state["liquidity_levels"],
         runtime_thresholds=runtime_thresholds,
     )
+    heston_research_features = build_heston_research_features(
+        df,
+        spot=spot,
+        selected_strike=strike,
+        selected_option_type=option_type,
+        selected_expiry=selected_expiry,
+        selected_iv=selected_option_iv,
+        selected_iv_is_proxy=bool((ranked_candidate or {}).get("iv_is_proxy", False)),
+        selected_iv_proxy_source=(ranked_candidate or {}).get("iv_proxy_source"),
+        bs_delta=resolved_delta_input,
+        bs_gamma=option_row_dict.get("GAMMA"),
+        valuation_time=valuation_time,
+        enabled=bool(HESTON_RESEARCH_ENABLED),
+        min_rows=HESTON_CALIBRATION_MIN_ROWS,
+        max_rows=HESTON_CALIBRATION_MAX_ROWS,
+        reject_error=HESTON_CALIBRATION_ERROR_REJECT,
+        timeout_seconds=HESTON_CALIBRATION_TIMEOUT_SECONDS,
+    )
 
     base_payload.update({
         "direction": direction,
@@ -5363,6 +5395,7 @@ def generate_trade(
             if _safe_float(option_row_dict.get("DELTA"), None) in (None, 0.0) and _safe_float(resolved_delta_input, None) not in (None, 0.0)
             else "CHAIN_DELTA"
         ),
+        **heston_research_features,
     })
     if base_payload.get("expected_move_pct") is None:
         base_payload["expected_move_pct"] = base_payload.get("expected_move_pct_model")

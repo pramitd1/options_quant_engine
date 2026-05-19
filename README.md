@@ -561,6 +561,7 @@ The engine now has five important overlay packages plus a dedicated research-gov
 - `risk/gamma_vol_acceleration_*`: convexity and acceleration overlay
 - `risk/dealer_hedging_pressure_*`: dealer-flow and pinning/acceleration overlay
 - `risk/option_efficiency_*`: expected move and option-buying efficiency overlay
+- `models/heston/`: optional research-only stochastic-volatility diagnostics; Black-Scholes remains the live Greek engine
 - `tuning/`: parameter registry, named packs, experiment runner, advanced search, automated campaigns, promotion, and reporting
   plus walk-forward and regime-aware validation
 - `strategy/`: strike selection, confirmation scoring, direction reversal control, enhanced strike scoring with market-microstructure factors, exit model, budget optimization, and trade strength evaluation
@@ -582,6 +583,8 @@ These layers are intentionally modifiers and filters. They do not replace the co
 - Watchlist realized evaluation (scheduler target): `python scripts/watchlist_realized_evaluation.py`
 - PCR backfill from saved chains: `python scripts/ops/backfill_pcr_fields.py --write`
 - Option premium path backfill from saved chains: `python scripts/ops/backfill_option_premium_paths.py --write`
+- Offline Heston diagnostics backfill: `python scripts/ops/backfill_heston_research_features.py --write`
+- Heston research diagnostics: `python scripts/ops/run_heston_research_report.py`
 - Parameter governance and tuning: `python scripts/parameter_governance.py ...`
 - Offline replay pack suite: `python scripts/ops/run_offline_replay_pack_suite.py ...`
 
@@ -615,6 +618,7 @@ These layers are intentionally modifiers and filters. They do not replace the co
 - backtest dataset in `research/signal_evaluation/backtest_signals_dataset.parquet` (7,404 signals from 10-year multi-year backtest)
 - schema and upsert rules in [dataset.py](research/signal_evaluation/dataset.py)
 - row-building and outcome enrichment in [evaluator.py](research/signal_evaluation/evaluator.py) and [market_data.py](research/signal_evaluation/market_data.py)
+- optional Heston research fields are captured when `OQE_HESTON_RESEARCH_ENABLED=true`; they are diagnostic only and never alter trade decisions
 - this dataset is the primary calibration and validation source for tuning, walk-forward analysis, and promotion decisions
 - all research data artifacts (CSV, Parquet, checkpoints, reports) are excluded from version control and regenerated locally
 
@@ -1306,6 +1310,35 @@ OQE_PREDICTION_METHOD=blended   # blended | pure_ml | pure_rule | research_dual_
 
 Set to `blended` (default) for the production rule + ML weighted blend. Set to `pure_ml` to use only the ML leg, `pure_rule` for only the rule-based heuristic, `research_dual_model` to use the research GBT ranking + LogReg calibration dual-model, `research_decision_policy` to use the decision-policy layer that applies ALLOW/BLOCK/DOWNGRADE policies over the dual-model output, `ev_sizing` to use expected-value-based sizing from conditional return tables (blocks negative-EV signals, scales positive-EV proportionally), `research_rank_gate` to block low-rank signals with a research rank threshold, or `research_uncertainty_adjusted` to downweight high-uncertainty signals using dual-model disagreement and confidence ambiguity. The backtester also accepts a per-run `prediction_method` parameter that overrides this setting for that run only.
 
+### Heston Research Diagnostics
+
+Black-Scholes remains the default live Greek engine. Heston is optional and writes research-only diagnostics into the signal-evaluation dataset for later tests on hit rate, option efficiency, volatility-expansion detection, and strike selection.
+
+```bash
+OQE_HESTON_RESEARCH_ENABLED=false
+OQE_HESTON_CALIBRATION_MAX_ROWS=80
+OQE_HESTON_CALIBRATION_MIN_ROWS=8
+OQE_HESTON_CALIBRATION_ERROR_REJECT=0.35
+OQE_HESTON_CALIBRATION_TIMEOUT_SECONDS=2.5
+OQE_HESTON_BOUND_GUARD_TOLERANCE_PCT=0.01
+OQE_HESTON_BOUND_GUARD_REJECT_COUNT=3
+OQE_HESTON_PRICE_GAP_WEAK_PCT=60
+OQE_HESTON_PRICE_GAP_REJECT_PCT=100
+OQE_HESTON_SHORT_TTE_WEAK_DAYS=1
+OQE_HESTON_SHORT_TTE_REJECT_DAYS=0.05
+OQE_HESTON_SELECTED_IV_LOW_PCT=3
+OQE_HESTON_SELECTED_IV_HIGH_PCT=150
+```
+
+Report generation:
+
+```bash
+python scripts/ops/backfill_heston_research_features.py --write
+python scripts/ops/run_heston_research_report.py
+```
+
+The backfill runner reads stored `saved_chain_snapshot_path` rows and appends Heston diagnostics after the fact, so the live engine can keep `OQE_HESTON_RESEARCH_ENABLED=false`. Heston quality guards downgrade or reject diagnostics when calibrated parameters pin to optimizer bounds, selected contracts are too close to expiry, or selected-contract Black-Scholes versus Heston price gaps become extreme. If selected IV is proxy, missing, or outside sanity bounds, the price-gap guard is suppressed and reported separately so calibration quality is not confused with a weak BS comparison input. The report summarizes calibration quality by day, TTE bucket, expiry context, selected-IV quality, direction, provider health, guard-flag counts, Heston parameter stability, correlation screens, and ML feature-importance screens. Generated artifacts are local-only under `research/signal_evaluation/reports/heston_research/`.
+
 ### Common Provider Settings
 
 Default provider:
@@ -1384,7 +1417,15 @@ Production safety guard:
 GLOBAL_MARKET_DATA_ENABLED=true
 GLOBAL_MARKET_LOOKBACK_DAYS=90
 GLOBAL_MARKET_STALE_DAYS=5
+OQE_GIFT_NIFTY_SOURCE=ICICI
+OQE_GIFT_NIFTY_ICICI_CANDIDATES="NDX:NIFTY;NDX:GIFTNIFTY;NDX:GIFT NIFTY;NDX:NIFTY:futures;NDX:GIFTNIFTY:futures"
+OQE_GIFT_NIFTY_ICICI_CACHE_TTL_SECONDS=60
+OQE_GIFT_NIFTY_TICKER=      # optional explicit yfinance fallback; do not use ^NSEI as GIFT data
 ```
+
+GIFT NIFTY is sourced from ICICI Breeze by default. If the ICICI quote is
+unavailable, the engine leaves the GIFT lead neutral unless an explicit
+non-proxy fallback ticker is configured.
 
 ## Parameter Packs
 

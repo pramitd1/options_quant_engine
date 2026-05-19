@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from config.policy_resolver import temporary_parameter_pack
+from config.analytics_feature_policy import get_technical_analysis_policy_config
 from features.ta_indicators import build_ta_features, get_ta_features_for_trade
 
 
@@ -66,7 +67,9 @@ def test_build_ta_features_default_history_covers_slow_window(monkeypatch):
 
     features = build_ta_features("NIFTY", 160.0)
 
-    assert captured == {"symbol": "NIFTY", "days": 75}
+    expected_days = get_technical_analysis_policy_config().default_history_days
+    assert expected_days >= 100
+    assert captured == {"symbol": "NIFTY", "days": expected_days}
     assert "sma_50" in features["indicators"]
 
 

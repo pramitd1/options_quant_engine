@@ -274,6 +274,51 @@ def _format_probability_display(probability):
     return f"{prob:.0%}"
 
 
+def _coerce_score_int(value):
+    """Coerce display score fields to rounded ints, preserving missing values."""
+    if value in (None, "", "N/A"):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(numeric) or math.isinf(numeric):
+        return None
+    return int(round(numeric))
+
+
+def _format_score_gate(current, required):
+    """Format a current/required score gate for compact output."""
+    current_int = _coerce_score_int(current)
+    required_int = _coerce_score_int(required)
+    if current_int is None:
+        return None
+    if required_int is None:
+        return current_int
+    if current_int >= required_int:
+        return f"{current_int}/{required_int}  ✓ threshold met"
+    return f"{current_int}/{required_int}  ({required_int - current_int:+d} to threshold)"
+
+
+def _render_score_threshold_block(title, *, current, required, suffix=""):
+    """Render a compact threshold progress bar for a score gate."""
+    current_int = _coerce_score_int(current)
+    required_int = _coerce_score_int(required)
+    if current_int is None or required_int is None:
+        return
+
+    print(f"\n  {title}")
+    gap = required_int - current_int
+    bar_filled = max(0, min(20, round(20 * current_int / max(required_int, 1))))
+    bar = "█" * bar_filled + "░" * (20 - bar_filled)
+    gap_str = f"  ({gap:+d} to threshold)" if gap > 0 else "  ✓ threshold met"
+    if suffix:
+        gap_str += f" {suffix}"
+    print(f"    current  : {current_int}")
+    print(f"    required : {required_int}{gap_str}")
+    print(f"    progress : [{bar}] {current_int}/{required_int}")
+
+
 def _summarize_confidence_guards(guards, *, cap_applied=True):
     """Return a compact explanation when display confidence is being capped.
 
@@ -2972,7 +3017,7 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                    market_levels_sort_mode="GROUPED"):
     """Render structured compact output following a logical trader workflow.
 
-    Section order:
+    Primary section order:
         1. MARKET SUMMARY
         2. REGIME SUMMARY
         3. TRADE DECISION
@@ -3197,7 +3242,11 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
 
     _render_regime_rollout_status(result)
 
-    # ── 3. TRADE DECISION ────────────────────────────────────────────────
+    # Prepare the trade-decision block early, but render it directly above
+    # TRADING SUGGESTION so the two execution-facing sections stay together.
+    decision_dict = None
+    decision_classification = None
+    confidence_note = None
     if trade:
         confidence = compute_signal_confidence(trade)
         conf_icon = _CONFIDENCE_ICONS.get(confidence["confidence_level"], "")
@@ -3209,9 +3258,17 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
         )
         
         decision_classification = trade.get("decision_classification")
+        runtime_composite_required = (
+            trade.get("effective_min_composite_score_threshold")
+            or trade.get("min_composite_score_threshold")
+        )
         decision_dict = {
             "decision": decision_classification,
             "trade_strength": display.get("trade_strength") if display else None,
+            "runtime_composite_score": _format_score_gate(
+                trade.get("runtime_composite_score"),
+                runtime_composite_required,
+            ),
             "signal_quality": display.get("signal_quality") if display else None,
             "confirmation": trade.get("confirmation_status"),
             "reversal_stage": trade.get("reversal_stage"),
@@ -3220,13 +3277,19 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             "confidence": f"{conf_icon} {confidence['confidence_score']} ({confidence['confidence_level']})",
             "data_quality": trade.get("data_quality_status"),
         }
-        
+
+        _render_directionality_diagnostics(trade, mode="compact")
+
+    # ── 3b. DEALER GAMMA LEVELS ──────────────────────────────────────────
+    if trade:
+        _render_dealer_gamma_levels(trade)
+
+    # ── 3c. TRADE DECISION ───────────────────────────────────────────────
+    if trade and decision_dict:
         _print_section("TRADE DECISION", decision_dict)
         if confidence_note:
             print(f"{'confidence_note':26}: {confidence_note}")
 
-        _render_directionality_diagnostics(trade, mode="compact")
-        
         # For blocked trades, add regime constraint explanation
         if "BLOCKED" in str(decision_classification):
             regime_note = _get_regime_impact_note(trade)
@@ -3234,10 +3297,6 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                 print(f"  ⚠️  {regime_note}")
     else:
         print("\n  ▸ NO TRADE SIGNAL")
-
-    # ── 3b. DEALER GAMMA LEVELS ──────────────────────────────────────────
-    if trade:
-        _render_dealer_gamma_levels(trade)
 
     # ── 4. TRADING SUGGESTION ────────────────────────────────────────────
     print(f"\nTRADING SUGGESTION")
@@ -3339,13 +3398,9 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
                 from config.signal_policy import get_trade_runtime_thresholds
                 _thresholds = get_trade_runtime_thresholds()
                 _raw_min_strength = _thresholds.get("min_trade_strength", 60)
-            try:
-                _min_strength = int(float(_raw_min_strength))
-            except (TypeError, ValueError):
-                _min_strength = 60
+            _min_strength = _coerce_score_int(_raw_min_strength) or 60
             _raw_strength = trade.get("trade_strength")
-            _has_strength = _raw_strength not in (None, "", "N/A")
-            _cur_strength = int(_raw_strength) if _has_strength else 0
+            _cur_strength = _coerce_score_int(_raw_strength) or 0
             _confirmation = str(
                 trade.get("confirmation_status")
                 or trade.get("confirmation")
@@ -3366,6 +3421,18 @@ def render_compact(*, result, trade, spot_summary, macro_event_state,
             if _gate_desc:
                 print(f"    effective: {_gate_desc}")
             print(f"    progress : [{_bar}] {_cur_strength}/{_min_strength}")
+
+            _raw_composite = trade.get("runtime_composite_score")
+            _raw_min_composite = (
+                trade.get("effective_min_composite_score_threshold")
+                or trade.get("min_composite_score_threshold")
+            )
+            if _raw_composite not in (None, "", "N/A") and _raw_min_composite not in (None, "", "N/A"):
+                _render_score_threshold_block(
+                    "Runtime Composite Threshold",
+                    current=_raw_composite,
+                    required=_raw_min_composite,
+                )
 
         # ── Best strike candidate ────────────────────────────────────────
         if trade:

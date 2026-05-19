@@ -26,6 +26,7 @@ from utils.numerics import safe_float as _safe_float
 
 from config.market_data_policy import (
     GIFT_NIFTY_PROXY_IN_USE,
+    GIFT_NIFTY_SOURCE,
     GLOBAL_MARKET_TICKERS,
     IST_TIMEZONE,
     normalize_symbol_to_yfinance,
@@ -34,6 +35,10 @@ from config.settings import (
     GLOBAL_MARKET_DATA_ENABLED,
     GLOBAL_MARKET_LOOKBACK_DAYS,
     GLOBAL_MARKET_STALE_DAYS,
+)
+from data.icici_gift_nifty import (
+    fetch_icici_gift_nifty_snapshot,
+    invalidate_icici_gift_nifty_cache,
 )
 
 
@@ -206,11 +211,12 @@ _download_cache_time: float = 0.0
 
 
 def invalidate_download_cache():
-    """Clear the yfinance download cache (used by tests and forced refresh)."""
+    """Clear market-data caches (used by tests and forced refresh)."""
     global _download_cache, _download_cache_key, _download_cache_time
     _download_cache = None
     _download_cache_key = None
     _download_cache_time = 0.0
+    invalidate_icici_gift_nifty_cache()
 
 
 def _download_histories(tickers: dict[str, str], *, lookback_days: int) -> dict[str, pd.DataFrame]:
@@ -507,11 +513,36 @@ def build_global_market_snapshot(symbol: str, *, as_of=None) -> dict:
     market_inputs["us10y_change_bp"] = _us10y_change_bp(histories.get("us10y"))
     market_inputs["usdinr_change_24h"] = _daily_change_pct(histories.get("usdinr"))
     market_inputs["dxy_change_24h"] = _daily_change_pct(histories.get("dxy"))
-    market_inputs["gift_nifty_change_24h"] = _daily_change_pct(histories.get("gift_nifty"))
     market_inputs["realized_vol_5d"] = _realized_volatility(histories.get("underlying"), 5)
     market_inputs["realized_vol_30d"] = _realized_volatility(histories.get("underlying"), 30)
+    market_inputs["gift_nifty_change_24h"] = None
 
-    if GIFT_NIFTY_PROXY_IN_USE:
+    gift_nifty_source = "UNAVAILABLE"
+    gift_nifty_proxy_in_use = False
+    if GIFT_NIFTY_SOURCE == "ICICI":
+        icici_gift = fetch_icici_gift_nifty_snapshot()
+        warnings.extend(icici_gift.get("warnings") or [])
+        issues.extend(icici_gift.get("issues") or [])
+        if icici_gift.get("available"):
+            gift_nifty_source = "ICICI"
+            market_inputs["gift_nifty_change_24h"] = icici_gift.get("gift_nifty_change_24h")
+            market_inputs["gift_nifty_level"] = icici_gift.get("gift_nifty_level")
+            market_inputs["gift_nifty_previous_close"] = icici_gift.get("gift_nifty_previous_close")
+            market_inputs["gift_nifty_quote_timestamp"] = icici_gift.get("gift_nifty_quote_timestamp")
+        elif "gift_nifty" in histories:
+            gift_nifty_proxy_in_use = GIFT_NIFTY_PROXY_IN_USE
+            gift_nifty_source = "YFINANCE_PROXY_DISABLED" if gift_nifty_proxy_in_use else "YFINANCE_FALLBACK"
+            market_inputs["gift_nifty_change_24h"] = (
+                None if gift_nifty_proxy_in_use else _daily_change_pct(histories.get("gift_nifty"))
+            )
+    else:
+        gift_nifty_source = "YFINANCE" if "gift_nifty" in histories else "UNAVAILABLE"
+        gift_nifty_proxy_in_use = GIFT_NIFTY_PROXY_IN_USE
+        market_inputs["gift_nifty_change_24h"] = (
+            None if gift_nifty_proxy_in_use else _daily_change_pct(histories.get("gift_nifty"))
+        )
+
+    if gift_nifty_proxy_in_use:
         warnings.append("gift_nifty_proxy_in_use:^NSEI")
 
     if all(value is None for value in market_inputs.values()):
@@ -524,13 +555,15 @@ def build_global_market_snapshot(symbol: str, *, as_of=None) -> dict:
 
     return {
         "symbol": str(symbol or "").upper().strip(),
-        "provider": "YFINANCE",
+        "provider": "YFINANCE+ICICI" if gift_nifty_source == "ICICI" else "YFINANCE",
         "as_of": as_of_ts.isoformat(),
         "data_available": not stale,
         "neutral_fallback": stale,
         "issues": issues,
         "warnings": warnings,
         "stale": stale,
+        "gift_nifty_source": gift_nifty_source,
+        "gift_nifty_proxy_in_use": gift_nifty_proxy_in_use,
         "latest_market_timestamp": latest_market_ts.isoformat(),
         "lookback_days": GLOBAL_MARKET_LOOKBACK_DAYS,
         "market_inputs": market_inputs,
