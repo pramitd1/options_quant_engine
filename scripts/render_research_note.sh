@@ -9,7 +9,10 @@ OUTPUT_HTML="$OUTPUT_DIR/quant_note_trade_signal_logic_polished.html"
 OUTPUT_PDF="$OUTPUT_DIR/quant_note_trade_signal_logic_polished.pdf"
 
 # ---- Try the Python renderer first (multi-backend, most robust) ----
-VENV_PYTHON="$ROOT_DIR/.venv/bin/python3"
+VENV_PYTHON="${OQE_PYTHON:-$ROOT_DIR/../.venv/bin/python}"
+if [ ! -x "$VENV_PYTHON" ]; then
+  VENV_PYTHON="$ROOT_DIR/.venv/bin/python3"
+fi
 if [ -x "$VENV_PYTHON" ]; then
   echo "Attempting Python PDF renderer..."
   CONDA_LIB="${CONDA_PREFIX:-}/lib"

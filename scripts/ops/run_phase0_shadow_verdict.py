@@ -8,8 +8,8 @@ cumulative dataset and emit a GO/NO-GO verdict using the exact KPI gates
 in documentation/implementation_notes/ML_INFERENCE_GAP_FIX_COMPLETE.md.
 
 Usage:
-    .venv/bin/python scripts/ops/run_phase0_shadow_verdict.py
-    .venv/bin/python scripts/ops/run_phase0_shadow_verdict.py --date 2026-03-20
+    ../.venv/bin/python scripts/ops/run_phase0_shadow_verdict.py
+    ../.venv/bin/python scripts/ops/run_phase0_shadow_verdict.py --date 2026-03-20
 
 Outputs:
     research/ml_evaluation/predictor_comparison/phase0_shadow/

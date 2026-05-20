@@ -12,10 +12,10 @@ Safety:
     enable regime auto-switching, and only writes under research outputs.
 
 Usage examples:
-    .venv/bin/python scripts/ops/run_offline_replay_pack_suite.py
-    .venv/bin/python scripts/ops/run_offline_replay_pack_suite.py --candidates macro_overlay_v1 overnight_focus_v1
-    .venv/bin/python scripts/ops/run_offline_replay_pack_suite.py --windows all 30 60 90
-    .venv/bin/python scripts/ops/run_offline_replay_pack_suite.py --resume-dir research/parameter_tuning/offline_replay_runs/suite_20260323_190000
+    ../.venv/bin/python scripts/ops/run_offline_replay_pack_suite.py
+    ../.venv/bin/python scripts/ops/run_offline_replay_pack_suite.py --candidates macro_overlay_v1 overnight_focus_v1
+    ../.venv/bin/python scripts/ops/run_offline_replay_pack_suite.py --windows all 30 60 90
+    ../.venv/bin/python scripts/ops/run_offline_replay_pack_suite.py --resume-dir research/parameter_tuning/offline_replay_runs/suite_20260323_190000
 """
 
 from __future__ import annotations

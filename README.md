@@ -80,32 +80,37 @@ Direction-head promotion governance in this repository is currently signal-quali
 
 ### Environment
 
-Recommended runtime: Python 3.11.x.
+Recommended runtime: Python 3.11.x from the parent `Quant Engines/.venv` common environment. This keeps the options engine aligned with the broader multi-asset workspace.
 
 macOS / Linux:
 
 ```bash
-python3.11 -m venv .venv
+cd ..
+bash scripts/bootstrap_common_env.sh
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+cd options_quant_engine
 cp .env.example .env
 ```
 
 Windows PowerShell:
 
 ```powershell
+Set-Location ..
 py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements\all.txt
+Set-Location options_quant_engine
 Copy-Item .env.example .env
 ```
 
 Windows Command Prompt:
 
 ```bat
+cd ..
 py -3.11 -m venv .venv
 .venv\Scripts\activate.bat
-python -m pip install -r requirements.txt
+python -m pip install -r requirements\all.txt
+cd options_quant_engine
 copy .env.example .env
 ```
 
@@ -140,7 +145,7 @@ python -m streamlit run app/streamlit_app.py
 If your shell resolves to system Python instead of the repo virtual environment, use an explicit path:
 
 ```bash
-.venv/bin/python -m streamlit run app/streamlit_app.py
+../.venv/bin/python -m streamlit run app/streamlit_app.py
 ```
 
 Common launch pitfalls:
@@ -150,7 +155,7 @@ Common launch pitfalls:
 - if you see `No module named streamlit`, install deps in the same interpreter used to launch:
 
 ```bash
-python -m pip install -r requirements.txt
+cd .. && python -m pip install -r requirements/all.txt && cd options_quant_engine
 ```
 
 Troubleshooting:
@@ -160,13 +165,13 @@ Troubleshooting:
 
 ```bash
 python3 --version
-.venv/bin/python --version
+../.venv/bin/python --version
 ```
 
-- on this repo, prefer launching with the venv-qualified interpreter to avoid system-Python fallback:
+- on this repo, prefer launching with the parent common-env interpreter to avoid system-Python fallback:
 
 ```bash
-.venv/bin/python -m streamlit run app/streamlit_app.py
+../.venv/bin/python -m streamlit run app/streamlit_app.py
 ```
 
 **Structure Tab Visualization:**
@@ -488,9 +493,10 @@ This is the fastest practical onboarding path for a new operator.
 1. Set up local dev runtime (2-3 minutes)
 
 ```bash
-python3.11 -m venv .venv
+cd ..
+bash scripts/bootstrap_common_env.sh
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+cd options_quant_engine
 cp .env.example .env
 python main.py
 ```
@@ -692,7 +698,7 @@ Enable automatic HIGH-confidence promotion in production cron/task:
 ```cron
 # every day at 18:35 IST
 35 18 * * * cd /Users/pramitdutta/Desktop/Quant\ Engines/options_quant_engine && \
-  /Users/pramitdutta/Desktop/Quant\ Engines/options_quant_engine/.venv/bin/python \
+  /Users/pramitdutta/Desktop/Quant\ Engines/.venv/bin/python \
   scripts/schedule_refresh_cumulative_daily.py \
   --dataset-path research/signal_evaluation/signals_dataset_cumul.csv \
   --emit-high-only-review-artifacts \
@@ -1369,7 +1375,7 @@ https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 1. Run:
 
 ```bash
-.venv/bin/python config/generate_token.py \
+../.venv/bin/python config/generate_token.py \
   --api-key "YOUR_API_KEY" \
   --api-secret "YOUR_API_SECRET" \
   --request-token "FRESH_REQUEST_TOKEN"
@@ -1378,7 +1384,7 @@ https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 Or pass the full callback URL directly:
 
 ```bash
-.venv/bin/python config/generate_token.py \
+../.venv/bin/python config/generate_token.py \
   --api-key "YOUR_API_KEY" \
   --api-secret "YOUR_API_SECRET" \
   --redirect-url "http://127.0.0.1:8000/?action=login&type=login&status=success&request_token=FRESH_REQUEST_TOKEN"
@@ -1698,7 +1704,7 @@ Warning governance (local + CI):
 CI-style strict warning run:
 
 ```bash
-CI=1 .venv/bin/python -m pytest -q
+CI=1 ../.venv/bin/python -m pytest -q
 ```
 
 Notes:

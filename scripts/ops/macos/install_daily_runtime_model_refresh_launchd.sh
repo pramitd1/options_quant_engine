@@ -2,10 +2,14 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 TEMPLATE_PATH="$PROJECT_ROOT/scripts/ops/macos/com.optionsquant.runtime_model_refresh.plist.template"
 TARGET_DIR="$HOME/Library/LaunchAgents"
 TARGET_PLIST="$TARGET_DIR/com.optionsquant.runtime_model_refresh.plist"
-PYTHON_BIN_DEFAULT="$PROJECT_ROOT/.venv/bin/python"
+PYTHON_BIN_DEFAULT="${OQE_PYTHON:-$WORKSPACE_ROOT/.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN_DEFAULT" ]]; then
+  PYTHON_BIN_DEFAULT="$PROJECT_ROOT/.venv/bin/python"
+fi
 PYTHON_BIN="${1:-$PYTHON_BIN_DEFAULT}"
 FAILURE_WEBHOOK_URL="${RUNTIME_MODEL_REFRESH_FAILURE_WEBHOOK_URL:-}"
 
@@ -17,7 +21,7 @@ fi
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Python binary is not executable: $PYTHON_BIN" >&2
   echo "Pass explicit path as first arg, e.g.:" >&2
-  echo "  $0 /Users/you/project/.venv/bin/python" >&2
+  echo "  $0 /Users/you/Quant Engines/.venv/bin/python" >&2
   exit 1
 fi
 

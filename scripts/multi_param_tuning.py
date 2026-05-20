@@ -5,9 +5,15 @@ Tests various parameter combinations and analyzes results.
 """
 
 import json
-import subprocess
 import os
+import shlex
+import sys
 from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_BIN = Path(os.environ.get("OQE_PYTHON", sys.executable)).expanduser()
+
 
 def run_sweep(buffer_val, strength_val):
     """Run a single sweep configuration."""
@@ -15,7 +21,7 @@ def run_sweep(buffer_val, strength_val):
     out_file = f"research/artifacts/sweep_results/{config_name}.json"
     
     # Modify config in memory and run sweep
-    cmd = f"""PYTHONPATH=. "/Users/pramitdutta/Desktop/Quant Engines/options_quant_engine/.venv/bin/python" -c "
+    cmd = f"""PYTHONPATH=. {shlex.quote(str(PYTHON_BIN))} -c "
 import sys
 sys.path.insert(0, '.')
 from config import signal_policy as sp
@@ -79,7 +85,7 @@ with open('{out_file}', 'w') as f:
 print(f'Config: {config_name}, Trades: {{result[\"trade_count\"]}}, Override: {{result[\"override_count\"]}}')
 "
 """
-    os.system(f"cd /Users/pramitdutta/Desktop/Quant\\ Engines/options_quant_engine && {cmd}")
+    os.system(f"cd {shlex.quote(str(PROJECT_ROOT))} && {cmd}")
     
     try:
         with open(out_file) as f:
@@ -89,6 +95,7 @@ print(f'Config: {config_name}, Trades: {{result[\"trade_count\"]}}, Override: {{
 
 
 def main():
+    os.chdir(PROJECT_ROOT)
     Path("research/artifacts/sweep_results").mkdir(parents=True, exist_ok=True)
     
     # Test configurations

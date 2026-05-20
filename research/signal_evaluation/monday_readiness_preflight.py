@@ -255,18 +255,19 @@ def _soak_summary(report: dict[str, Any], *, path: str | Path | None) -> dict[st
 def _commands(*, source: str, symbol: str) -> dict[str, str]:
     source_clean = str(source or DEFAULT_DATA_SOURCE).upper().strip()
     symbol_clean = str(symbol or DEFAULT_SYMBOL).upper().strip()
+    python_cmd = "../.venv/bin/python"
     return {
         "preflight": (
-            ".venv/bin/python scripts/ops/run_monday_readiness_preflight.py "
+            f"{python_cmd} scripts/ops/run_monday_readiness_preflight.py "
             f"--source {source_clean} --symbol {symbol_clean}"
         ),
         "streamlit_live": (
-            ".venv/bin/python -m streamlit run app/streamlit_app.py"
+            f"{python_cmd} -m streamlit run app/streamlit_app.py"
             f"  # choose LIVE / {symbol_clean} / {source_clean} in the sidebar"
         ),
-        "shadow_soak": ".venv/bin/python scripts/ops/run_segmented_probability_shadow_soak.py",
+        "shadow_soak": f"{python_cmd} scripts/ops/run_segmented_probability_shadow_soak.py",
         "guarded_staleness": (
-            ".venv/bin/python scripts/ops/run_segmented_probability_guarded_candidate_staleness.py"
+            f"{python_cmd} scripts/ops/run_segmented_probability_guarded_candidate_staleness.py"
         ),
     }
 

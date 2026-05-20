@@ -26,29 +26,60 @@ from pathlib import Path
 _MIN_PYTHON = (3, 11)
 
 
+def _venv_python_path(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _runtime_python_candidates(repo_root: Path) -> list[Path]:
+    """Return preferred runtime interpreters, common workspace first."""
+    candidates: list[Path] = []
+    for env_name in ("OQE_PYTHON", "QUANT_ENGINES_PYTHON"):
+        raw = os.environ.get(env_name)
+        if raw:
+            candidates.append(Path(raw).expanduser())
+
+    # The options engine now runs inside the parent Quant Engines workspace.
+    # Keep the local venv as a fallback for older standalone checkouts.
+    candidates.extend(
+        [
+            _venv_python_path(repo_root.parent / ".venv"),
+            _venv_python_path(repo_root / ".venv"),
+        ]
+    )
+    return candidates
+
+
 def _ensure_supported_runtime() -> None:
-    """Re-launch under the repo's Python 3.11 environment when available."""
+    """Re-launch under a Python 3.11 environment when the current one is too old."""
     if os.environ.get("OQE_RUNTIME_REEXEC") == "1":
         return
 
     repo_root = Path(__file__).resolve().parent
-    venv_python = repo_root / ".venv" / "bin" / "python"
     current_executable = Path(sys.executable).resolve()
 
     incompatible_version = sys.version_info < _MIN_PYTHON
-    venv_available = venv_python.exists()
-    already_using_venv = venv_available and current_executable == venv_python.resolve()
+    runtime_python = None
+    for candidate in _runtime_python_candidates(repo_root):
+        if not candidate.exists():
+            continue
+        if candidate.resolve() == current_executable:
+            runtime_python = None
+            break
+        runtime_python = candidate
+        break
 
-    if incompatible_version and venv_available and not already_using_venv:
+    if incompatible_version and runtime_python is not None:
         os.environ["OQE_RUNTIME_REEXEC"] = "1"
-        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
+        os.execv(str(runtime_python), [str(runtime_python), __file__, *sys.argv[1:]])
 
-    if incompatible_version and not venv_available:
+    if incompatible_version:
         required = ".".join(str(part) for part in _MIN_PYTHON)
         found = ".".join(str(part) for part in sys.version_info[:3])
         raise SystemExit(
             f"Options Quant Engine requires Python {required}+; found {found}. "
-            "Create the local .venv with Python 3.11 and retry."
+            "Activate the parent Quant Engines .venv or set OQE_PYTHON to a Python 3.11 interpreter."
         )
 
 

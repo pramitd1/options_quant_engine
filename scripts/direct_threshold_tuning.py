@@ -5,16 +5,20 @@ Direct threshold tuning using in-process configuration modification.
 
 import sys
 import json
+import os
 from pathlib import Path
 
-sys.path.insert(0, '/Users/pramitdutta/Desktop/Quant Engines/options_quant_engine')
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
 
 from config import signal_policy as sp
 from app.engine_runner import run_engine_snapshot
 from scripts.run_provider_override_sweep import build_pairs
 
 # Create output directory
-Path('research/artifacts/sweep_results').mkdir(parents=True, exist_ok=True)
+(PROJECT_ROOT / 'research/artifacts/sweep_results').mkdir(parents=True, exist_ok=True)
 
 # Define test configurations
 configs = [
@@ -93,7 +97,7 @@ for config_name, buffer, strength in configs:
         
         results_all[config_name] = result_obj
         
-        out_file = f'research/artifacts/sweep_results/{config_name}.json'
+        out_file = PROJECT_ROOT / 'research' / 'artifacts' / 'sweep_results' / f'{config_name}.json'
         with open(out_file, 'w') as f:
             json.dump(result_obj, f, indent=2)
         

@@ -2,7 +2,13 @@
 """Deployment validation test."""
 
 import sys
-sys.path.insert(0, '/Users/pramitdutta/Desktop/Quant Engines/options_quant_engine')
+import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
 
 from config.signal_policy import TRADE_RUNTIME_THRESHOLDS
 from app.engine_runner import run_engine_snapshot

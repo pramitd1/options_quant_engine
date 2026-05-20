@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path('/Users/pramitdutta/Desktop/Quant Engines/options_quant_engine')
+ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

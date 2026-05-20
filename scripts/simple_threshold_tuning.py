@@ -6,6 +6,13 @@ Simple threshold tuning by running existing sweep framework multiple times.
 import subprocess
 import json
 import os
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_BIN = Path(os.environ.get("OQE_PYTHON", sys.executable)).expanduser()
+os.chdir(PROJECT_ROOT)
 
 configs = [
     ("baseline_buf8_str12", 8, 12),
@@ -90,13 +97,15 @@ with open(out_file, 'w') as f:
 print(f"{{config_name}}: {{trade_count}} trades, {{override_count}} overrides")
 """
     
-    cmd = (
-        f'cd /Users/pramitdutta/Desktop/Quant\\ Engines/options_quant_engine && '
-        f'PYTHONPATH=. /Users/pramitdutta/Desktop/Quant\\ Engines/options_quant_engine/.venv/bin/python -c '
-        f'"{py_code}"'
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "."
+    subprocess.run(
+        [str(PYTHON_BIN), "-c", py_code],
+        cwd=PROJECT_ROOT,
+        env=env,
+        stderr=subprocess.DEVNULL,
+        check=False,
     )
-    
-    ret = os.system(f"{cmd} 2>/dev/null")
     
     # Load result
     try:

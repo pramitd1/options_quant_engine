@@ -6,8 +6,14 @@ Tests multiple parameter combinations systematically.
 
 import json
 import os
-import subprocess
+import shlex
+import sys
 from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_BIN = Path(os.environ.get("OQE_PYTHON", sys.executable)).expanduser()
+
 
 def run_sweep_config(buffer, strength, limit=20):
     """Run sweep with specific buffer and strength parameters."""
@@ -15,8 +21,8 @@ def run_sweep_config(buffer, strength, limit=20):
     out_file = f"research/artifacts/sweep_results/{config_name}.json"
     
     cmd = (
-        f'cd /Users/pramitdutta/Desktop/Quant\\ Engines/options_quant_engine && '
-        f'PYTHONPATH=. /Users/pramitdutta/Desktop/Quant\\ Engines/options_quant_engine/.venv/bin/python -c '
+        f'cd {shlex.quote(str(PROJECT_ROOT))} && '
+        f'PYTHONPATH=. {shlex.quote(str(PYTHON_BIN))} -c '
         f'"'
         f'import sys, json; '
         f'sys.path.insert(0, "."); '
@@ -48,6 +54,7 @@ def run_sweep_config(buffer, strength, limit=20):
 
 
 def main():
+    os.chdir(PROJECT_ROOT)
     Path("research/artifacts/sweep_results").mkdir(parents=True, exist_ok=True)
     
     # Define test configurations

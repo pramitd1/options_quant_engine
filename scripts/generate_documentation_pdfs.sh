@@ -3,7 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-PYTHON_BIN="./.venv/bin/python"
+PYTHON_BIN="${OQE_PYTHON:-../.venv/bin/python}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="./.venv/bin/python"
+fi
 if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python"
 fi
