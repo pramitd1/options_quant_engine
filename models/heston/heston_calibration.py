@@ -306,13 +306,18 @@ def prepare_calibration_points(
     if bid_col and ask_col:
         frame["_bid"] = pd.to_numeric(frame[bid_col], errors="coerce").fillna(0.0)
         frame["_ask"] = pd.to_numeric(frame[ask_col], errors="coerce").fillna(0.0)
-        frame["_spread_ratio"] = (frame["_ask"] - frame["_bid"]).abs() / frame["_price"].replace(0, np.nan)
+        two_sided_quote = (frame["_bid"] > 0) & (frame["_ask"] > 0) & (frame["_ask"] >= frame["_bid"])
+        frame["_spread_ratio"] = np.where(
+            two_sided_quote,
+            (frame["_ask"] - frame["_bid"]).abs() / frame["_price"].replace(0, np.nan),
+            np.nan,
+        )
     else:
         frame["_spread_ratio"] = np.nan
     frame["_dist"] = (frame["_strike"] - float(spot)).abs()
     frame = frame.dropna(subset=["_strike", "_price", "_option_type"])
     frame = frame[(frame["_strike"] > 0) & (frame["_price"] > 0)]
-    frame = frame[frame["_spread_ratio"].fillna(0.0) <= 0.75]
+    frame = frame[frame["_spread_ratio"].isna() | (frame["_spread_ratio"] <= 0.75)]
     if frame.empty:
         return []
 

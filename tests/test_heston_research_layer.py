@@ -107,6 +107,21 @@ def test_prepare_calibration_points_handles_same_day_date_only_expiry():
     assert all(point.time_to_expiry_years > 0 for point in points)
 
 
+def test_prepare_calibration_points_keeps_one_sided_quotes_with_valid_ltp():
+    chain = _synthetic_chain()
+    chain["askPrice"] = 0.0
+
+    points = prepare_calibration_points(
+        chain,
+        spot=10000,
+        valuation_time=VALUATION_TIME,
+        max_rows=12,
+    )
+
+    assert len(points) == 12
+    assert all(point.market_price > 0 for point in points)
+
+
 def test_heston_calibration_succeeds_or_degrades_with_guarded_result():
     chain = _synthetic_chain()
 

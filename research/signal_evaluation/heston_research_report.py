@@ -66,6 +66,24 @@ def _round(value, digits=4):
     return round(value, digits) if value is not None else None
 
 
+def _truthy_flag(value: Any) -> bool:
+    try:
+        if value is None or pd.isna(value):
+            return False
+    except Exception:
+        pass
+    if isinstance(value, str):
+        token = value.strip().upper()
+        if token in {"TRUE", "T", "YES", "Y", "1", "1.0"}:
+            return True
+        if token in {"FALSE", "F", "NO", "N", "0", "0.0", ""}:
+            return False
+    try:
+        return bool(int(float(value)))
+    except Exception:
+        return bool(value)
+
+
 def _json_ready(value):
     if isinstance(value, dict):
         return {str(k): _json_ready(v) for k, v in value.items()}
@@ -318,7 +336,8 @@ def build_heston_research_report(
     """Build a JSON-serializable Heston research report."""
 
     working = _with_signal_date(pd.DataFrame(frame))
-    enabled = working[_series(working, "heston_research_enabled", False).astype(str).str.upper().isin({"TRUE", "1", "YES"})]
+    enabled_mask = _series(working, "heston_research_enabled", False).map(_truthy_flag).astype(bool)
+    enabled = working[enabled_mask]
     heston_rows = working[
         _series(working, "heston_surface_quality", "")
         .fillna("")
